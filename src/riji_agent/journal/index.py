@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from datetime import date as Date
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Sequence, Set
 
-from riji_agent.journal.models import NoteKind, ParsedNote
+from riji_agent.journal.models import NoteKind, NoteSummary, ParsedNote
 from riji_agent.journal.parser import iter_note_files, parse_note
 
 _NOTES_TABLE = """
@@ -161,18 +161,44 @@ class JournalIndex:
         return self._row_to_note(row, body_row["body"] if body_row else "")
 
     def search(
-        self, query: str, *, limit: int = 10, include_private: bool = True
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        include_private: bool = True,
+        date_from: Optional[Date] = None,
+        date_to: Optional[Date] = None,
+        tags: Optional[Sequence[str]] = None,
     ) -> List[SearchHit]:
-        """Full-text search; set ``include_private=False`` to drop private notes."""
-        clause = "" if include_private else " AND n.private = 0"
+        """Full-text search with optional date-range and tag filters.
+
+        Set ``include_private=False`` to drop private notes. Raises
+        ``sqlite3.OperationalError`` for malformed FTS query syntax, which the
+        caller is expected to translate into a safe error.
+        """
+        clauses = ["notes_fts MATCH ?"]
+        params: List[object] = [query]
+        if not include_private:
+            clauses.append("n.private = 0")
+        if date_from is not None:
+            clauses.append("n.note_date >= ?")
+            params.append(date_from.isoformat())
+        if date_to is not None:
+            clauses.append("n.note_date <= ?")
+            params.append(date_to.isoformat())
+        for tag in tags or ():
+            clauses.append("n.tags LIKE ?")
+            params.append(f'%"{tag}"%')
+        params.append(limit)
+
         sql = (
             "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, "
             "snippet(notes_fts, 3, '[', ']', '…', 12) AS snippet "
             "FROM notes_fts JOIN notes n ON n.source_id = notes_fts.source_id "
-            "WHERE notes_fts MATCH ?" + clause + " ORDER BY rank LIMIT ?"
+            "WHERE " + " AND ".join(clauses) + " ORDER BY rank LIMIT ?"
         )
         hits: List[SearchHit] = []
-        for row in self._conn.execute(sql, (query, limit)):
+        for row in self._conn.execute(sql, params):
             hits.append(
                 SearchHit(
                     source_id=row["source_id"],
@@ -184,6 +210,50 @@ class JournalIndex:
                 )
             )
         return hits
+
+    def list_notes(
+        self,
+        *,
+        kind: Optional[NoteKind] = None,
+        date_from: Optional[Date] = None,
+        date_to: Optional[Date] = None,
+        include_private: bool = True,
+        limit: int = 50,
+    ) -> List[NoteSummary]:
+        """List note metadata (no body), newest first, with optional filters."""
+        clauses: List[str] = []
+        params: List[object] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind.value)
+        if not include_private:
+            clauses.append("private = 0")
+        if date_from is not None:
+            clauses.append("note_date >= ?")
+            params.append(date_from.isoformat())
+        if date_to is not None:
+            clauses.append("note_date <= ?")
+            params.append(date_to.isoformat())
+        params.append(limit)
+
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT source_id, kind, note_date, title, private FROM notes"
+            + where
+            + " ORDER BY note_date DESC, source_id LIMIT ?"
+        )
+        summaries: List[NoteSummary] = []
+        for row in self._conn.execute(sql, params):
+            summaries.append(
+                NoteSummary(
+                    source_id=row["source_id"],
+                    kind=NoteKind(row["kind"]),
+                    note_date=Date.fromisoformat(row["note_date"]) if row["note_date"] else None,
+                    title=row["title"],
+                    private=bool(row["private"]),
+                )
+            )
+        return summaries
 
     # --------------------------------------------------------------- internals
 
