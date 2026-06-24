@@ -11,6 +11,7 @@ def test_settings_normalizes_paths_and_creates_private_data_directory(tmp_path: 
     data_dir = tmp_path / "runtime"
 
     settings = Settings(
+        _env_file=None,
         RIJI_JOURNAL_ROOT=str(journal_root),
         RIJI_DATA_DIR=str(data_dir),
         DEEPSEEK_API_KEY="secret",
@@ -31,9 +32,26 @@ def test_data_directory_cannot_be_inside_journal_root(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="outside the journal root"):
         Settings(
+            _env_file=None,
             RIJI_JOURNAL_ROOT=str(journal_root),
             RIJI_DATA_DIR=str(journal_root / "runtime"),
             DEEPSEEK_API_KEY="secret",
+            RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
+            HERMES_SHARED_SECRET="another-secret",
+        )
+
+
+def test_deepseek_base_url_rejects_cleartext_http(tmp_path: Path) -> None:
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        Settings(
+            _env_file=None,
+            RIJI_JOURNAL_ROOT=str(journal_root),
+            RIJI_DATA_DIR=str(tmp_path / "runtime"),
+            DEEPSEEK_API_KEY="secret",
+            DEEPSEEK_BASE_URL="http://api.deepseek.com",
             RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
             HERMES_SHARED_SECRET="another-secret",
         )
@@ -50,7 +68,7 @@ def test_settings_reads_comma_separated_users_from_environment(
     monkeypatch.setenv("RIJI_ALLOWED_FEISHU_USER_IDS", "ou_one,ou_two")
     monkeypatch.setenv("HERMES_SHARED_SECRET", "another-secret")
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.allowed_feishu_user_ids == frozenset({"ou_one", "ou_two"})
 

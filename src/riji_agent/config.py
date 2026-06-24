@@ -52,9 +52,18 @@ class Settings(BaseSettings):
             raise ValueError("must contain at least one user")
         return users
 
-    @field_validator("deepseek_base_url", "hermes_base_url")
+    @field_validator("deepseek_base_url")
+    @classmethod
+    def require_https_url(cls, value: str) -> str:
+        # DeepSeek is a cloud endpoint; the API key must never travel over cleartext http.
+        if not value.startswith("https://"):
+            raise ValueError("must be an HTTPS URL")
+        return value.rstrip("/")
+
+    @field_validator("hermes_base_url")
     @classmethod
     def require_http_url(cls, value: str) -> str:
+        # Hermes runs on local loopback, so plain http is acceptable here.
         if not value.startswith(("http://", "https://")):
             raise ValueError("must be an HTTP(S) URL")
         return value.rstrip("/")

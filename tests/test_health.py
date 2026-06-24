@@ -10,6 +10,7 @@ def test_health_check_does_not_expose_local_configuration(tmp_path: Path) -> Non
     journal_root = tmp_path / "journal"
     journal_root.mkdir()
     settings = Settings(
+        _env_file=None,
         RIJI_JOURNAL_ROOT=str(journal_root),
         RIJI_DATA_DIR=str(tmp_path / "runtime"),
         DEEPSEEK_API_KEY="secret",
