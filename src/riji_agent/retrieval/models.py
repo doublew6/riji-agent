@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date as Date
+from enum import Enum
 from typing import List, Optional, Tuple
 
 from riji_agent.journal.models import NoteKind
+
+
+class Granularity(str, Enum):
+    """Time bucket size for timeline grouping."""
+
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,8 @@ class RetrievalLimits:
     max_total_snippet_chars: int = 1500
     read_note_max_chars: int = 4000
     max_periods: int = 50
+    timeline_max_hits: int = 50
+    max_timeline_span_days: int = 800
 
 
 @dataclass(frozen=True)
@@ -74,3 +85,47 @@ class PeriodItem:
 class PeriodsResponse:
     request_id: str
     items: Tuple[PeriodItem, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class TimelineEntry:
+    """One dated piece of evidence on a timeline; no interpretation added."""
+
+    source_id: str
+    note_date: Optional[Date]
+    title: str
+    snippet: str
+
+
+@dataclass(frozen=True)
+class TimelineBucket:
+    period: str  # e.g. "2026-06-24", "2026-W26" or "2026-06"
+    entries: Tuple[TimelineEntry, ...]
+
+
+@dataclass(frozen=True)
+class TimelineResponse:
+    request_id: str
+    topic: str
+    granularity: Granularity
+    date_from: Date
+    date_to: Date
+    buckets: Tuple[TimelineBucket, ...]
+    notes_found: int
+    empty_periods: Tuple[str, ...]  # periods in range with no evidence
+    insufficient_evidence: bool
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class BeforeAfterResponse:
+    request_id: str
+    pivot: Date
+    days: int
+    topic: Optional[str]
+    before: Tuple[TimelineEntry, ...]
+    on: Tuple[TimelineEntry, ...]
+    after: Tuple[TimelineEntry, ...]
+    notes_found: int
+    insufficient_evidence: bool
+    truncated: bool

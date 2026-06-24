@@ -2,12 +2,17 @@
 
 from riji_agent.retrieval.errors import RetrievalError, RetrievalErrorCode
 from riji_agent.retrieval.models import (
+    BeforeAfterResponse,
+    Granularity,
     NoteResponse,
     PeriodItem,
     PeriodsResponse,
     RetrievalLimits,
     SearchResponse,
     SearchResultItem,
+    TimelineBucket,
+    TimelineEntry,
+    TimelineResponse,
     ToolContext,
 )
 from riji_agent.retrieval.schemas import SCHEMA_VERSION, TOOL_DEFINITIONS
@@ -24,6 +29,11 @@ __all__ = [
     "NoteResponse",
     "PeriodItem",
     "PeriodsResponse",
+    "Granularity",
+    "TimelineEntry",
+    "TimelineBucket",
+    "TimelineResponse",
+    "BeforeAfterResponse",
     "TOOL_DEFINITIONS",
     "SCHEMA_VERSION",
 ]
