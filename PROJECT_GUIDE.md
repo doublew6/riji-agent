@@ -44,6 +44,36 @@
 - 不要伪造模型、飞书或 Hermes 接口行为。对版本相关配置，引用官方当前文档并在 PR 说明假设。
 - 变更配置、工具 Schema 或数据模型时，同步更新相关文档与测试。
 
+## 通用编码与语言规范
+
+适用于本项目所有贡献者（Claude / Codex 及人工）。本项目独立于其他代码库，不引入任何外部项目的领域规范。
+
+**语言**
+
+- 沟通用中文；代码、注释、提交信息、命名一律英文。
+- 专有名词保持英文原文（FastAPI、Feishu、Hermes、DeepSeek、webhook 等）。
+
+**编码**
+
+- 遵循 PEP8 与 DRY / KISS / YAGNI / SOLID 原则。
+- 函数名小写下划线、动词开头（`load_settings`、`ensure_data_directory`）；类名 CamelCase 名词（`Settings`、`ConfigurationError`）。
+- 单个函数不超过 50 行、参数不超过 5 个；超出时用 dataclass 或 pydantic model 封装参数，过长逻辑抽到独立模块或 `utils`。
+- 补齐类型注解；路径统一用 `pathlib.Path`，不用裸字符串拼接。
+
+**日志与错误安全**
+
+- 日志和对外错误信息中不得出现 secrets、API Key、飞书凭据、日记原文或绝对路径；对外错误参考 `ConfigurationError` 的处理方式。
+
+**测试**
+
+- 本项目要求 Python ≥3.9。宿主机 Python 为 3.6.8，禁止用宿主机解释器直接跑 pytest。
+- 使用项目自带环境运行：`uv sync --extra dev && uv run pytest`。
+- 无 uv 时用 Docker：
+  ```bash
+  docker run --rm -v $(pwd):/app -w /app python:3.11 \
+    bash -c "pip install -e '.[dev]' -q && python -m pytest"
+  ```
+
 ## Git 与多 agent 协作
 
 - 一个 Issue 一个分支，建议命名 `issue/<number>-<short-slug>`。
