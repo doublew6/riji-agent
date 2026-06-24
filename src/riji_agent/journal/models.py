@@ -17,6 +17,17 @@ class NoteKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class NoteSummary:
+    """Lightweight note metadata for listing, without loading the body."""
+
+    source_id: str
+    kind: NoteKind
+    note_date: Optional[Date]
+    title: str
+    private: bool
+
+
+@dataclass(frozen=True)
 class ParsedNote:
     """A read-only note extracted from the vault.
 
