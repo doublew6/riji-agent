@@ -20,13 +20,19 @@ docker run --rm -v $(pwd):/app -w /app python:3.11 \
   bash -c "pip install -e '.[dev]' -q && python -m pytest"
 ```
 
-Hermes 侧的飞书接入与 DeepSeek Provider 配置见 [hermes-integration.md](hermes-integration.md)。
+`uv run riji-agent` 走生产入口 `create_production_app`，组装全部本地模块并挂载 `/healthz` 与 `/hermes/messages`。启动时会：
+
+- 对日记索引执行一次安全的增量 `build_index`（只读，不写 vault）；
+- 首次运行时载入王阳明知识库 seed（已有数据则跳过，不重复写入）；
+- 用 `.env` 凭据构造 DeepSeek provider（API Key 只进 provider，不入日志/异常）。
+
+配置无效时进程以不含路径/密钥的安全错误退出。Hermes 侧的飞书接入与 DeepSeek Provider 配置见 [hermes-integration.md](hermes-integration.md)。
 
 ## 数据与目录
 
 - 日记 vault（`RIJI_JOURNAL_ROOT`）：源数据，**只读**，绝不被写入索引或运行目录。
 - 运行目录（`RIJI_DATA_DIR`，默认 `~/.local/share/riji-agent`，权限 `0700`）：存放本地 SQLite。
-- SQLite（默认在运行目录）：日记索引、记忆/会话、草稿、幂等事件、审计。
+- SQLite（默认在运行目录）：日记索引（`riji-agent.sqlite3`）、记忆/会话（`memory.sqlite3`）、草稿（`drafts.sqlite3`）、幂等事件（`events.sqlite3`）、审计（`audit.sqlite3`）、王阳明知识库（`yangming.sqlite3`）。
 
 ## 备份
 
