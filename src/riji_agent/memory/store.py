@@ -171,13 +171,29 @@ class MemoryStore:
         self._conn.commit()
 
     def get_session_history(
-        self, user_id: str, persona_id: str, chat_id: str
+        self, user_id: str, persona_id: str, chat_id: str, *, limit: Optional[int] = None
     ) -> List[SessionMessage]:
-        rows = self._conn.execute(
-            "SELECT role, content, created_at FROM session_messages "
-            "WHERE session_key = ? ORDER BY id",
-            (session_key(user_id, persona_id, chat_id),),
-        )
+        """Return this session's messages oldest-first.
+
+        With ``limit`` set, return only the most recent ``limit`` messages while
+        preserving chronological order, so callers can bound how much prior
+        context is replayed into the model.
+        """
+        sk = session_key(user_id, persona_id, chat_id)
+        if limit is None:
+            rows = self._conn.execute(
+                "SELECT role, content, created_at FROM session_messages "
+                "WHERE session_key = ? ORDER BY id",
+                (sk,),
+            )
+        else:
+            rows = self._conn.execute(
+                "SELECT role, content, created_at FROM ("
+                "SELECT id, role, content, created_at FROM session_messages "
+                "WHERE session_key = ? ORDER BY id DESC LIMIT ?"
+                ") ORDER BY id",
+                (sk, limit),
+            )
         return [
             SessionMessage(role=row["role"], content=row["content"], created_at=row["created_at"])
             for row in rows

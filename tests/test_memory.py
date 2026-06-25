@@ -58,3 +58,11 @@ def test_session_history_is_isolated_per_persona(store: MemoryStore) -> None:
     assert len(store.get_session_history("u1", "gentle_reviewer", "c1")) == 1
     # switching persona must not leak the other persona's history
     assert store.get_session_history("u1", "blunt_coach", "c1") == []
+
+
+def test_session_history_limit_returns_most_recent_in_order(store: MemoryStore) -> None:
+    for i in range(5):
+        store.append_message("u1", "gentle_reviewer", "c1", "user", f"m{i}")
+    recent = store.get_session_history("u1", "gentle_reviewer", "c1", limit=2)
+    # the two newest, still oldest-first
+    assert [m.content for m in recent] == ["m3", "m4"]
