@@ -34,12 +34,13 @@ class AgentResponder:
         system_prompt: str,
         history: Sequence[SessionMessage],
         question: str,
+        allowed_tools: Sequence[str] = (),
     ) -> str:
         runner = AgentRunner(
             self._provider,
             self._tools,
             limits=self._limits,
-            tool_specs=self._tools.tool_specs(),
+            tool_specs=self._tools.tool_specs(allowed_tools or None),
             system_prompt=system_prompt,
         )
         return runner.run(context, question).answer

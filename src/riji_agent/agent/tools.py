@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date as Date
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from riji_agent.drafts.errors import DraftError
 from riji_agent.drafts.models import DraftOperation
@@ -20,6 +20,9 @@ from riji_agent.retrieval.errors import RetrievalError
 from riji_agent.retrieval.models import Granularity, ToolContext
 from riji_agent.retrieval.schemas import TOOL_DEFINITIONS
 from riji_agent.retrieval.service import RetrievalService
+from riji_agent.yangming.store import YangmingKB
+
+_YANGMING_SNIPPET_MAX = 400
 
 # Write tool the model may only *propose*; committing is user-driven.
 DRAFT_DAILY_ENTRY_DEF: Dict[str, Any] = {
@@ -48,6 +51,25 @@ DRAFT_DAILY_ENTRY_DEF: Dict[str, Any] = {
             },
         },
         "required": ["operations"],
+    },
+}
+
+
+SEARCH_YANGMING_DEF: Dict[str, Any] = {
+    "name": "search_yangming",
+    "description": (
+        "Search the Wang Yangming thought knowledge base (separate from the "
+        "journal). Returns verbatim quotes with citations and paraphrased "
+        "interpretations separately."
+    ),
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {"type": "string", "minLength": 1},
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+        },
+        "required": ["query"],
     },
 }
 
@@ -86,10 +108,15 @@ def _date(value: Optional[str]) -> Optional[Date]:
 
 class ToolRegistry:
     def __init__(
-        self, service: RetrievalService, *, draft_service: Optional[DraftService] = None
+        self,
+        service: RetrievalService,
+        *,
+        draft_service: Optional[DraftService] = None,
+        yangming_kb: "Optional[YangmingKB]" = None,
     ) -> None:
         self._service = service
         self._draft_service = draft_service
+        self._yangming = yangming_kb
         self._handlers: Dict[str, Callable[[ToolContext, Dict[str, Any]], ToolInvocation]] = {
             "search_journal": self._search_journal,
             "read_note": self._read_note,
@@ -99,16 +126,23 @@ class ToolRegistry:
         }
         if draft_service is not None:
             self._handlers["draft_daily_entry"] = self._draft_daily_entry
+        if yangming_kb is not None:
+            self._handlers["search_yangming"] = self._search_yangming
 
     def names(self) -> set:
         return set(self._handlers)
 
-    def tool_specs(self) -> List[Dict[str, Any]]:
-        """OpenAI/DeepSeek tool specs for exactly the tools this registry serves."""
-        specs = openai_tool_specs()
-        if "draft_daily_entry" in self._handlers:
-            specs.append(_tool_spec(DRAFT_DAILY_ENTRY_DEF))
-        return specs
+    def tool_specs(self, allowed: "Optional[Iterable[str]]" = None) -> List[Dict[str, Any]]:
+        """OpenAI/DeepSeek specs for the registry's tools, optionally filtered.
+
+        ``allowed`` restricts to a persona's allowed tool names (e.g. only the
+        Wang Yangming persona may use ``search_yangming``).
+        """
+        catalog = list(TOOL_DEFINITIONS) + [DRAFT_DAILY_ENTRY_DEF, SEARCH_YANGMING_DEF]
+        names = set(self._handlers)
+        if allowed is not None:
+            names &= set(allowed)
+        return [_tool_spec(tool) for tool in catalog if tool["name"] in names]
 
     def invoke(self, context: ToolContext, name: str, arguments_json: str) -> ToolInvocation:
         handler = self._handlers.get(name)
@@ -281,4 +315,27 @@ class ToolRegistry:
             "expires_at": preview.expires_at,
             "awaiting_confirmation": True,
         }
+        return ToolInvocation(payload)
+
+    def _search_yangming(self, context: ToolContext, args: Dict[str, Any]) -> ToolInvocation:
+        assert self._yangming is not None  # registered only when present
+        top_k = max(1, min(int(args.get("top_k", 5)), 10))
+        hits = self._yangming.search(args["query"], limit=top_k)
+
+        quotes: List[Dict[str, Any]] = []
+        interpretations: List[Dict[str, Any]] = []
+        for hit in hits:
+            item = {
+                "ref": hit.ref,
+                "text": hit.text[:_YANGMING_SNIPPET_MAX],
+                "source": hit.source,
+                "version": hit.version,
+                "title": hit.title,
+            }
+            if hit.kind.value == "quote":
+                quotes.append(item)
+            else:
+                interpretations.append(item)
+        # Source kept distinct from the journal: no journal source_ids here.
+        payload = {"corpus": "wang_yangming", "quotes": quotes, "interpretations": interpretations}
         return ToolInvocation(payload)

@@ -16,9 +16,10 @@ def test_get_unknown_persona_raises() -> None:
         PersonaRegistry().get("does_not_exist")
 
 
-def test_personas_expose_the_standard_tools() -> None:
-    for persona in PersonaRegistry().all():
-        assert persona.allowed_tools == STANDARD_TOOLS
+def test_standard_personas_expose_the_standard_tools() -> None:
+    registry = PersonaRegistry()
+    for pid in ("gentle_reviewer", "blunt_coach", "future_self"):
+        assert registry.get(pid).allowed_tools == STANDARD_TOOLS
 
 
 def test_persona_config_cannot_be_overwritten_at_runtime() -> None:

@@ -37,6 +37,7 @@ class Responder:
         system_prompt: str,
         history: Sequence[SessionMessage],
         question: str,
+        allowed_tools: Sequence[str] = (),
     ) -> str:  # pragma: no cover - interface only
         raise NotImplementedError
 
@@ -116,7 +117,13 @@ class HermesGateway:
         )
 
         self._store.append_message(user, persona_id, chat, "user", question)
-        reply = self._responder.respond(context, assembled.system_prompt, assembled.history, question)
+        reply = self._responder.respond(
+            context,
+            assembled.system_prompt,
+            assembled.history,
+            question,
+            allowed_tools=assembled.persona.allowed_tools,
+        )
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(request_id, persona_id, reply, deduplicated=False)
