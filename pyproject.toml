@@ -30,3 +30,6 @@ packages = ["src/riji_agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "smoke: end-to-end MVP smoke test over the HTTP app (run with: pytest -m smoke)",
+]
