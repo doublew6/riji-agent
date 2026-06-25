@@ -69,6 +69,22 @@ class DraftStore:
         ).fetchone()
         return self._to_draft(row) if row else None
 
+    def claim_for_commit(self, draft_id: str) -> bool:
+        """Atomically move a draft from AWAITING to COMMITTING.
+
+        Returns ``True`` only for the caller that won the claim. This single
+        conditional UPDATE is the cross-process mutex for the commit: SQLite
+        serializes writers, so among several concurrent confirmations only one
+        matches the still-awaiting row; the others affect zero rows and lose,
+        which closes the check-then-act race without relying on a process lock.
+        """
+        cursor = self._conn.execute(
+            "UPDATE drafts SET status = ? WHERE draft_id = ? AND status = ?",
+            (DraftStatus.COMMITTING.value, draft_id, DraftStatus.AWAITING.value),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
     def get_latest_awaiting_for_session(self, session_id: str) -> Optional[Draft]:
         row = self._conn.execute(
             "SELECT * FROM drafts WHERE session_id = ? AND status = ? "

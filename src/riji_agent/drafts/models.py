@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 
 class DraftStatus(str, Enum):
     AWAITING = "awaiting_confirmation"
+    COMMITTING = "committing"  # transient: claimed by one writer, file not yet written
     COMMITTED = "committed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"

@@ -1,3 +1,4 @@
+import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -122,3 +123,64 @@ def test_unknown_draft_raises(setup) -> None:
     with pytest.raises(DraftError) as err:
         service.commit_draft("nope", user_id="u1")
     assert err.value.code is DraftErrorCode.DRAFT_NOT_FOUND
+
+
+def test_claim_for_commit_is_won_by_only_one_connection(setup, tmp_path) -> None:
+    service, _store, _index, _root, _clock = setup
+    preview = _create(service)
+    db = tmp_path / "data" / "drafts.sqlite3"
+    # Two independent connections to the same DB file model two workers.
+    worker_a = DraftStore(db)
+    worker_b = DraftStore(db)
+    try:
+        assert worker_a.claim_for_commit(preview.draft_id) is True
+        assert worker_b.claim_for_commit(preview.draft_id) is False  # already taken
+        assert worker_b.get(preview.draft_id).status is DraftStatus.COMMITTING
+    finally:
+        worker_a.close()
+        worker_b.close()
+
+
+def test_concurrent_workers_commit_exactly_once(tmp_path) -> None:
+    # Separate DraftService instances on a shared DB file race to confirm the
+    # same draft; the DB-level claim must let exactly one write.
+    root = _vault(tmp_path)
+    db = tmp_path / "data" / "drafts.sqlite3"
+    clock = Clock(datetime(2026, 6, 25, 8, 0, tzinfo=timezone.utc))
+
+    def make_service(tag: str) -> DraftService:
+        index = JournalIndex(
+            database_path=tmp_path / "data" / f"idx-{tag}.sqlite3", journal_root=root
+        )
+        return DraftService(DraftStore(db), root, index, ttl_minutes=30, now=clock)
+
+    preview = make_service("creator").create_draft(
+        user_id="u1", session_id="s", persona_id="gentle", operations=_ops()
+    )
+
+    n = 5
+    barrier = threading.Barrier(n)
+    lock = threading.Lock()
+    results, errors = [], []
+
+    def worker(tag: str) -> None:
+        service = make_service(tag)
+        barrier.wait()  # maximise overlap on the claim
+        try:
+            result = service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+            with lock:
+                results.append(result)
+        except DraftError as exc:
+            with lock:
+                errors.append(exc.code)
+
+    threads = [threading.Thread(target=worker, args=(str(i),)) for i in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 1  # exactly one writer won
+    assert errors == [DraftErrorCode.NOT_AWAITING] * (n - 1)
+    text = (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert text.count("- 评审通过") == 1  # no double append under concurrency

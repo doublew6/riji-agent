@@ -102,9 +102,24 @@ class DraftService:
         if token is not None and token != draft.token:
             raise DraftError(DraftErrorCode.TOKEN_INVALID, "confirmation token does not match")
 
-        # May raise SECTION_NOT_FOUND / TEMPLATE_NOT_FOUND before any file is touched;
-        # the draft is left awaiting so the user can adjust.
-        outcome = commit_operations(self._journal_root, draft.target_date, draft.operations)
+        # DB-level claim closes the check-then-act race: with multiple workers
+        # several confirmations may all read AWAITING above, but only one wins
+        # this atomic transition and proceeds to write. The losers see the row
+        # already taken and get NOT_AWAITING, never a second append.
+        if not self._store.claim_for_commit(draft_id):
+            raise DraftError(
+                DraftErrorCode.NOT_AWAITING, "draft is no longer awaiting confirmation"
+            )
+
+        try:
+            # May raise SECTION_NOT_FOUND / TEMPLATE_NOT_FOUND before any file is
+            # touched (os.replace is atomic and the post-write code cannot raise),
+            # so a failure means nothing was written.
+            outcome = commit_operations(self._journal_root, draft.target_date, draft.operations)
+        except Exception:
+            # Release the claim so the user can fix the issue and retry.
+            self._store.save(dataclasses.replace(draft, status=DraftStatus.AWAITING))
+            raise
 
         self._store.save(
             dataclasses.replace(
