@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr = Field(alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
     deepseek_model: str = Field(default="deepseek-reasoner", alias="DEEPSEEK_MODEL")
+    semantic_search_enabled: bool = Field(default=False, alias="RIJI_SEMANTIC_SEARCH")
     allowed_feishu_user_ids: Annotated[FrozenSet[str], NoDecode] = Field(
         alias="RIJI_ALLOWED_FEISHU_USER_IDS"
     )
