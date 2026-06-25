@@ -12,26 +12,60 @@ from dataclasses import dataclass
 from datetime import date as Date
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from riji_agent.drafts.errors import DraftError
+from riji_agent.drafts.models import DraftOperation
+from riji_agent.drafts.service import DraftService
 from riji_agent.journal.models import NoteKind
 from riji_agent.retrieval.errors import RetrievalError
 from riji_agent.retrieval.models import Granularity, ToolContext
 from riji_agent.retrieval.schemas import TOOL_DEFINITIONS
 from riji_agent.retrieval.service import RetrievalService
 
+# Write tool the model may only *propose*; committing is user-driven.
+DRAFT_DAILY_ENTRY_DEF: Dict[str, Any] = {
+    "name": "draft_daily_entry",
+    "description": (
+        "Propose a journal entry for the user to confirm. Does NOT write the "
+        "file; returns a preview the user must approve with 「确认保存」."
+    ),
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target_date": {"type": "string", "format": "date"},
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "section": {"type": "string", "description": "Target heading, e.g. 🌆 Evening"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["section", "content"],
+                },
+            },
+        },
+        "required": ["operations"],
+    },
+}
+
+
+def _tool_spec(tool: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["parameters"],
+        },
+    }
+
 
 def openai_tool_specs() -> List[Dict[str, Any]]:
     """Wrap the retrieval tool definitions in the OpenAI/DeepSeek tool shape."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool["description"],
-                "parameters": tool["parameters"],
-            },
-        }
-        for tool in TOOL_DEFINITIONS
-    ]
+    return [_tool_spec(tool) for tool in TOOL_DEFINITIONS]
 
 
 @dataclass(frozen=True)
@@ -51,8 +85,11 @@ def _date(value: Optional[str]) -> Optional[Date]:
 
 
 class ToolRegistry:
-    def __init__(self, service: RetrievalService) -> None:
+    def __init__(
+        self, service: RetrievalService, *, draft_service: Optional[DraftService] = None
+    ) -> None:
         self._service = service
+        self._draft_service = draft_service
         self._handlers: Dict[str, Callable[[ToolContext, Dict[str, Any]], ToolInvocation]] = {
             "search_journal": self._search_journal,
             "read_note": self._read_note,
@@ -60,9 +97,18 @@ class ToolRegistry:
             "timeline": self._timeline,
             "find_before_after": self._find_before_after,
         }
+        if draft_service is not None:
+            self._handlers["draft_daily_entry"] = self._draft_daily_entry
 
     def names(self) -> set:
         return set(self._handlers)
+
+    def tool_specs(self) -> List[Dict[str, Any]]:
+        """OpenAI/DeepSeek tool specs for exactly the tools this registry serves."""
+        specs = openai_tool_specs()
+        if "draft_daily_entry" in self._handlers:
+            specs.append(_tool_spec(DRAFT_DAILY_ENTRY_DEF))
+        return specs
 
     def invoke(self, context: ToolContext, name: str, arguments_json: str) -> ToolInvocation:
         handler = self._handlers.get(name)
@@ -88,7 +134,7 @@ class ToolRegistry:
             )
         try:
             return handler(context, args)
-        except RetrievalError as exc:
+        except (RetrievalError, DraftError) as exc:
             return ToolInvocation(exc.to_dict(), ok=False, error=exc.code.value)
         except (KeyError, ValueError) as exc:
             return ToolInvocation(
@@ -213,3 +259,26 @@ class ToolRegistry:
             "truncated": response.truncated,
         }
         return ToolInvocation(payload, source_ids=source_ids)
+
+    def _draft_daily_entry(self, context: ToolContext, args: Dict[str, Any]) -> ToolInvocation:
+        assert self._draft_service is not None  # registered only when present
+        operations = [
+            DraftOperation(section=op["section"], content=op["content"])
+            for op in args["operations"]
+        ]
+        preview = self._draft_service.create_draft(
+            user_id=context.feishu_user_id,
+            session_id=context.session_id,
+            persona_id=context.persona_id,
+            operations=operations,
+            target_date=_date(args.get("target_date")),
+        )
+        payload = {
+            "draft_id": preview.draft_id,
+            "target_date": preview.target_date.isoformat(),
+            "operations": [{"section": o.section, "content": o.content} for o in preview.operations],
+            "preview": preview.preview_text,
+            "expires_at": preview.expires_at,
+            "awaiting_confirmation": True,
+        }
+        return ToolInvocation(payload)
