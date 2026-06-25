@@ -36,3 +36,18 @@ uv run riji-agent
 ```bash
 uv run pytest
 ```
+
+### 冒烟测试（smoke）
+
+`tests/test_smoke_mvp.py` 是一条面向部署路径的端到端冒烟测试，通过真实的 HTTP app
+（`/healthz` 与 `/hermes/messages`）跑通「本地索引 + 检索工具 + DeepSeek 工具循环（stub）
++ 导师路由 + 幂等 + 隐私最小化」主链路。它全程使用临时 fixture 与 stub 模型，**不读取真实
+`.env`、真实日记库或真实 API Key**。
+
+```bash
+uv run pytest -m smoke        # 只跑冒烟测试，快速判断主链路是否通
+uv run pytest -m "not smoke"  # 跑其余单元测试
+uv run pytest                 # 全部
+```
+
+适用场景：升级依赖、改动网关/检索/工具循环、或部署前，用 `-m smoke` 做一次快速健康检查。
