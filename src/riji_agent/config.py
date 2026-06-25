@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
     deepseek_model: str = Field(default="deepseek-reasoner", alias="DEEPSEEK_MODEL")
     semantic_search_enabled: bool = Field(default=False, alias="RIJI_SEMANTIC_SEARCH")
+    index_schedule_enabled: bool = Field(default=True, alias="RIJI_INDEX_SCHEDULE_ENABLED")
+    index_interval_seconds: int = Field(default=600, alias="RIJI_INDEX_INTERVAL_SECONDS", ge=1)
+    index_startup_timeout_seconds: float = Field(
+        default=10.0, alias="RIJI_INDEX_STARTUP_TIMEOUT_SECONDS", ge=0
+    )
     allowed_feishu_user_ids: Annotated[FrozenSet[str], NoDecode] = Field(
         alias="RIJI_ALLOWED_FEISHU_USER_IDS"
     )
