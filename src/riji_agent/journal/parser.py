@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from datetime import date as Date
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Tuple
 
 import yaml
 
@@ -25,6 +26,44 @@ _DATE_IN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 class JournalParseError(ValueError):
     """Raised when a file under a journal folder cannot be parsed safely."""
+
+
+class SlowFileError(JournalParseError):
+    """Raised when a note file could not be read within the time budget.
+
+    Cold iCloud Drive files can block in ``read_bytes()`` while the OS hydrates
+    them. Carrying no path or content, this error lets indexing skip such a file
+    instead of stalling the whole run.
+    """
+
+
+def read_file_bytes(path: Path, timeout: Optional[float] = None) -> bytes:
+    """Read ``path`` whole, giving up after ``timeout`` seconds.
+
+    With no timeout the read is direct. With a timeout the read runs in a daemon
+    thread and we abandon it on expiry (raising :class:`SlowFileError`); the
+    daemon never keeps the process alive, and a single unavailable iCloud file
+    cannot stall indexing forever.
+    """
+    if not timeout or timeout <= 0:
+        return path.read_bytes()
+
+    box: dict = {}
+
+    def _work() -> None:
+        try:
+            box["data"] = path.read_bytes()
+        except BaseException as exc:  # surfaced to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_work, name="riji-file-read", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise SlowFileError("file read exceeded the time budget")
+    if "error" in box:
+        raise box["error"]
+    return box["data"]
 
 
 def iter_note_files(journal_root: Path) -> Iterator[Path]:
@@ -123,10 +162,19 @@ def _is_private(frontmatter: dict) -> bool:
     return frontmatter.get("private") is True
 
 
-def parse_note(path: Path, journal_root: Path) -> ParsedNote:
-    """Parse one Markdown note into a :class:`ParsedNote` without modifying it."""
+def parse_note(
+    path: Path,
+    journal_root: Path,
+    *,
+    reader: Optional[Callable[[Path], bytes]] = None,
+) -> ParsedNote:
+    """Parse one Markdown note into a :class:`ParsedNote` without modifying it.
+
+    ``reader`` overrides how the file bytes are obtained (e.g. a time-budgeted
+    reader during a full index walk); it defaults to a plain ``read_bytes``.
+    """
     kind = _resolve_kind(path, journal_root)
-    raw_bytes = path.read_bytes()
+    raw_bytes = reader(path) if reader is not None else path.read_bytes()
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
     text = raw_bytes.decode("utf-8")
     frontmatter, body = _split_frontmatter(text)

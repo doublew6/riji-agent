@@ -51,12 +51,38 @@ def _run(argv) -> int:
 
 def test_index_incremental_prints_safe_stats(patched, capsys) -> None:
     assert _run(["index"]) == 0
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     assert out.startswith("indexed:")
     assert "added=2" in out  # both notes newly indexed
+    assert "skipped=0" in out
     assert "duration_s=" in out
     assert DUMMY_KEY not in out
     assert PRIVATE_BODY not in out
+    # progress is emitted to stderr during the run
+    assert "[2/2]" in captured.err
+    assert DUMMY_KEY not in captured.err and PRIVATE_BODY not in captured.err
+
+
+def test_index_skips_slow_file_and_summarizes(patched, capsys, monkeypatch) -> None:
+    from riji_agent.journal import index as index_mod
+    from riji_agent.journal.parser import SlowFileError
+
+    def cold_reader(path, timeout):
+        if path.name == "2026-06-25.md":  # the private note goes "cold"
+            raise SlowFileError("simulated cold file")
+        return path.read_bytes()
+
+    monkeypatch.setattr(index_mod, "read_file_bytes", cold_reader)
+    assert _run(["index"]) == 0
+    captured = capsys.readouterr()
+
+    assert "skipped=1" in captured.out
+    assert "added=1" in captured.out  # the other note still indexed
+    # the skipped summary lists a sanitized wikilink id, never path or content
+    assert "riji/daily/2026-06-25" in captured.err
+    assert DUMMY_KEY not in captured.out and DUMMY_KEY not in captured.err
+    assert PRIVATE_BODY not in captured.out and PRIVATE_BODY not in captured.err
 
 
 def test_index_rebuild_prints_rebuilt(patched, capsys) -> None:

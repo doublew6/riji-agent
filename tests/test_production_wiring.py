@@ -195,6 +195,49 @@ def test_startup_releases_before_slow_index_finishes(tmp_path: Path, monkeypatch
         release.set()  # let the background index complete cleanly
 
 
+# --- shutdown must not be held alive by a stuck index worker (issue #43) -------
+
+def test_shutdown_leaves_only_daemon_index_threads(tmp_path: Path, monkeypatch) -> None:
+    """A build stuck on a cold read must not keep the process alive after stop.
+
+    The prewarm runs in the scheduler's own daemon thread, so even if the build
+    is still blocked at shutdown, application shutdown returns promptly and the
+    only lingering index thread is a daemon (which the interpreter will not wait
+    for on exit). This is the regression guard for the leaked non-daemon worker.
+    """
+    release = threading.Event()
+    build_started = threading.Event()
+
+    def stuck_build(self, *, rebuild: bool = False) -> IndexStats:
+        build_started.set()
+        release.wait(10)  # stays blocked across startup AND shutdown
+        return IndexStats()
+
+    monkeypatch.setattr(JournalIndex, "build_index", stuck_build)
+
+    settings = _settings(tmp_path)
+    settings.index_startup_timeout_seconds = 0.2
+    settings.index_schedule_enabled = False
+    app = create_production_app(settings)
+
+    try:
+        with TestClient(app) as client:  # lifespan startup
+            assert build_started.wait(2)
+            assert client.get("/healthz").status_code == 200
+            shutdown_started = time.monotonic()
+        # context exit ran lifespan shutdown despite the still-stuck build
+        assert time.monotonic() - shutdown_started < 3
+
+        lingering = [
+            t for t in threading.enumerate()
+            if t.name.startswith("riji-index") and t.is_alive()
+        ]
+        assert lingering, "the stuck prewarm worker should still be running"
+        assert all(t.daemon for t in lingering)  # daemon => cannot block process exit
+    finally:
+        release.set()  # let the abandoned worker unwind
+
+
 # --- the wired modules actually cooperate end to end (stub model) --------------
 
 def test_wired_tool_loop_returns_sourced_answer(tmp_path: Path) -> None:

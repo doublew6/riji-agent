@@ -43,7 +43,9 @@ def test_run_once_records_status_on_success() -> None:
     status = sched.status()
     assert status["note_count"] == 3
     assert status["last_indexed_at"] == "2026-06-25T00:00:00+00:00"
-    assert status["last_stats"] == {"added": 1, "updated": 0, "unchanged": 2, "deleted": 0}
+    assert status["last_stats"] == {
+        "added": 1, "updated": 0, "unchanged": 2, "deleted": 0, "skipped": 0
+    }
     assert status["last_error"] is None
     assert status["running"] is False
     assert status["schedule_enabled"] is True

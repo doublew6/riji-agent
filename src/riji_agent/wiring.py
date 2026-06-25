@@ -45,6 +45,7 @@ def build_journal_index(settings: Settings) -> JournalIndex:
         database_path=settings.resolved_database_path,
         journal_root=settings.journal_root,
         embedder=embedder_from_settings(settings),
+        file_read_timeout=settings.index_file_timeout_seconds,
     )
 
 

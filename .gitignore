@@ -24,3 +24,6 @@ venv/
 # Journal material must never be copied into this repository.
 /riji/
 /journals/
+
+# Local agent worktrees / harness state
+.claude/

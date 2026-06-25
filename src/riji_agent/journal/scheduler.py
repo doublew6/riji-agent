@@ -97,9 +97,28 @@ class IndexScheduler:
                         "updated": stats.updated,
                         "unchanged": stats.unchanged,
                         "deleted": stats.deleted,
+                        "skipped": stats.skipped,
                     }
             self._run_lock.release()
         return stats
+
+    def begin_prewarm(self) -> threading.Event:
+        """Start the initial index in a daemon thread; return a 'done' Event.
+
+        The worker is a daemon so a build stuck on a cold file never keeps the
+        process alive after shutdown; callers await the returned event without
+        blocking. This is what the app lifespan uses for non-blocking startup.
+        """
+        done = threading.Event()
+
+        def _run() -> None:
+            try:
+                self.run_once()
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, name="riji-index-prewarm", daemon=True).start()
+        return done
 
     def prewarm(self, timeout: Optional[float] = None) -> bool:
         """Kick the initial index in the background; wait up to ``timeout``.
@@ -108,10 +127,7 @@ class IndexScheduler:
         is still running (so startup proceeds without unbounded blocking on a
         cold vault). ``timeout=None`` waits for completion.
         """
-        thread = threading.Thread(target=self.run_once, name="riji-index-prewarm", daemon=True)
-        thread.start()
-        thread.join(timeout)
-        return not thread.is_alive()
+        return self.begin_prewarm().wait(timeout)
 
     def start(self) -> None:
         """Start the periodic refresh loop (no-op if disabled or already on)."""
