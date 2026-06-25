@@ -7,7 +7,7 @@ from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
 from riji_agent.hermes.errors import AuthError, AuthErrorCode
 from riji_agent.hermes.events import EventLog
-from riji_agent.hermes.gateway import HermesGateway
+from riji_agent.hermes.gateway import HermesGateway, parse_confirm_command
 from riji_agent.hermes.models import IncomingMessage
 from riji_agent.journal.index import JournalIndex
 from riji_agent.memory.models import session_key
@@ -47,14 +47,15 @@ def setup(tmp_path: Path):
     index.close()
 
 
-def _seed_draft(draft_service) -> None:
-    # Simulate the model having proposed a draft in the user's default session.
-    draft_service.create_draft(
+def _seed_draft(draft_service, persona: str = "gentle_reviewer") -> str:
+    # Simulate the model having proposed a draft in the given persona's session.
+    preview = draft_service.create_draft(
         user_id="ou_1",
-        session_id=session_key("ou_1", "gentle_reviewer", "c1"),
-        persona_id="gentle_reviewer",
+        session_id=session_key("ou_1", persona, "c1"),
+        persona_id=persona,
         operations=[DraftOperation("🌆 Evening", "评审通过")],
     )
+    return preview.draft_id
 
 
 def test_confirm_commits_the_pending_draft(setup) -> None:
@@ -89,3 +90,39 @@ def test_group_chat_cannot_confirm(setup) -> None:
     with pytest.raises(AuthError) as err:
         gateway.handle(SECRET, _msg("确认保存", chat_type="group"))
     assert err.value.code is AuthErrorCode.GROUP_CHAT_DENIED
+
+
+def test_explicit_draft_id_confirms_across_persona_switch(setup) -> None:
+    gateway, draft_service, root = setup
+    # Draft was proposed under a different persona's session than the current one.
+    draft_id = _seed_draft(draft_service, persona="blunt_coach")
+    # Implicit confirm in the current (default) session can't locate it.
+    miss = gateway.handle(SECRET, _msg("确认保存", event_id="e1"))
+    assert "没有待确认的草稿" in miss.text
+    # Explicit id still commits, exactly once.
+    reply = gateway.handle(SECRET, _msg(f"确认保存 {draft_id}", event_id="e2"))
+    assert "已写入" in reply.text
+    text = next((root / "daily").glob("*.md")).read_text(encoding="utf-8")
+    assert text.count("- 评审通过") == 1
+
+
+def test_explicit_draft_id_of_another_user_is_not_disclosed(setup) -> None:
+    gateway, draft_service, root = setup
+    other = draft_service.create_draft(
+        user_id="ou_other",
+        session_id=session_key("ou_other", "gentle_reviewer", "c9"),
+        persona_id="gentle_reviewer",
+        operations=[DraftOperation("🌆 Evening", "别人的私密内容")],
+    )
+    reply = gateway.handle(SECRET, _msg(f"确认保存 {other.draft_id}"))
+    assert "未找到该草稿" in reply.text
+    assert not list((root / "daily").glob("*.md"))  # nothing written for another user
+
+
+def test_parse_confirm_command_recognises_optional_id() -> None:
+    assert parse_confirm_command("确认保存").draft_id is None
+    assert parse_confirm_command("确认保存 abc123").draft_id == "abc123"
+    assert parse_confirm_command("/确认 abc").draft_id == "abc"
+    # a normal message that merely contains 确认 is not a confirmation
+    assert parse_confirm_command("确认一下我昨天写了什么") is None
+    assert parse_confirm_command("今天天气不错") is None
