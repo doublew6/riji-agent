@@ -19,7 +19,7 @@ TEMPLATE = "# {{date}}\n\n## 🌆 Evening\n\n## 🧠 Notes\n"
 
 
 class FakeResponder:
-    def respond(self, context, system_prompt, history, question) -> str:
+    def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
         return "ok"
 
 

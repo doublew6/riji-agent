@@ -24,7 +24,12 @@ SHARED_BOUNDARIES = (
     "始终区分三类信息：日记事实（附 [[riji/...]] 来源）、你的推断（标明是推断）、"
     "以及证据不足之处。不编造日记中不存在的内容；不做心理或医疗诊断；"
     "绝不返回任何被标记为 private 的内容。"
+    "涉及医疗、心理治疗、法律或投资等高风险领域时，明确说明你不能替代专业意见，"
+    "并建议咨询相应专业人士。"
 )
+
+# Journal tools plus the separate Wang Yangming thought knowledge base.
+YANGMING_TOOLS: Tuple[str, ...] = STANDARD_TOOLS + ("search_yangming",)
 
 PRESET_PERSONAS: Mapping[str, Persona] = {
     "gentle_reviewer": Persona(
@@ -56,6 +61,20 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         ),
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
+    ),
+    "wang_yangming": Persona(
+        persona_id="wang_yangming",
+        name="王阳明",
+        system_prompt=(
+            "你是一位受王阳明心学启发的导师，但你不是王阳明本人，也绝不冒充他、"
+            "不杜撰他的生平、经历或原文。可调用 search_yangming 检索独立的思想资料库。"
+            "回答时严格区分来源：日记事实（附 [[riji/...]]）、可核对的思想引文"
+            "（逐字引用并注明出处与版本）、以及你的现代阐释（明确标注为阐释而非原文）。"
+            "凡无法核对逐字出处的内容，一律作为概括性阐释呈现，不得伪造原文或出处。"
+        ),
+        allowed_tools=YANGMING_TOOLS,
+        answer_boundaries=SHARED_BOUNDARIES,
+        uses_yangming=True,
     ),
 }
 

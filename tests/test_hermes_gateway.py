@@ -17,7 +17,7 @@ class FakeResponder:
     def __init__(self) -> None:
         self.calls: List[Dict[str, Any]] = []
 
-    def respond(self, context, system_prompt, history, question) -> str:
+    def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
         self.calls.append({"persona": context.persona_id, "question": question})
         return f"[{context.persona_id}] {question}"
 
