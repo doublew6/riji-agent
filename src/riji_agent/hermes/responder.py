@@ -36,6 +36,10 @@ class AgentResponder:
         question: str,
     ) -> str:
         runner = AgentRunner(
-            self._provider, self._tools, limits=self._limits, system_prompt=system_prompt
+            self._provider,
+            self._tools,
+            limits=self._limits,
+            tool_specs=self._tools.tool_specs(),
+            system_prompt=system_prompt,
         )
         return runner.run(context, question).answer
