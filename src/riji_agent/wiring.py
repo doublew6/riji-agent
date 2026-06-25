@@ -24,6 +24,7 @@ from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.responder import AgentResponder
 from riji_agent.journal.embedding import embedder_from_settings
 from riji_agent.journal.index import JournalIndex
+from riji_agent.journal.scheduler import IndexScheduler
 from riji_agent.llm.deepseek import DeepSeekProvider
 from riji_agent.llm.types import LLMProvider
 from riji_agent.memory.store import MemoryStore
@@ -33,32 +34,42 @@ from riji_agent.yangming.seed import load_seed
 from riji_agent.yangming.store import YangmingKB
 
 
-def build_production_gateway(
-    settings: Settings, *, provider: Optional[LLMProvider] = None
-) -> HermesGateway:
-    """Construct the fully wired gateway for ``settings``.
+def build_journal_index(settings: Settings) -> JournalIndex:
+    """Open the read-only journal index with optional local embeddings.
 
-    ``provider`` lets a test or an alternate local model stand in for the
-    DeepSeek client; production passes nothing and a real ``DeepSeekProvider``
-    is built from the configured credentials.
+    No indexing is performed here; the caller drives it (CLI prewarm or the
+    background :class:`IndexScheduler`) so startup is never blocked unboundedly.
     """
     settings.ensure_data_directory()
-    data_dir = settings.data_dir
-
-    # Read-only journal index, with optional on-device semantic embeddings.
-    # The build is a safe incremental walk; it never writes to the vault.
-    index = JournalIndex(
+    return JournalIndex(
         database_path=settings.resolved_database_path,
         journal_root=settings.journal_root,
         embedder=embedder_from_settings(settings),
     )
-    index.build_index()
 
-    retrieval = RetrievalService(index)
+
+def build_production_gateway(
+    settings: Settings,
+    *,
+    provider: Optional[LLMProvider] = None,
+    index: Optional[JournalIndex] = None,
+) -> HermesGateway:
+    """Construct the fully wired gateway for ``settings``.
+
+    ``provider`` lets a test or an alternate local model stand in for the
+    DeepSeek client. ``index`` lets the caller share an index it already owns
+    (e.g. one attached to the :class:`IndexScheduler`); otherwise one is opened.
+    The returned gateway carries the ``index_scheduler`` it is wired to.
+    """
+    settings.ensure_data_directory()
+    data_dir = settings.data_dir
+
+    journal_index = index or build_journal_index(settings)
+    retrieval = RetrievalService(journal_index)
 
     # Draft writes go through confirm + atomic append and re-index on commit.
     draft_service = DraftService(
-        DraftStore(data_dir / "drafts.sqlite3"), settings.journal_root, index
+        DraftStore(data_dir / "drafts.sqlite3"), settings.journal_root, journal_index
     )
 
     # Wang Yangming KB is a separate corpus; seed it once on first start.
@@ -77,7 +88,7 @@ def build_production_gateway(
     audit = AuditStore(data_dir / "audit.sqlite3")
     responder = AgentResponder(model, registry, audit_store=audit)
 
-    return HermesGateway(
+    gateway = HermesGateway(
         hermes_secret=settings.hermes_shared_secret.get_secret_value(),
         allowed_user_ids=settings.allowed_feishu_user_ids,
         registry=PersonaRegistry(),
@@ -86,3 +97,10 @@ def build_production_gateway(
         responder=responder,
         draft_service=draft_service,
     )
+    # Carry the scheduler so the app can prewarm/refresh and report status.
+    gateway.index_scheduler = IndexScheduler(
+        journal_index,
+        interval_seconds=settings.index_interval_seconds,
+        enabled=settings.index_schedule_enabled,
+    )
+    return gateway

@@ -10,8 +10,29 @@ riji-agent 是本地隐私边界，固定监听 `127.0.0.1`。远程访问由 He
 cp .env.example .env
 # 编辑 .env：填入真实绝对路径、DeepSeek API Key、飞书白名单、Hermes 共享密钥
 uv sync --extra dev
+uv run riji-agent index    # 首次部署：先预热索引（见下）
 uv run riji-agent          # 监听 http://127.0.0.1:8765
 ```
+
+**首次部署建议先预热索引**：真实 Obsidian/iCloud 目录冷启动需扫描全部 Markdown，iCloud 还可能逐个下载阻塞。先跑一次 `uv run riji-agent index` 把索引建好，再启动服务接入 Hermes，可避免首启动卡顿。
+
+### 索引 CLI
+
+```bash
+uv run riji-agent index            # 增量索引，输出 added/updated/unchanged/deleted/duration
+uv run riji-agent index --rebuild  # 清空重建（索引损坏或 schema 变更后恢复）
+uv run riji-agent index --status   # 只读查看 note 数、最近索引时间、DB 路径、语义开关；不输出正文/Key
+```
+
+### 索引调度
+
+服务运行时由后台调度器定期增量索引（默认每 10 分钟），把新增/修改/删除的日记同步到本地 SQLite。启动只在后台预热、最多等待 `RIJI_INDEX_STARTUP_TIMEOUT_SECONDS`（默认 10s），超时不阻塞、索引在后台继续。可配置：
+
+- `RIJI_INDEX_SCHEDULE_ENABLED`（默认 `true`）：关闭后只在启动预热 + 手动 `index`。
+- `RIJI_INDEX_INTERVAL_SECONDS`（默认 `600`）：增量间隔。
+- 调度有防重入：上一轮未结束不会并发再起；索引失败只记安全日志（异常类名，不含正文/路径/Key），不影响服务。
+
+确认保存草稿后目标日记会被即时 `update_note`，无需等下一轮调度即可检索。
 
 无 uv 时用 Docker 运行测试与服务：
 
@@ -22,7 +43,7 @@ docker run --rm -v $(pwd):/app -w /app python:3.11 \
 
 `uv run riji-agent` 走生产入口 `create_production_app`，组装全部本地模块并挂载 `/healthz` 与 `/hermes/messages`。启动时会：
 
-- 对日记索引执行一次安全的增量 `build_index`（只读，不写 vault）；
+- 在后台预热日记索引（只读增量，不写 vault），最多等待 `RIJI_INDEX_STARTUP_TIMEOUT_SECONDS` 后即放行，之后由调度器定期刷新；
 - 首次运行时载入王阳明知识库 seed（已有数据则跳过，不重复写入）；
 - 用 `.env` 凭据构造 DeepSeek provider（API Key 只进 provider，不入日志/异常）。
 

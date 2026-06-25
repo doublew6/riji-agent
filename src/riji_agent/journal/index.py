@@ -7,8 +7,10 @@ note only re-indexes that note. The vault itself is never modified.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import date as Date
 from datetime import datetime, timezone
@@ -78,6 +80,22 @@ def _rrf_fuse(keyword_ids: List[str], semantic_ids: List[str], limit: int, *, k:
     return ordered[:limit]
 
 
+def _synchronized(method):
+    """Serialize a public index method on the instance's reentrant lock.
+
+    The background index scheduler and request-path reads share one SQLite
+    connection; this lock makes their access safe without a connection per
+    caller. Internal helpers stay unlocked (always called under a held lock).
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class JournalIndex:
     """Read-only-over-the-vault index backed by a local SQLite database."""
 
@@ -91,9 +109,10 @@ class JournalIndex:
         self._journal_root = Path(journal_root)
         self._database_path = Path(database_path)
         self._embedder = embedder
+        # Guards the shared connection across the scheduler and request threads.
+        self._lock = threading.RLock()
         self._database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Access is serialized by the gateway lock when wired into the request
-        # path; allow use across FastAPI threadpool threads.
+        # check_same_thread=False because access is serialized by ``self._lock``.
         self._conn = sqlite3.connect(str(self._database_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._ensure_schema()
@@ -120,6 +139,7 @@ class JournalIndex:
 
     # ------------------------------------------------------------------ build
 
+    @_synchronized
     def build_index(self, *, rebuild: bool = False) -> IndexStats:
         """Walk the vault and (re)index changed notes; remove deleted ones."""
         if rebuild:
@@ -154,6 +174,7 @@ class JournalIndex:
         self._conn.commit()
         return stats
 
+    @_synchronized
     def update_note(self, path: Path) -> ParsedNote:
         """Re-index a single note after it changed, without a full walk."""
         note = parse_note(path, self._journal_root)
@@ -161,6 +182,7 @@ class JournalIndex:
         self._conn.commit()
         return note
 
+    @_synchronized
     def remove_source(self, source_id: str) -> None:
         """Drop a note that was deleted from the vault."""
         self._delete(source_id)
@@ -168,10 +190,18 @@ class JournalIndex:
 
     # ------------------------------------------------------------------ query
 
+    @_synchronized
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM notes").fetchone()
         return int(row["n"])
 
+    @_synchronized
+    def last_indexed_at(self) -> Optional[str]:
+        """Most recent note index timestamp (ISO 8601), or None if empty."""
+        row = self._conn.execute("SELECT MAX(indexed_at) AS t FROM notes").fetchone()
+        return row["t"] if row and row["t"] else None
+
+    @_synchronized
     def get(self, source_id: str) -> Optional[ParsedNote]:
         row = self._conn.execute(
             "SELECT * FROM notes WHERE source_id = ?", (source_id,)
@@ -183,6 +213,7 @@ class JournalIndex:
         ).fetchone()
         return self._row_to_note(row, body_row["body"] if body_row else "")
 
+    @_synchronized
     def search(
         self,
         query: str,
@@ -281,6 +312,7 @@ class JournalIndex:
             snippet=snippet,
         )
 
+    @_synchronized
     def list_notes(
         self,
         *,

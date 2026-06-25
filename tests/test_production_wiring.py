@@ -126,6 +126,7 @@ def _stub_client(tmp_path: Path):
     settings = _settings(tmp_path)
     stub = StubModel()
     gateway = build_production_gateway(settings, provider=stub)
+    gateway.index_scheduler.run_once()  # prewarm the index (no background thread)
     app = create_app(settings, gateway=gateway)
     return TestClient(app), stub, gateway, Path(settings.journal_root)
 

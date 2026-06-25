@@ -12,8 +12,11 @@
 cp .env.example .env
 # 编辑 .env，填入真实绝对路径、DeepSeek API Key、飞书用户 ID 与 Hermes 共享密钥
 uv sync --extra dev
-uv run riji-agent
+uv run riji-agent index    # 首次部署：先预热本地索引
+uv run riji-agent          # 启动服务
 ```
+
+首次部署建议先 `uv run riji-agent index` 把日记索引建好，再启动服务接入 Hermes，避免冷启动扫描全部 Markdown 时卡顿。服务运行时后台调度器会定期增量索引（默认每 10 分钟，可经 `RIJI_INDEX_*` 配置）。索引 CLI：`index`（增量）、`index --rebuild`（重建）、`index --status`（只读查看元数据）。详见 [docs/deployment.md](docs/deployment.md)。
 
 服务固定监听 `http://127.0.0.1:8765`；浏览器打开 `http://127.0.0.1:8765/healthz`，应得到：
 
