@@ -43,6 +43,66 @@ X-Hermes-Secret: <HERMES_SHARED_SECRET>
 
 错误：`401`（共享密钥无效）、`403`（非白名单用户或群聊）。
 
+## 飞书 → Hermes → bridge → riji-agent 配置步骤
+
+Hermes 的内置飞书接入默认会让 Hermes 自己回复飞书消息，这会绕开 riji-agent 的本地日记隐私边界。为此本仓库提供一个**很薄的 bridge**：`src/riji_agent/integrations/hermes_bridge.py`。它在 Hermes 进程一侧运行，把飞书消息**原样转发**给 riji-agent，取回 `reply` 文本，由 Hermes 发回飞书。
+
+bridge 的边界：
+
+- 不解析、不改写文本（`/导师 王阳明` 透传，persona 切换交给 riji-agent）；
+- 不自己生成事件 ID（透传飞书 `event_id`，幂等去重仍在 riji-agent 生效）；
+- 不自行放行群聊或非白名单用户（透传 `chat_type`/`feishu_user_id`，由 riji-agent 的 403 拦截）；
+- **无任何 vault / SQLite / 索引 / DeepSeek key 访问**——只转发消息与回复；
+- 共享密钥只放在 `X-Hermes-Secret` 头里，绝不出现在日志、异常或回复中。
+
+### bridge 侧环境变量
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `HERMES_SHARED_SECRET` | 是 | 与 riji-agent 的 `HERMES_SHARED_SECRET` 一致；常量时间比较校验。 |
+| `RIJI_AGENT_URL` | 否 | bridge POST 的目标，默认 `http://127.0.0.1:8765/hermes/messages`。 |
+
+### Hermes 飞书侧官方变量（对照，不在本仓库管理）
+
+以下变量属于 Hermes 的飞书 Provider，按你所用 Hermes 版本官方文档配置，仅供对照：
+
+| 变量 | 说明 |
+| --- | --- |
+| `FEISHU_APP_ID` | 飞书自建应用 App ID。 |
+| `FEISHU_APP_SECRET` | 飞书自建应用 App Secret。 |
+| `FEISHU_DOMAIN` | 飞书开放平台域名（国内 / Lark 国际站不同）。 |
+| `FEISHU_CONNECTION_MODE=websocket` | 长连接接收事件，无需公网回调地址。 |
+| `FEISHU_ALLOWED_USERS` | Hermes 侧的飞书用户过滤（可选）；真正的日记授权仍以 riji-agent 的 `RIJI_ALLOWED_FEISHU_USER_IDS` 为准。 |
+
+### 接入步骤
+
+1. 在 Hermes 一侧按官方文档接入飞书自建应用，仅启用**私聊**消息接收事件，确保事件携带稳定的 `event_id`。
+2. 在 Hermes 进程环境里设置 `HERMES_SHARED_SECRET`（与 riji-agent 一致），需要时设置 `RIJI_AGENT_URL`。
+3. 在 Hermes 收到飞书消息的回调里构造并调用 bridge：
+
+   ```python
+   from riji_agent.integrations.hermes_bridge import (
+       HermesFeishuBridge,
+       FeishuMessageEvent,
+   )
+
+   bridge = HermesFeishuBridge.from_env()  # 读 RIJI_AGENT_URL / HERMES_SHARED_SECRET
+
+   event = FeishuMessageEvent.from_mapping({
+       "event_id": feishu_event_id,        # 透传飞书原始事件 ID
+       "feishu_user_id": sender_open_id,
+       "chat_id": chat_id,
+       "chat_type": chat_type,             # 私聊为 "p2p"
+       "text": message_text,
+   })
+   reply = bridge.forward(event)           # 非 2xx / 网络错误返回安全失败文案
+   # 由 Hermes/飞书 SDK 把 reply 发回该 chat_id
+   ```
+
+4. **不要**把 riji-agent 端口暴露到公网；bridge 与 riji-agent 在同一主机经 `127.0.0.1` 通信。Hermes 不直读 vault / SQLite，只能经此 HTTP 边界访问日记能力。
+
+> bridge 在非 2xx（含 401/403）或网络异常时返回一段安全失败文案，不抛异常、不回传任何内部细节或密钥。授权失败（如群聊、非白名单）的语义由 riji-agent 决定，bridge 只如实转发并降级展示。
+
 ## 导师路由
 
 - `/导师 <名称>`、`/persona <id>`、`/切换 <名称>`：切换当前导师并**持久化**为用户偏好。
