@@ -7,12 +7,15 @@ modules are correctly wired together (routes, auth, tool loop, drafts, audit).
 """
 
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi.testclient import TestClient
 
 from riji_agent.config import Settings
+from riji_agent.journal.index import IndexStats, JournalIndex
 from riji_agent.llm.types import AssistantTurn, ToolCall
 from riji_agent.main import create_app, create_production_app
 from riji_agent.wiring import build_production_gateway
@@ -144,6 +147,52 @@ def test_create_production_app_mounts_hermes_route(tmp_path: Path) -> None:
     assert _post(client, "hi", secret="wrong").status_code == 401
     assert _post(client, "hi", chat_type="group").status_code == 403
     assert _post(client, "hi", user="ou_evil").status_code == 403
+
+
+# --- startup must not block on a cold/slow vault (issue #39) -------------------
+
+def test_startup_releases_before_slow_index_finishes(tmp_path: Path, monkeypatch) -> None:
+    """A slow ``build_index`` must not hold up uvicorn startup or /healthz.
+
+    The lifespan runs the initial prewarm in a worker thread and awaits it only
+    up to ``RIJI_INDEX_STARTUP_TIMEOUT_SECONDS``. With a tiny timeout and a
+    build that blocks on an event far longer, startup must finish promptly,
+    /healthz must answer 200, and the index must still be running in the
+    background. Deterministic: timing is driven by events, not by sleeping for
+    the full (simulated) slow-index duration.
+    """
+    release = threading.Event()
+    build_started = threading.Event()
+    finished = threading.Event()
+
+    def slow_build_index(self, *, rebuild: bool = False) -> IndexStats:
+        build_started.set()
+        # Block far longer than the startup budget; released by the test only
+        # after startup has completed, proving the build kept running in the
+        # background while the service was already serving requests.
+        if not release.wait(10):
+            raise AssertionError("slow build_index was never released")
+        finished.set()
+        return IndexStats(added=0, updated=0, unchanged=0, deleted=0)
+
+    monkeypatch.setattr(JournalIndex, "build_index", slow_build_index)
+
+    settings = _settings(tmp_path)
+    settings.index_startup_timeout_seconds = 0.2
+    settings.index_schedule_enabled = False  # isolate the prewarm path
+    app = create_production_app(settings)
+
+    started_at = time.monotonic()
+    with TestClient(app) as client:  # context manager triggers the lifespan
+        elapsed = time.monotonic() - started_at
+        # Startup returned well before the (10s) slow build could complete.
+        assert elapsed < 5
+        assert build_started.is_set()  # the prewarm actually kicked off
+        assert not finished.is_set()  # but it has NOT finished yet
+        assert client.get("/healthz").status_code == 200
+        assert app.state.index_scheduler.status()["running"] is True
+
+        release.set()  # let the background index complete cleanly
 
 
 # --- the wired modules actually cooperate end to end (stub model) --------------

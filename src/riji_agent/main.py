@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import logging
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -63,9 +65,26 @@ def create_production_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
-        # Prewarm in the background, waiting only up to the startup timeout, then
-        # let the periodic scheduler keep the index fresh. Stopped on shutdown.
-        scheduler.prewarm(runtime_settings.index_startup_timeout_seconds)
+        # Bound the initial prewarm WITHOUT blocking the event loop: run the
+        # (synchronous, possibly slow on a cold iCloud vault) index build in a
+        # worker thread and await it only up to the startup timeout. On timeout
+        # we stop waiting and proceed; the worker thread keeps indexing in the
+        # background (a to_thread worker cannot be cancelled, which is exactly
+        # the desired behaviour here). The periodic scheduler then keeps the
+        # index fresh. This lets uvicorn finish startup and serve /healthz and
+        # /hermes/messages immediately even while the index is still warming.
+        timeout = runtime_settings.index_startup_timeout_seconds
+        try:
+            await asyncio.wait_for(asyncio.to_thread(scheduler.run_once), timeout)
+        except asyncio.TimeoutError:
+            logging.getLogger("riji_agent.index").info(
+                "index prewarm exceeded %.3gs startup budget; continuing in background",
+                timeout,
+            )
+        except Exception:  # never let a cold/failing vault block startup
+            # run_once already records a sanitized error and never re-raises;
+            # this guard only covers unexpected scheduling failures.
+            logging.getLogger("riji_agent.index").warning("index prewarm could not start")
         scheduler.start()
         try:
             yield

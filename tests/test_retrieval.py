@@ -50,6 +50,38 @@ def service(tmp_path: Path, vault: Path) -> RetrievalService:
     index.close()
 
 
+# ----------------------------------------------------- empty index (issue #39)
+
+def test_search_on_unbuilt_index_returns_empty_evidence(tmp_path: Path, vault: Path) -> None:
+    """While the background index is still cold/empty, search must degrade to a
+    safe empty result the agent can read as 'insufficient evidence' — never an
+    exception that would surface a stack trace or block the request path."""
+    index = JournalIndex(database_path=tmp_path / "data" / "idx.sqlite3", journal_root=vault)
+    # Deliberately NOT building the index: it is empty, like a fresh startup.
+    try:
+        svc = RetrievalService(index)
+        result = svc.search_journal(_ctx(), "架构的记录")
+        assert result.items == ()  # no evidence, no error
+        assert result.truncated is False
+        assert result.request_id == "r1"
+        assert index.count() == 0
+    finally:
+        index.close()
+
+
+def test_read_note_on_unbuilt_index_is_gated_not_crashing(tmp_path: Path, vault: Path) -> None:
+    """read_note on an empty index raises the safe NO_EVIDENCE gate (because no
+    prior search surfaced the source), not a leaking or unexpected error."""
+    index = JournalIndex(database_path=tmp_path / "data" / "idx.sqlite3", journal_root=vault)
+    try:
+        svc = RetrievalService(index)
+        with pytest.raises(RetrievalError) as excinfo:
+            svc.read_note(_ctx(), "riji/daily/2026-06-24")
+        assert excinfo.value.code == RetrievalErrorCode.NO_EVIDENCE
+    finally:
+        index.close()
+
+
 # --------------------------------------------------------------- search_journal
 
 def test_search_returns_items_with_stable_source_ids(service: RetrievalService) -> None:
