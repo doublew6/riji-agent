@@ -86,6 +86,15 @@ class DraftService:
     def get_latest_awaiting_for_session(self, session_id: str) -> Optional[Draft]:
         return self._store.get_latest_awaiting_for_session(session_id)
 
+    def get_draft(self, draft_id: str) -> Optional[Draft]:
+        """Fetch a draft by its id, regardless of session.
+
+        Lets the gateway confirm by explicit ``draft_id`` even when the user
+        switched personas between proposal and confirmation. Ownership/expiry/
+        status are still enforced in :meth:`commit_draft`.
+        """
+        return self._store.get(draft_id)
+
     def commit_draft(
         self, draft_id: str, *, user_id: str, token: Optional[str] = None
     ) -> CommitResult:
@@ -145,5 +154,8 @@ class DraftService:
         for operation in draft.operations:
             lines.append(f"[{operation.section}]")
             lines.append(f"  - {operation.content}")
-        lines.append("回复「确认保存」以写入（30 分钟内有效，仅一次）。")
+        lines.append(
+            f"回复「确认保存」写入（30 分钟内有效，仅一次）。"
+            f"若期间切换了导师，改用「确认保存 {draft.draft_id}」。"
+        )
         return "\n".join(lines)

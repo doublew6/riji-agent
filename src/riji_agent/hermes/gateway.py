@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from riji_agent.drafts.errors import DraftError
@@ -26,6 +27,28 @@ from riji_agent.retrieval.models import ToolContext
 
 _CURRENT_PERSONA_PREF = "current_persona"
 _CONFIRM_COMMANDS = {"确认保存", "确认写入", "/确认", "确认"}
+
+
+@dataclass(frozen=True)
+class ConfirmCommand:
+    """A parsed confirmation, optionally targeting a specific draft by id."""
+
+    draft_id: Optional[str]
+
+
+def parse_confirm_command(text: str) -> Optional[ConfirmCommand]:
+    """Recognise a confirmation, with an optional explicit ``draft_id``.
+
+    ``确认保存`` confirms the current session's pending draft; ``确认保存 <id>``
+    confirms a specific draft even after the user switched personas. A normal
+    message that merely contains 确认 is not a confirmation: the first
+    whitespace-delimited token must be an exact confirm keyword.
+    """
+    parts = text.strip().split()
+    if not parts or parts[0] not in _CONFIRM_COMMANDS:
+        return None
+    draft_id = parts[1] if len(parts) > 1 else None
+    return ConfirmCommand(draft_id=draft_id)
 
 
 class Responder:
@@ -86,8 +109,10 @@ class HermesGateway:
             )
 
             # Explicit, user-driven commit: the model can never confirm a draft.
-            if self._draft_service is not None and message.text.strip() in _CONFIRM_COMMANDS:
-                return self._confirm_draft(message, current)
+            if self._draft_service is not None:
+                confirm = parse_confirm_command(message.text)
+                if confirm is not None:
+                    return self._confirm_draft(message, current, confirm.draft_id)
 
             try:
                 route = route_persona(message.text, registry=self._registry, current_persona=current)
@@ -128,20 +153,35 @@ class HermesGateway:
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(request_id, persona_id, reply, deduplicated=False)
 
-    def _confirm_draft(self, message: IncomingMessage, persona_id: str) -> GatewayReply:
+    def _confirm_draft(
+        self, message: IncomingMessage, persona_id: str, draft_id: Optional[str] = None
+    ) -> GatewayReply:
         user, chat = message.feishu_user_id, message.chat_id
-        sk = session_key(user, persona_id, chat)
-        draft = self._draft_service.get_latest_awaiting_for_session(sk)
-        if draft is None:
-            reply = "没有待确认的草稿。"
+        if draft_id is not None:
+            # Explicit id: works across persona switches. Treat a draft that is
+            # absent or owned by someone else identically, so we never disclose
+            # another user's drafts.
+            draft = self._draft_service.get_draft(draft_id)
+            if draft is None or draft.user_id != user:
+                reply = "未找到该草稿（可能已过期或不属于你）。"
+                self._events.record(message.event_id, persona_id, reply)
+                return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
         else:
-            try:
-                result = self._draft_service.commit_draft(
-                    draft.draft_id, user_id=user, token=draft.token
-                )
-                reply = f"已写入 [[{result.source_id}]]（{result.target_date.isoformat()}）。"
-            except DraftError as exc:
-                reply = self._draft_error_reply(exc)
+            draft = self._draft_service.get_latest_awaiting_for_session(
+                session_key(user, persona_id, chat)
+            )
+            if draft is None:
+                reply = "没有待确认的草稿。"
+                self._events.record(message.event_id, persona_id, reply)
+                return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+
+        try:
+            result = self._draft_service.commit_draft(
+                draft.draft_id, user_id=user, token=draft.token
+            )
+            reply = f"已写入 [[{result.source_id}]]（{result.target_date.isoformat()}）。"
+        except DraftError as exc:
+            reply = self._draft_error_reply(exc)
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
 
