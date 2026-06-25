@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from riji_agent.config import ConfigurationError, Settings, load_settings
 from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.api import build_hermes_router
+from riji_agent.wiring import build_production_gateway
 
 
 def create_app(
@@ -41,10 +42,22 @@ def create_app(
     return app
 
 
+def create_production_app(settings: Optional[Settings] = None) -> FastAPI:
+    """Create the fully wired app: health check plus the Hermes message route.
+
+    This is the real deployment entrypoint — unlike a bare ``create_app()``, it
+    assembles the gateway so ``/hermes/messages`` is mounted and the model,
+    retrieval, drafts and audit are all live.
+    """
+    runtime_settings = settings or load_settings()
+    gateway = build_production_gateway(runtime_settings)
+    return create_app(runtime_settings, gateway=gateway)
+
+
 def main() -> None:
     """Run only on loopback; use a private network proxy for later remote access."""
     try:
-        app = create_app()
+        app = create_production_app()
     except ConfigurationError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2)

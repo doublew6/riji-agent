@@ -30,5 +30,6 @@
 | 会话历史注入多轮 loop 上下文（按导师隔离，轮数 12 / 总字数 4000 上限，最旧先裁） | 已实现（issue #28） | issue #28 |
 | 草稿提交 check-then-act 改为 DB 级原子认领（`claim_for_commit`：`AWAITING→COMMITTING` 条件 UPDATE，败者 NOT_AWAITING，写失败回滚 AWAITING），多 worker 下确认仅一次写入 | 已实现（issue #29） | issue #29 |
 | 草稿支持「`确认保存 <草稿号>`」显式 `draft_id` 确认，跨导师切换仍可定位；他人草稿按「未找到」处理不泄露 | 已实现（issue #30） | issue #30 |
+| 生产入口接线：`uv run riji-agent` 经 `create_production_app` 组装全部模块并挂载 `/hermes/messages`，启动做增量索引 + 王阳明 seed（幂等） | 已实现（issue #34） | issue #34 |
 
 以上均为显式记录的后续项，非安全静默忽略。隐私核心边界（private 不出云、Key 不外泄、Hermes 无 vault 直读写）已有自动化覆盖。
