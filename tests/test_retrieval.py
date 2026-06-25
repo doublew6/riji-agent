@@ -183,9 +183,15 @@ def test_list_periods_filters_by_date(service: RetrievalService) -> None:
 
 # ------------------------------------------------------------------- schemas
 
-def test_tool_definitions_cover_three_tools() -> None:
+def test_tool_definitions_cover_all_tools() -> None:
     names = {tool["name"] for tool in TOOL_DEFINITIONS}
-    assert names == {"search_journal", "read_note", "list_periods"}
+    assert names == {
+        "search_journal",
+        "read_note",
+        "list_periods",
+        "timeline",
+        "find_before_after",
+    }
 
 
 def test_read_note_schema_exposes_only_source_id() -> None:

@@ -50,6 +50,29 @@ LIST_PERIODS_SCHEMA: Dict = {
     "required": [],
 }
 
+TIMELINE_SCHEMA: Dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "topic": {"type": "string", "minLength": 1},
+        "date_from": _DATE,
+        "date_to": _DATE,
+        "granularity": {"type": "string", "enum": ["day", "week", "month"], "default": "day"},
+    },
+    "required": ["topic", "date_from", "date_to"],
+}
+
+FIND_BEFORE_AFTER_SCHEMA: Dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "date": _DATE,
+        "days": {"type": "integer", "minimum": 1, "description": "Half-window in days"},
+        "topic": {"type": "string"},
+    },
+    "required": ["date", "days"],
+}
+
 TOOL_DEFINITIONS: List[Dict] = [
     {
         "name": "search_journal",
@@ -70,5 +93,21 @@ TOOL_DEFINITIONS: List[Dict] = [
         "name": "list_periods",
         "description": "List available journal entries (metadata only) by kind and date range.",
         "parameters": LIST_PERIODS_SCHEMA,
+    },
+    {
+        "name": "timeline",
+        "description": (
+            "Group journal evidence about a topic into day/week/month buckets "
+            "over a date range; returns evidence and coverage gaps only."
+        ),
+        "parameters": TIMELINE_SCHEMA,
+    },
+    {
+        "name": "find_before_after",
+        "description": (
+            "Find journal entries within a +/- days window around a date, "
+            "split into before/on/after; optionally filtered by topic."
+        ),
+        "parameters": FIND_BEFORE_AFTER_SCHEMA,
     },
 ]
