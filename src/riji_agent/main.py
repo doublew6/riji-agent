@@ -65,26 +65,25 @@ def create_production_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
-        # Bound the initial prewarm WITHOUT blocking the event loop: run the
-        # (synchronous, possibly slow on a cold iCloud vault) index build in a
-        # worker thread and await it only up to the startup timeout. On timeout
-        # we stop waiting and proceed; the worker thread keeps indexing in the
-        # background (a to_thread worker cannot be cancelled, which is exactly
-        # the desired behaviour here). The periodic scheduler then keeps the
-        # index fresh. This lets uvicorn finish startup and serve /healthz and
-        # /hermes/messages immediately even while the index is still warming.
+        # Bound the initial prewarm WITHOUT blocking the event loop and WITHOUT
+        # a non-daemon worker. The build runs in the scheduler's own daemon
+        # thread; we poll its done-event up to the startup timeout, then proceed
+        # and let it finish in the background. Because the worker is a daemon, a
+        # build stuck on a cold iCloud read can never keep the process alive
+        # after shutdown (issue #43); startup stays non-blocking (issue #39).
         timeout = runtime_settings.index_startup_timeout_seconds
-        try:
-            await asyncio.wait_for(asyncio.to_thread(scheduler.run_once), timeout)
-        except asyncio.TimeoutError:
-            logging.getLogger("riji_agent.index").info(
-                "index prewarm exceeded %.3gs startup budget; continuing in background",
-                timeout,
-            )
-        except Exception:  # never let a cold/failing vault block startup
-            # run_once already records a sanitized error and never re-raises;
-            # this guard only covers unexpected scheduling failures.
-            logging.getLogger("riji_agent.index").warning("index prewarm could not start")
+        done = scheduler.begin_prewarm()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not done.is_set():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logging.getLogger("riji_agent.index").info(
+                    "index prewarm exceeded %.3gs startup budget; continuing in background",
+                    timeout,
+                )
+                break
+            await asyncio.sleep(min(0.05, remaining))
         scheduler.start()
         try:
             yield
@@ -112,16 +111,28 @@ def _run_index_command(*, rebuild: bool, status: bool) -> int:
             _print_index_status(settings, index)
         else:
             started = time.monotonic()
-            stats = index.build_index(rebuild=rebuild)
+            stats = index.build_index(rebuild=rebuild, progress=_cli_progress)
             duration = round(time.monotonic() - started, 3)
             action = "rebuilt" if rebuild else "indexed"
             print(
                 f"{action}: added={stats.added} updated={stats.updated} "
-                f"unchanged={stats.unchanged} deleted={stats.deleted} duration_s={duration}"
+                f"unchanged={stats.unchanged} deleted={stats.deleted} "
+                f"skipped={stats.skipped} duration_s={duration}"
             )
+            if stats.skipped_sources:
+                # Sanitized wikilink ids only — never absolute paths or content.
+                print("skipped (slow/unreadable):", file=sys.stderr)
+                for source_id in stats.skipped_sources:
+                    print(f"  - {source_id}", file=sys.stderr)
     finally:
         index.close()
     return 0
+
+
+def _cli_progress(done: int, total: int, action: str, source_id: str) -> None:
+    # Progress goes to stderr so the final stdout summary stays a single clean
+    # line; only the wikilink id is shown, never the file path or contents.
+    print(f"[{done}/{total}] {action} {source_id}", file=sys.stderr)
 
 
 def _print_index_status(settings: Settings, index: JournalIndex) -> None:

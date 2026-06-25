@@ -11,15 +11,25 @@ import functools
 import json
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as Date
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from riji_agent.journal.embedding import EmbeddingProvider, cosine
 from riji_agent.journal.models import NoteKind, NoteSummary, ParsedNote
-from riji_agent.journal.parser import iter_note_files, parse_note
+from riji_agent.journal.parser import (
+    JournalParseError,
+    SlowFileError,
+    build_source_id,
+    iter_note_files,
+    parse_note,
+    read_file_bytes,
+)
+
+# Progress callback signature: (done, total, action, source_id).
+ProgressFn = Callable[[int, int, str, str], None]
 
 _NOTES_TABLE = """
 CREATE TABLE IF NOT EXISTS notes (
@@ -56,6 +66,9 @@ class IndexStats:
     updated: int = 0
     unchanged: int = 0
     deleted: int = 0
+    skipped: int = 0
+    # Sanitized ids (wikilink targets, never absolute paths) of skipped notes.
+    skipped_sources: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -105,10 +118,13 @@ class JournalIndex:
         journal_root: Path,
         *,
         embedder: Optional[EmbeddingProvider] = None,
+        file_read_timeout: Optional[float] = None,
     ) -> None:
         self._journal_root = Path(journal_root)
         self._database_path = Path(database_path)
         self._embedder = embedder
+        # Per-file read budget for the full walk; None disables it.
+        self._file_read_timeout = file_read_timeout
         # Guards the shared connection across the scheduler and request threads.
         self._lock = threading.RLock()
         self._database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -140,11 +156,21 @@ class JournalIndex:
     # ------------------------------------------------------------------ build
 
     @_synchronized
-    def build_index(self, *, rebuild: bool = False) -> IndexStats:
-        """Walk the vault and (re)index changed notes; remove deleted ones."""
+    def build_index(
+        self, *, rebuild: bool = False, progress: Optional[ProgressFn] = None
+    ) -> IndexStats:
+        """Walk the vault and (re)index changed notes; remove deleted ones.
+
+        Resilient to a slow or unavailable file: one that cannot be read within
+        the per-file budget (or that fails to parse) is skipped and counted, the
+        run continues, and a skipped note keeps its existing index entry rather
+        than being treated as deleted. ``progress`` is called per file as
+        ``(done, total, action, source_id)`` for observable long runs.
+        """
         if rebuild:
             self._conn.execute("DELETE FROM notes")
             self._conn.execute("DELETE FROM notes_fts")
+            self._conn.execute("DELETE FROM embeddings")
 
         existing: Dict[str, str] = {
             row["source_id"]: row["content_hash"]
@@ -153,18 +179,40 @@ class JournalIndex:
         stats = IndexStats()
         seen: Set[str] = set()
 
-        for path in iter_note_files(self._journal_root):
-            note = parse_note(path, self._journal_root)
+        timeout = self._file_read_timeout
+        reader = (lambda p: read_file_bytes(p, timeout)) if timeout else None
+        files = list(iter_note_files(self._journal_root))
+        total = len(files)
+
+        for done, path in enumerate(files, start=1):
+            try:
+                note = parse_note(path, self._journal_root, reader=reader)
+            except (SlowFileError, JournalParseError, OSError):
+                # Unreadable/slow/malformed: skip without deleting any prior
+                # entry. Only the sanitized wikilink id is recorded.
+                source_id = build_source_id(path, self._journal_root)
+                seen.add(source_id)
+                stats.skipped += 1
+                stats.skipped_sources.append(source_id)
+                if progress is not None:
+                    progress(done, total, "skipped", source_id)
+                continue
+
             seen.add(note.source_id)
             previous_hash = existing.get(note.source_id)
             if previous_hash == note.content_hash:
                 stats.unchanged += 1
-                continue
-            self._upsert(note, path.stat().st_mtime)
-            if previous_hash is None:
-                stats.added += 1
+                action = "unchanged"
             else:
-                stats.updated += 1
+                self._upsert(note, path.stat().st_mtime)
+                if previous_hash is None:
+                    stats.added += 1
+                    action = "added"
+                else:
+                    stats.updated += 1
+                    action = "updated"
+            if progress is not None:
+                progress(done, total, action, note.source_id)
 
         for source_id in existing:
             if source_id not in seen:

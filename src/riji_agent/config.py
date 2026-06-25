@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     index_startup_timeout_seconds: float = Field(
         default=10.0, alias="RIJI_INDEX_STARTUP_TIMEOUT_SECONDS", ge=0
     )
+    index_file_timeout_seconds: float = Field(
+        default=5.0, alias="RIJI_INDEX_FILE_TIMEOUT_SECONDS", ge=0
+    )
     allowed_feishu_user_ids: Annotated[FrozenSet[str], NoDecode] = Field(
         alias="RIJI_ALLOWED_FEISHU_USER_IDS"
     )

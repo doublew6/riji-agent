@@ -32,5 +32,7 @@
 | 草稿支持「`确认保存 <草稿号>`」显式 `draft_id` 确认，跨导师切换仍可定位；他人草稿按「未找到」处理不泄露 | 已实现（issue #30） | issue #30 |
 | 生产入口接线：`uv run riji-agent` 经 `create_production_app` 组装全部模块并挂载 `/hermes/messages`，启动做增量索引 + 王阳明 seed（幂等） | 已实现（issue #34） | issue #34 |
 | 索引调度 + CLI：`riji-agent index/--rebuild/--status`，后台定期增量（默认 10 分钟、可配置、防重入、失败不崩），启动后台预热不阻塞 | 已实现（issue #36） | issue #36 |
+| iCloud 冷读健壮性：单文件读取超 `RIJI_INDEX_FILE_TIMEOUT_SECONDS` 跳过并计 `skipped`（不误删既有项）、CLI 进度到 stderr、部分完成有汇总 | 已实现（issue #42） | issue #42 |
+| 关闭干净退出：预热在守护线程里跑，冷读卡住时 `Ctrl+C`/shutdown 也能在限时内退出，无非守护线程吊住进程 | 已实现（issue #43） | issue #43 |
 
 以上均为显式记录的后续项，非安全静默忽略。隐私核心边界（private 不出云、Key 不外泄、Hermes 无 vault 直读写）已有自动化覆盖。
