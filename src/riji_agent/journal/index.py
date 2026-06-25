@@ -74,7 +74,9 @@ class JournalIndex:
         self._journal_root = Path(journal_root)
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._database_path))
+        # Access is serialized by the gateway lock when wired into the request
+        # path; allow use across FastAPI threadpool threads.
+        self._conn = sqlite3.connect(str(self._database_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._ensure_schema()
 
