@@ -34,6 +34,15 @@ uv run riji-agent          # 启动服务
 - `RIJI_ALLOWED_FEISHU_USER_IDS` 是逗号分隔的飞书 open ID 白名单；群聊会在后续鉴权层无条件拒绝。
 - 运行入口把 Uvicorn 固定到 `127.0.0.1`。如需手机访问，应由后续的 Hermes/飞书或受控的 Tailscale 方案处理，而非暴露这个端口到公网。
 
+## 飞书接入（Hermes bridge）
+
+飞书私聊经 Hermes 接入后，由一个很薄的 bridge（`src/riji_agent/integrations/hermes_bridge.py`）把消息**原样转发**到 riji-agent 的 `/hermes/messages`，再取回 `reply` 发回飞书。bridge 运行在 Hermes 一侧，无任何 vault / SQLite / DeepSeek key 访问，只需两个环境变量：
+
+- `HERMES_SHARED_SECRET`（必填，与 riji-agent 一致，仅作 `X-Hermes-Secret` 头，不入日志）；
+- `RIJI_AGENT_URL`（可选，默认 `http://127.0.0.1:8765/hermes/messages`）。
+
+群聊、非白名单用户的拒绝与事件幂等仍由 riji-agent 负责，bridge 不自行放行。配置步骤与 Hermes 飞书侧官方变量见 [docs/hermes-integration.md](docs/hermes-integration.md)。
+
 ## 开发验证
 
 ```bash
