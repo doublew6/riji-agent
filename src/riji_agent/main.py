@@ -9,10 +9,18 @@ import uvicorn
 from fastapi import FastAPI
 
 from riji_agent.config import ConfigurationError, Settings, load_settings
+from riji_agent.hermes.gateway import HermesGateway
+from riji_agent.hermes.api import build_hermes_router
 
 
-def create_app(settings: Optional[Settings] = None) -> FastAPI:
-    """Create the application without exposing configuration through its API."""
+def create_app(
+    settings: Optional[Settings] = None, *, gateway: Optional[HermesGateway] = None
+) -> FastAPI:
+    """Create the application without exposing configuration through its API.
+
+    When a gateway is supplied the Hermes message route is mounted; otherwise the
+    app only serves health checks (e.g. before the model wiring is configured).
+    """
     runtime_settings = settings or load_settings()
     app = FastAPI(
         title="riji-agent",
@@ -26,6 +34,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, str]:
         return {"service": "riji-agent", "status": "ok"}
+
+    if gateway is not None:
+        app.include_router(build_hermes_router(gateway))
 
     return app
 

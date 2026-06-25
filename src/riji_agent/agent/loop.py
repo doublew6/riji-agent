@@ -62,15 +62,17 @@ class AgentRunner:
         *,
         limits: Optional[AgentLimits] = None,
         tool_specs: Optional[Sequence[Dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._limits = limits or AgentLimits()
         self._tool_specs = list(tool_specs) if tool_specs is not None else openai_tool_specs()
+        self._system_prompt = system_prompt or SYSTEM_PROMPT
 
     def run(self, context: ToolContext, question: str) -> AgentResult:
         messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": question},
         ]
         audit: List[AuditEntry] = []

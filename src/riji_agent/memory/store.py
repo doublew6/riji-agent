@@ -61,7 +61,9 @@ class MemoryStore:
     def __init__(self, database_path: Path) -> None:
         self._database_path = Path(database_path)
         self._database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._database_path))
+        # Access is serialized by the gateway lock; allow use across FastAPI
+        # threadpool threads.
+        self._conn = sqlite3.connect(str(self._database_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
