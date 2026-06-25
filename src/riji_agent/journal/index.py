@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from datetime import date as Date
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from riji_agent.journal.embedding import EmbeddingProvider, cosine
 from riji_agent.journal.models import NoteKind, NoteSummary, ParsedNote
 from riji_agent.journal.parser import iter_note_files, parse_note
 
@@ -67,12 +68,29 @@ class SearchHit:
     snippet: str
 
 
+def _rrf_fuse(keyword_ids: List[str], semantic_ids: List[str], limit: int, *, k: int = 60) -> List[str]:
+    """Reciprocal-rank fusion of two ranked id lists."""
+    scores: Dict[str, float] = {}
+    for ranking in (keyword_ids, semantic_ids):
+        for rank, source_id in enumerate(ranking):
+            scores[source_id] = scores.get(source_id, 0.0) + 1.0 / (k + rank + 1)
+    ordered = sorted(scores, key=lambda sid: (-scores[sid], sid))
+    return ordered[:limit]
+
+
 class JournalIndex:
     """Read-only-over-the-vault index backed by a local SQLite database."""
 
-    def __init__(self, database_path: Path, journal_root: Path) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        journal_root: Path,
+        *,
+        embedder: Optional[EmbeddingProvider] = None,
+    ) -> None:
         self._journal_root = Path(journal_root)
         self._database_path = Path(database_path)
+        self._embedder = embedder
         self._database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Access is serialized by the gateway lock when wired into the request
         # path; allow use across FastAPI threadpool threads.
@@ -95,6 +113,9 @@ class JournalIndex:
             self._conn.execute(_FTS_TRIGRAM)
         except sqlite3.OperationalError:
             self._conn.execute(_FTS_UNICODE)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS embeddings (source_id TEXT PRIMARY KEY, vector TEXT NOT NULL)"
+        )
         self._conn.commit()
 
     # ------------------------------------------------------------------ build
@@ -172,46 +193,93 @@ class JournalIndex:
         date_to: Optional[Date] = None,
         tags: Optional[Sequence[str]] = None,
     ) -> List[SearchHit]:
-        """Full-text search with optional date-range and tag filters.
+        """Keyword search, or hybrid keyword+semantic when an embedder is set.
 
         Set ``include_private=False`` to drop private notes. Raises
         ``sqlite3.OperationalError`` for malformed FTS query syntax, which the
         caller is expected to translate into a safe error.
         """
+        pool = max(limit, 20) if self._embedder is not None else limit
+        fts_hits = self._fts_search(
+            query, limit=pool, include_private=include_private,
+            date_from=date_from, date_to=date_to, tags=tags,
+        )
+        if self._embedder is None:
+            return fts_hits[:limit]
+
+        semantic_ids = self._semantic_search(
+            query, limit=pool, include_private=include_private,
+            date_from=date_from, date_to=date_to, tags=tags,
+        )
+        fused = _rrf_fuse([h.source_id for h in fts_hits], semantic_ids, limit)
+        fts_by_id = {h.source_id: h for h in fts_hits}
+        return [fts_by_id[sid] if sid in fts_by_id else self._semantic_hit(sid) for sid in fused]
+
+    def _fts_search(
+        self, query, *, limit, include_private, date_from, date_to, tags
+    ) -> List[SearchHit]:
         clauses = ["notes_fts MATCH ?"]
         params: List[object] = [query]
-        if not include_private:
-            clauses.append("n.private = 0")
-        if date_from is not None:
-            clauses.append("n.note_date >= ?")
-            params.append(date_from.isoformat())
-        if date_to is not None:
-            clauses.append("n.note_date <= ?")
-            params.append(date_to.isoformat())
-        for tag in tags or ():
-            clauses.append("n.tags LIKE ?")
-            params.append(f'%"{tag}"%')
+        clauses += self._filter_clauses(include_private, date_from, date_to, tags, params, prefix="n.")
         params.append(limit)
-
         sql = (
             "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, "
             "snippet(notes_fts, 3, '[', ']', '…', 12) AS snippet "
             "FROM notes_fts JOIN notes n ON n.source_id = notes_fts.source_id "
             "WHERE " + " AND ".join(clauses) + " ORDER BY rank LIMIT ?"
         )
-        hits: List[SearchHit] = []
+        return [self._row_to_hit(row, row["snippet"]) for row in self._conn.execute(sql, params)]
+
+    def _semantic_search(
+        self, query, *, limit, include_private, date_from, date_to, tags
+    ) -> List[str]:
+        query_vec = self._embedder.embed([query])[0]
+        clauses = self._filter_clauses(include_private, date_from, date_to, tags, params := [], prefix="n.")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT n.source_id AS source_id, e.vector AS vector FROM embeddings e "
+            "JOIN notes n ON n.source_id = e.source_id" + where
+        )
+        scored: List[Tuple[float, str]] = []
         for row in self._conn.execute(sql, params):
-            hits.append(
-                SearchHit(
-                    source_id=row["source_id"],
-                    title=row["title"],
-                    kind=NoteKind(row["kind"]),
-                    note_date=Date.fromisoformat(row["note_date"]) if row["note_date"] else None,
-                    private=bool(row["private"]),
-                    snippet=row["snippet"],
-                )
-            )
-        return hits
+            scored.append((cosine(query_vec, json.loads(row["vector"])), row["source_id"]))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [sid for score, sid in scored[:limit] if score > 0.0]
+
+    @staticmethod
+    def _filter_clauses(include_private, date_from, date_to, tags, params, *, prefix) -> List[str]:
+        clauses: List[str] = []
+        if not include_private:
+            clauses.append(f"{prefix}private = 0")
+        if date_from is not None:
+            clauses.append(f"{prefix}note_date >= ?")
+            params.append(date_from.isoformat())
+        if date_to is not None:
+            clauses.append(f"{prefix}note_date <= ?")
+            params.append(date_to.isoformat())
+        for tag in tags or ():
+            clauses.append(f"{prefix}tags LIKE ?")
+            params.append(f'%"{tag}"%')
+        return clauses
+
+    def _semantic_hit(self, source_id: str) -> SearchHit:
+        row = self._conn.execute("SELECT * FROM notes WHERE source_id = ?", (source_id,)).fetchone()
+        body_row = self._conn.execute(
+            "SELECT body FROM notes_fts WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        snippet = (body_row["body"][:80] if body_row else "")
+        return self._row_to_hit(row, snippet)
+
+    @staticmethod
+    def _row_to_hit(row: sqlite3.Row, snippet: str) -> SearchHit:
+        return SearchHit(
+            source_id=row["source_id"],
+            title=row["title"],
+            kind=NoteKind(row["kind"]),
+            note_date=Date.fromisoformat(row["note_date"]) if row["note_date"] else None,
+            private=bool(row["private"]),
+            snippet=snippet,
+        )
 
     def list_notes(
         self,
@@ -282,10 +350,17 @@ class JournalIndex:
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
+        if self._embedder is not None:
+            vector = self._embedder.embed([f"{note.title}\n{note.body}"])[0]
+            self._conn.execute(
+                "INSERT OR REPLACE INTO embeddings (source_id, vector) VALUES (?, ?)",
+                (note.source_id, json.dumps(vector)),
+            )
 
     def _delete(self, source_id: str) -> None:
         self._conn.execute("DELETE FROM notes WHERE source_id = ?", (source_id,))
         self._conn.execute("DELETE FROM notes_fts WHERE source_id = ?", (source_id,))
+        self._conn.execute("DELETE FROM embeddings WHERE source_id = ?", (source_id,))
 
     @staticmethod
     def _row_to_note(row: sqlite3.Row, body: str) -> ParsedNote:

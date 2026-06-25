@@ -26,7 +26,7 @@
 
 | 项 | 状态 | 跟踪 |
 | --- | --- | --- |
-| 语义/embedding 检索未实现，当前仅 FTS 关键词 | backlog | issue #17 |
+| 本地 embedding 语义检索 + 混合排序 | 已实现（issue #17，`RIJI_SEMANTIC_SEARCH` 默认关闭；内置零依赖本地 embedder，可外接更强本地模型） | issue #17 |
 | 会话历史已持久化但尚未注入多轮 loop 上下文 | 待办 | 后续 issue（功能性，非安全） |
 | 网关为单进程锁串行化；多 worker 部署需共享锁/DB 级幂等（事件用 `INSERT OR IGNORE` 已安全，草稿 check-then-act 依赖进程锁） | 待办 | 部署为单进程可规避 |
 | 草稿确认依赖「当前导师」定位会话；草稿与确认之间切换导师会找不到草稿 | 已知 | 文档说明，按需加 draft_id 显式确认 |
