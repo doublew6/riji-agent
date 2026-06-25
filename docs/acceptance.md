@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | 本地 embedding 语义检索 + 混合排序 | 已实现（issue #17，`RIJI_SEMANTIC_SEARCH` 默认关闭；内置零依赖本地 embedder，可外接更强本地模型） | issue #17 |
 | 会话历史注入多轮 loop 上下文（按导师隔离，轮数 12 / 总字数 4000 上限，最旧先裁） | 已实现（issue #28） | issue #28 |
-| 网关为单进程锁串行化；多 worker 部署需共享锁/DB 级幂等（事件用 `INSERT OR IGNORE` 已安全，草稿 check-then-act 依赖进程锁） | 待办 | issue #29（部署为单进程可规避） |
+| 草稿提交 check-then-act 改为 DB 级原子认领（`claim_for_commit`：`AWAITING→COMMITTING` 条件 UPDATE，败者 NOT_AWAITING，写失败回滚 AWAITING），多 worker 下确认仅一次写入 | 已实现（issue #29） | issue #29 |
 | 草稿确认依赖「当前导师」定位会话；草稿与确认之间切换导师会找不到草稿 | 待办 | issue #30（按需加 draft_id 显式确认） |
 
 以上均为显式记录的后续项，非安全静默忽略。隐私核心边界（private 不出云、Key 不外泄、Hermes 无 vault 直读写）已有自动化覆盖。
