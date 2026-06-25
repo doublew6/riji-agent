@@ -123,6 +123,53 @@ def test_exceeding_max_rounds_forces_a_final_answer(registry: ToolRegistry) -> N
     assert provider.calls[-1]["tools"] == []  # final call disables tools
 
 
+def test_prior_history_is_injected_before_the_question(registry: ToolRegistry) -> None:
+    provider = FakeProvider([AssistantTurn(content="记得，你上次问的是项目进展。")])
+    history = [
+        {"role": "user", "content": "项目进展如何？"},
+        {"role": "assistant", "content": "评审通过。"},
+    ]
+    AgentRunner(provider, registry).run(_ctx(), "那接下来呢？", history=history)
+
+    sent = provider.calls[0]["messages"]
+    assert sent[0]["role"] == "system"
+    # history sits between system and the current question, in order
+    assert sent[1] == {"role": "user", "content": "项目进展如何？"}
+    assert sent[2] == {"role": "assistant", "content": "评审通过。"}
+    assert sent[3] == {"role": "user", "content": "那接下来呢？"}
+
+
+def test_history_is_bounded_by_count_and_chars(registry: ToolRegistry) -> None:
+    provider = FakeProvider([AssistantTurn(content="ok")])
+    # 30 messages, each 500 chars: both the count cap (12) and the 4000-char
+    # budget must trim oldest-first, keeping only the most recent suffix.
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}" + "x" * 500}
+        for i in range(30)
+    ]
+    AgentRunner(provider, registry).run(_ctx(), "现在呢？", history=history)
+
+    replayed = [m for m in provider.calls[0]["messages"][1:-1]]
+    assert len(replayed) <= 12
+    assert sum(len(m["content"]) for m in replayed) <= 4000 + 504  # last kept may cross budget
+    # newest content is retained, oldest dropped
+    assert any("m29" in m["content"] for m in replayed)
+    assert all("m0x" not in m["content"] for m in replayed)
+
+
+def test_blank_and_foreign_roles_are_dropped_from_history(registry: ToolRegistry) -> None:
+    provider = FakeProvider([AssistantTurn(content="ok")])
+    history = [
+        {"role": "user", "content": "  "},  # blank
+        {"role": "tool", "content": "internal"},  # not replayed
+        {"role": "assistant", "content": "有效内容"},
+    ]
+    AgentRunner(provider, registry).run(_ctx(), "继续", history=history)
+
+    replayed = provider.calls[0]["messages"][1:-1]
+    assert replayed == [{"role": "assistant", "content": "有效内容"}]
+
+
 def test_tool_call_budget_is_enforced(registry: ToolRegistry) -> None:
     two_calls = AssistantTurn(
         content=None,

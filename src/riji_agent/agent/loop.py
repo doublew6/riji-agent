@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from riji_agent.agent.tools import ToolRegistry, openai_tool_specs
 from riji_agent.llm.types import AssistantTurn, LLMProvider
@@ -30,6 +30,10 @@ SYSTEM_PROMPT = (
 class AgentLimits:
     max_rounds: int = 6
     max_tool_calls: int = 12
+    # Prior session turns replayed for continuity, bounded by count and total
+    # characters (oldest trimmed first) to honour egress minimisation.
+    max_history_messages: int = 12
+    max_history_chars: int = 4000
 
 
 @dataclass(frozen=True)
@@ -70,11 +74,16 @@ class AgentRunner:
         self._tool_specs = list(tool_specs) if tool_specs is not None else openai_tool_specs()
         self._system_prompt = system_prompt or SYSTEM_PROMPT
 
-    def run(self, context: ToolContext, question: str) -> AgentResult:
-        messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt},
-            {"role": "user", "content": question},
-        ]
+    def run(
+        self,
+        context: ToolContext,
+        question: str,
+        *,
+        history: Sequence[Mapping[str, str]] = (),
+    ) -> AgentResult:
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
+        messages.extend(self._history_messages(history))
+        messages.append({"role": "user", "content": question})
         audit: List[AuditEntry] = []
         sources: Set[str] = set()
         tool_calls = 0
@@ -117,6 +126,34 @@ class AgentRunner:
         )
 
     # ------------------------------------------------------------- helpers
+
+    def _history_messages(self, history: Sequence[Mapping[str, str]]) -> List[Dict[str, str]]:
+        """Bounded prior turns to prepend, oldest trimmed first.
+
+        Only user/assistant roles with non-empty content are replayed; the most
+        recent ``max_history_messages`` are considered, then a character budget
+        drops the oldest until the total fits (always keeping at least one).
+        """
+        cleaned = [
+            {"role": role, "content": content}
+            for item in history
+            for role in (item.get("role"),)
+            for content in ((item.get("content") or "").strip(),)
+            if role in ("user", "assistant") and content
+        ]
+        if not cleaned:
+            return []
+        cleaned = cleaned[-self._limits.max_history_messages :]
+
+        kept: List[Dict[str, str]] = []
+        total = 0
+        for message in reversed(cleaned):
+            total += len(message["content"])
+            if total > self._limits.max_history_chars and kept:
+                break
+            kept.append(message)
+        kept.reverse()
+        return kept
 
     @staticmethod
     def _assistant_message(turn: AssistantTurn) -> Dict[str, Any]:

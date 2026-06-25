@@ -1,8 +1,8 @@
 """Production Responder: run the DeepSeek tool-calling loop per persona.
 
 The persona's assembled system prompt (including shared memory) is injected into
-the loop. Per-turn chat history wiring into the loop is a later refinement; the
-gateway already persists it.
+the loop, along with this persona-private session's bounded prior turns so the
+mentor can follow up on earlier context.
 """
 
 from __future__ import annotations
@@ -46,7 +46,11 @@ class AgentResponder:
             tool_specs=self._tools.tool_specs(allowed_tools or None),
             system_prompt=system_prompt,
         )
-        result = runner.run(context, question)
+        result = runner.run(
+            context,
+            question,
+            history=[{"role": m.role, "content": m.content} for m in history],
+        )
         if self._audit is not None:
             for entry in result.audit:
                 self._audit.record(
