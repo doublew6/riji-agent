@@ -53,6 +53,17 @@ docker run --rm -v $(pwd):/app -w /app python:3.11 \
 
 配置无效时进程以不含路径/密钥的安全错误退出。Hermes 侧的飞书接入与 DeepSeek Provider 配置见 [hermes-integration.md](hermes-integration.md)。
 
+### Hermes bridge installer
+
+Hermes 侧的 Feishu -> riji-agent 转发 hook 由 riji-agent installer 管理，不需要手工编辑 Hermes 源码：
+
+```bash
+uv run riji-agent hermes-bridge install
+uv run riji-agent hermes-bridge status
+```
+
+默认修改 `~/.hermes/hermes-agent/gateway/run.py`，并在修改前创建 `run.py.riji-agent.bak` 备份。Hermes 升级或重装后，如果飞书消息又绕开 riji-agent，重新执行 `install` 并重启 `hermes gateway`。
+
 ## 数据与目录
 
 - 日记 vault（`RIJI_JOURNAL_ROOT`）：源数据，**只读**，绝不被写入索引或运行目录。

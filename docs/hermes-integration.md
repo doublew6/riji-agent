@@ -61,6 +61,7 @@ bridge 的边界：
 | --- | --- | --- |
 | `HERMES_SHARED_SECRET` | 是 | 与 riji-agent 的 `HERMES_SHARED_SECRET` 一致；常量时间比较校验。 |
 | `RIJI_AGENT_URL` | 否 | bridge POST 的目标，默认 `http://127.0.0.1:8765/hermes/messages`。 |
+| `RIJI_AGENT_TIMEOUT_SECONDS` | 否 | bridge 等待 riji-agent 回复的秒数，默认 `240`。复杂日记问题可能需要更久。 |
 
 ### Hermes 飞书侧官方变量（对照，不在本仓库管理）
 
@@ -74,32 +75,39 @@ bridge 的边界：
 | `FEISHU_CONNECTION_MODE=websocket` | 长连接接收事件，无需公网回调地址。 |
 | `FEISHU_ALLOWED_USERS` | Hermes 侧的飞书用户过滤（可选）；真正的日记授权仍以 riji-agent 的 `RIJI_ALLOWED_FEISHU_USER_IDS` 为准。 |
 
-### 接入步骤
+### 正式安装步骤
 
 1. 在 Hermes 一侧按官方文档接入飞书自建应用，仅启用**私聊**消息接收事件，确保事件携带稳定的 `event_id`。
 2. 在 Hermes 进程环境里设置 `HERMES_SHARED_SECRET`（与 riji-agent 一致），需要时设置 `RIJI_AGENT_URL`。
-3. 在 Hermes 收到飞书消息的回调里构造并调用 bridge：
+3. 运行 installer，把 bridge hook 安装进当前 Hermes gateway：
 
-   ```python
-   from riji_agent.integrations.hermes_bridge import (
-       HermesFeishuBridge,
-       FeishuMessageEvent,
-   )
-
-   bridge = HermesFeishuBridge.from_env()  # 读 RIJI_AGENT_URL / HERMES_SHARED_SECRET
-
-   event = FeishuMessageEvent.from_mapping({
-       "event_id": feishu_event_id,        # 透传飞书原始事件 ID
-       "feishu_user_id": sender_open_id,
-       "chat_id": chat_id,
-       "chat_type": chat_type,             # 私聊为 "p2p"
-       "text": message_text,
-   })
-   reply = bridge.forward(event)           # 非 2xx / 网络错误返回安全失败文案
-   # 由 Hermes/飞书 SDK 把 reply 发回该 chat_id
+   ```bash
+   uv run riji-agent hermes-bridge install
+   uv run riji-agent hermes-bridge status
    ```
 
-4. **不要**把 riji-agent 端口暴露到公网；bridge 与 riji-agent 在同一主机经 `127.0.0.1` 通信。Hermes 不直读 vault / SQLite，只能经此 HTTP 边界访问日记能力。
+   默认目标是：
+
+   ```text
+   ~/.hermes/hermes-agent/gateway/run.py
+   ```
+
+   如果 Hermes 安装路径不同，显式传入：
+
+   ```bash
+   uv run riji-agent hermes-bridge install --gateway-run /path/to/hermes-agent/gateway/run.py
+   ```
+
+4. 重启 Hermes gateway，让 hook 生效。
+5. **不要**把 riji-agent 端口暴露到公网；bridge 与 riji-agent 在同一主机经 `127.0.0.1` 通信。Hermes 不直读 vault / SQLite，只能经此 HTTP 边界访问日记能力。
+
+installer 的行为：
+
+- 幂等：重复运行不会重复插入 hook；
+- 可更新：若存在旧版本本机 patch，会替换成受管理的 marker block；
+- 会在修改前创建 `run.py.riji-agent.bak` 备份；
+- 可移除：`uv run riji-agent hermes-bridge uninstall`；
+- 如果 Hermes 升级覆盖了 gateway 文件，再运行一次 `install` 即可恢复。
 
 > bridge 在非 2xx（含 401/403）或网络异常时返回一段安全失败文案，不抛异常、不回传任何内部细节或密钥。授权失败（如群聊、非白名单）的语义由 riji-agent 决定，bridge 只如实转发并降级展示。
 
@@ -132,4 +140,5 @@ bridge 的边界：
 | 全部 `401` | `X-Hermes-Secret` 与 riji-agent 的 `HERMES_SHARED_SECRET` 不一致。 |
 | 授权用户却 `403` | 检查 `feishu_user_id` 是否在 `RIJI_ALLOWED_FEISHU_USER_IDS`；确认 `chat_type=p2p`。 |
 | 重复回复 | 确认 Hermes 透传了稳定的 `event_id`；不稳定的 ID 会绕过幂等。 |
+| Hermes 更新后又绕开 riji-agent | 运行 `uv run riji-agent hermes-bridge status`；若不是 `installed`，重新执行 `install` 并重启 Hermes。 |
 | 启动即退出 | 配置无效（路径/必填项），见 README 的配置与安全一节。 |

@@ -16,6 +16,12 @@ from fastapi import FastAPI
 from riji_agent.config import ConfigurationError, Settings, load_settings
 from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.api import build_hermes_router
+from riji_agent.integrations.hermes_installer import (
+    HermesBridgeInstallError,
+    install as install_hermes_bridge,
+    status as hermes_bridge_status,
+    uninstall as uninstall_hermes_bridge,
+)
 from riji_agent.journal.index import JournalIndex
 from riji_agent.wiring import build_journal_index, build_production_gateway
 
@@ -129,6 +135,34 @@ def _run_index_command(*, rebuild: bool, status: bool) -> int:
     return 0
 
 
+def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backup: bool) -> int:
+    path = Path(gateway_run).expanduser() if gateway_run else None
+    try:
+        if action == "status":
+            result = hermes_bridge_status(path) if path else hermes_bridge_status()
+        elif action == "install":
+            result = (
+                install_hermes_bridge(path, backup=not no_backup)
+                if path
+                else install_hermes_bridge(backup=not no_backup)
+            )
+        elif action == "uninstall":
+            result = (
+                uninstall_hermes_bridge(path, backup=not no_backup)
+                if path
+                else uninstall_hermes_bridge(backup=not no_backup)
+            )
+        else:
+            raise HermesBridgeInstallError(f"unknown hermes bridge action: {action}")
+    except HermesBridgeInstallError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    print(f"gateway_run: {result.gateway_run}")
+    print(f"state: {result.state}")
+    return 0 if result.installed or action != "status" else 1
+
+
 def _cli_progress(done: int, total: int, action: str, source_id: str) -> None:
     # Progress goes to stderr so the final stdout summary stays a single clean
     # line; only the wikilink id is shown, never the file path or contents.
@@ -168,9 +202,27 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     index_cmd.add_argument(
         "--status", action="store_true", help="Print index metadata only; make no changes."
     )
+    bridge_cmd = sub.add_parser(
+        "hermes-bridge",
+        help="Install, inspect, or remove the Hermes Feishu -> riji-agent bridge hook.",
+    )
+    bridge_cmd.add_argument("action", choices=("status", "install", "uninstall"))
+    bridge_cmd.add_argument(
+        "--gateway-run",
+        help="Path to Hermes gateway/run.py; defaults to ~/.hermes/hermes-agent/gateway/run.py.",
+    )
+    bridge_cmd.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Do not create a .riji-agent.bak copy before modifying gateway/run.py.",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "index":
         raise SystemExit(_run_index_command(rebuild=args.rebuild, status=args.status))
+    if args.command == "hermes-bridge":
+        raise SystemExit(
+            _run_hermes_bridge_command(args.action, args.gateway_run, args.no_backup)
+        )
 
     _serve()
