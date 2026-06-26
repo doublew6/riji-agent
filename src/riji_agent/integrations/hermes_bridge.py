@@ -33,6 +33,8 @@ DEFAULT_RIJI_AGENT_URL = "http://127.0.0.1:8765/hermes/messages"
 # Returned to the user when riji-agent cannot be reached or answers with an
 # error status. It carries no internal detail and never the shared secret.
 _FAILURE_REPLY = "日记助手暂时无法回应，请稍后再试。"
+_TIMEOUT_REPLY = "日记助手正在处理这条较复杂的问题，但本次等待超时了。请稍后重试，或把问题拆短一点。"
+DEFAULT_TIMEOUT_SECONDS = 240.0
 
 
 class BridgeConfigError(RuntimeError):
@@ -78,7 +80,7 @@ class HermesFeishuBridge:
         *,
         riji_agent_url: str = DEFAULT_RIJI_AGENT_URL,
         shared_secret: str,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         client: Optional[httpx.Client] = None,
     ) -> None:
         if not riji_agent_url:
@@ -87,7 +89,7 @@ class HermesFeishuBridge:
             raise BridgeConfigError("shared_secret must not be empty")
         self._url = riji_agent_url
         self._secret = shared_secret
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or httpx.Client(timeout=timeout, trust_env=False)
 
     @classmethod
     def from_env(
@@ -106,7 +108,8 @@ class HermesFeishuBridge:
         if not secret:
             raise BridgeConfigError("HERMES_SHARED_SECRET is required")
         url = source.get("RIJI_AGENT_URL") or DEFAULT_RIJI_AGENT_URL
-        return cls(riji_agent_url=url, shared_secret=secret, client=client)
+        timeout = float(source.get("RIJI_AGENT_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+        return cls(riji_agent_url=url, shared_secret=secret, timeout=timeout, client=client)
 
     def forward(self, event: FeishuMessageEvent) -> str:
         """Forward one Feishu event to riji-agent and return the reply text.
@@ -131,6 +134,8 @@ class HermesFeishuBridge:
             )
             response.raise_for_status()
             data = response.json()
+        except httpx.TimeoutException:
+            return _TIMEOUT_REPLY
         except httpx.HTTPError:
             # Covers timeouts, connection errors and non-2xx statuses. We do not
             # attach the exception text to the reply: it may echo headers.

@@ -46,6 +46,8 @@ def test_wang_yangming_persona_uses_yangming_tools() -> None:
     assert "search_yangming" in persona.allowed_tools
     # does not impersonate the historical figure
     assert "不是王阳明本人" in persona.system_prompt or "不冒充" in persona.system_prompt
+    assert "现代白话中文" in persona.system_prompt
+    assert "不要使用文言文" in persona.system_prompt
 
 
 def test_other_personas_cannot_use_yangming_tool() -> None:

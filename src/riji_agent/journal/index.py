@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -56,6 +57,8 @@ _FTS_UNICODE = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts "
     "USING fts5(source_id UNINDEXED, title, tags, body, tokenize='unicode61')"
 )
+
+_QUERY_TERM_RE = re.compile(r"[^\s\"'()]+")
 
 
 @dataclass
@@ -283,16 +286,20 @@ class JournalIndex:
             query, limit=pool, include_private=include_private,
             date_from=date_from, date_to=date_to, tags=tags,
         )
+        keyword_hits = fts_hits or self._like_search(
+            query, limit=pool, include_private=include_private,
+            date_from=date_from, date_to=date_to, tags=tags,
+        )
         if self._embedder is None:
-            return fts_hits[:limit]
+            return keyword_hits[:limit]
 
         semantic_ids = self._semantic_search(
             query, limit=pool, include_private=include_private,
             date_from=date_from, date_to=date_to, tags=tags,
         )
-        fused = _rrf_fuse([h.source_id for h in fts_hits], semantic_ids, limit)
-        fts_by_id = {h.source_id: h for h in fts_hits}
-        return [fts_by_id[sid] if sid in fts_by_id else self._semantic_hit(sid) for sid in fused]
+        fused = _rrf_fuse([h.source_id for h in keyword_hits], semantic_ids, limit)
+        keyword_by_id = {h.source_id: h for h in keyword_hits}
+        return [keyword_by_id[sid] if sid in keyword_by_id else self._semantic_hit(sid) for sid in fused]
 
     def _fts_search(
         self, query, *, limit, include_private, date_from, date_to, tags
@@ -308,6 +315,43 @@ class JournalIndex:
             "WHERE " + " AND ".join(clauses) + " ORDER BY rank LIMIT ?"
         )
         return [self._row_to_hit(row, row["snippet"]) for row in self._conn.execute(sql, params)]
+
+    def _like_search(
+        self, query, *, limit, include_private, date_from, date_to, tags
+    ) -> List[SearchHit]:
+        """Fallback for CJK/short-token queries that FTS tokenizers miss.
+
+        SQLite FTS5 trigram does not match one- or two-character CJK queries,
+        and older unicode61 indexes do not segment Chinese prose well. The
+        fallback stays local, keeps the same privacy/date/tag filters, returns
+        capped snippets, and is used only when the FTS search returned no rows.
+        """
+        terms = _like_terms(query)
+        if not terms:
+            return []
+
+        params: List[object] = []
+        clauses = self._filter_clauses(include_private, date_from, date_to, tags, params, prefix="n.")
+        like_clauses: List[str] = []
+        for term in terms:
+            pattern = f"%{_escape_like(term)}%"
+            like_clauses.append(
+                "(notes_fts.body LIKE ? ESCAPE '\\' OR notes_fts.title LIKE ? ESCAPE '\\' "
+                "OR notes_fts.tags LIKE ? ESCAPE '\\')"
+            )
+            params.extend([pattern, pattern, pattern])
+        clauses.append("(" + " OR ".join(like_clauses) + ")")
+        params.append(limit)
+        sql = (
+            "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, notes_fts.body AS body "
+            "FROM notes_fts JOIN notes n ON n.source_id = notes_fts.source_id "
+            "WHERE " + " AND ".join(clauses)
+            + " ORDER BY n.note_date DESC, n.source_id LIMIT ?"
+        )
+        return [
+            self._row_to_hit(row, _like_snippet(row["body"] or "", terms))
+            for row in self._conn.execute(sql, params)
+        ]
 
     def _semantic_search(
         self, query, *, limit, include_private, date_from, date_to, tags
@@ -455,3 +499,32 @@ class JournalIndex:
             private=bool(row["private"]),
             content_hash=row["content_hash"],
         )
+
+
+def _like_terms(query: str) -> List[str]:
+    terms: List[str] = []
+    for match in _QUERY_TERM_RE.finditer(query):
+        term = match.group(0).strip()
+        if term and term not in terms:
+            terms.append(term)
+    return terms
+
+
+def _escape_like(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _like_snippet(body: str, terms: Sequence[str], *, radius: int = 80) -> str:
+    if not body:
+        return ""
+    lower = body.lower()
+    positions = [lower.find(term.lower()) for term in terms if term]
+    positions = [pos for pos in positions if pos >= 0]
+    if not positions:
+        return body[: radius * 2]
+    pos = min(positions)
+    start = max(0, pos - radius)
+    end = min(len(body), pos + radius)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(body) else ""
+    return prefix + body[start:end] + suffix

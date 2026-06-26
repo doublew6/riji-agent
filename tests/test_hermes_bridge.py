@@ -139,6 +139,16 @@ def test_transport_error_returns_safe_message_without_secret() -> None:
     assert reply
 
 
+def test_timeout_returns_specific_safe_message_without_secret() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("too slow")
+
+    bridge = _bridge(handler)
+    reply = bridge.forward(_event())
+    assert SECRET not in reply
+    assert "超时" in reply
+
+
 def test_malformed_json_returns_safe_message() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="not json")
@@ -187,6 +197,15 @@ def test_from_env_defaults_url_and_uses_secret() -> None:
     bridge.forward(_event())
     assert captured["url"] == DEFAULT_RIJI_AGENT_URL
     assert captured["secret"] == "s3cret"
+
+
+def test_from_env_accepts_timeout() -> None:
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"reply": "ok"})))
+    bridge = HermesFeishuBridge.from_env(
+        {"HERMES_SHARED_SECRET": "s3cret", "RIJI_AGENT_TIMEOUT_SECONDS": "123"},
+        client=client,
+    )
+    assert bridge.forward(_event()) == "ok"
 
 
 def test_construction_rejects_empty_secret() -> None:

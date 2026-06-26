@@ -105,6 +105,12 @@ def test_search_filters_by_tags(service: RetrievalService) -> None:
     assert [i.source_id for i in result.items] == ["riji/daily/2026-06-20"]
 
 
+def test_search_falls_back_for_short_chinese_terms(service: RetrievalService) -> None:
+    result = service.search_journal(_ctx(), "架构")
+    assert [i.source_id for i in result.items] == ["riji/daily/2026-06-24"]
+    assert "架构" in result.items[0].snippet
+
+
 def test_empty_query_is_rejected(service: RetrievalService) -> None:
     with pytest.raises(RetrievalError) as err:
         service.search_journal(_ctx(), "   ")
