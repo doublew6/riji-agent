@@ -182,7 +182,18 @@ src/riji_agent/
 - `personas` may define prompts and tool permissions, but concrete IM/runtime/provider adapters must be injected from the outside.
 - `integrations` may patch or bridge third-party software, but it remains optional glue over stable local contracts.
 
-### 8.2 current code to target modules
+### 8.2 Agent runtime contract
+
+The default runtime adapter is `agent/hermes.py`, which exposes Hermes as `HermesAgentRuntime` and keeps the existing `/hermes/messages` router compatible. A non-Hermes runtime should call the same local boundary:
+
+1. Normalize transport input into `im.models.IncomingChatMessage`.
+2. Pass the message to an `agent.runtime.AgentRuntime` implementation.
+3. Let riji-agent perform shared-secret verification, allowlist checks, idempotency, persona routing, registered tool orchestration, and draft confirmation.
+4. Return only the gateway reply to the transport.
+
+`integrations/hermes_*` remains optional installer/bridge glue for the default stack; it is not required by core, IM adapters, model providers, or future agent runtimes.
+
+### 8.3 current code to target modules
 
 | Current code | Target module | Notes |
 | --- | --- | --- |
@@ -193,7 +204,7 @@ src/riji_agent/
 | `integrations/hermes_bridge.py`, `integrations/hermes_installer.py` | `integrations/hermes/` | Optional installer and bridge code; never required by core. |
 | `config.py`, CLI setup in `main.py` | `config/` and CLI commands | Future `init` and `doctor` commands should validate the default stack without printing secrets. |
 
-### 8.3 迁移顺序
+### 8.4 迁移顺序
 
 1. 先冻结本文档作为模块化基线，不在同一个 PR 中大规模移动代码。
 2. 迁移模型层：把 DeepSeek 变成默认 `models` adapter，并保留现有 provider contract。
