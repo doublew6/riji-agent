@@ -8,6 +8,10 @@ from typing import Annotated, FrozenSet, Optional
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from riji_agent.agent.registry import supported_agent_runtimes
+from riji_agent.im.registry import supported_im_providers
+from riji_agent.models.registry import supported_model_providers
+
 
 class ConfigurationError(RuntimeError):
     """A safe startup error which never serializes configuration values."""
@@ -33,6 +37,11 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr = Field(alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
     deepseek_model: str = Field(default="deepseek-reasoner", alias="DEEPSEEK_MODEL")
+    # Generic OpenAI-compatible model credentials, used when RIJI_MODEL_PROVIDER
+    # selects the non-default "openai" adapter. Unused by the DeepSeek default.
+    model_api_key: Optional[SecretStr] = Field(default=None, alias="RIJI_MODEL_API_KEY")
+    model_base_url: str = Field(default="https://api.openai.com/v1", alias="RIJI_MODEL_BASE_URL")
+    model_name: str = Field(default="gpt-4o-mini", alias="RIJI_MODEL_NAME")
     im_provider: str = Field(default="feishu", alias="RIJI_IM_PROVIDER")
     agent_runtime: str = Field(default="hermes", alias="RIJI_AGENT_RUNTIME")
     model_provider: str = Field(default="deepseek", alias="RIJI_MODEL_PROVIDER")
@@ -85,7 +94,7 @@ class Settings(BaseSettings):
     @classmethod
     def require_supported_model_provider(cls, value: str) -> str:
         cleaned = value.strip().lower()
-        if cleaned != "deepseek":
+        if cleaned not in supported_model_providers():
             raise ValueError("unsupported model provider")
         return cleaned
 
@@ -93,7 +102,7 @@ class Settings(BaseSettings):
     @classmethod
     def require_supported_im_provider(cls, value: str) -> str:
         cleaned = value.strip().lower()
-        if cleaned != "feishu":
+        if cleaned not in supported_im_providers():
             raise ValueError("unsupported IM provider")
         return cleaned
 
@@ -101,9 +110,19 @@ class Settings(BaseSettings):
     @classmethod
     def require_supported_agent_runtime(cls, value: str) -> str:
         cleaned = value.strip().lower()
-        if cleaned != "hermes":
+        if cleaned not in supported_agent_runtimes():
             raise ValueError("unsupported agent runtime")
         return cleaned
+
+    @model_validator(mode="after")
+    def validate_selected_model_provider(self) -> "Settings":
+        # Each provider declares its own required credentials. The DeepSeek
+        # default always has DEEPSEEK_API_KEY; the openai-compatible adapter
+        # needs RIJI_MODEL_API_KEY. Fail at load, never at first request.
+        if self.model_provider == "openai":
+            if self.model_api_key is None or not self.model_api_key.get_secret_value():
+                raise ValueError("model api key is required for the selected provider")
+        return self
 
     @model_validator(mode="after")
     def validate_local_paths(self) -> "Settings":

@@ -11,10 +11,13 @@ The batteries-included default stack is **Feishu + Hermes + DeepSeek**:
 - Hermes is the default agent runtime and message router.
 - DeepSeek is the default OpenAI-compatible reasoning model provider.
 
-That stack is the fastest supported path today, but it is not the only
-supported architecture. In other words, the default stack is **not the only supported architecture**.
-The project is designed around replaceable IM, agent, and model adapters over a
-local journal core.
+That stack is the fastest supported path today, but the default stack is
+**not the only supported architecture**. The project is built around
+replaceable IM, agent, and model adapters over a local journal core: each is
+selected by config and resolved through a small registry, so adding an adapter
+means registering it, not editing the wiring. DeepSeek ships alongside a generic
+OpenAI-compatible model adapter (`RIJI_MODEL_PROVIDER=openai`) as a worked
+example.
 
 ## What It Is
 
@@ -121,7 +124,9 @@ Then restart `hermes gateway`. Configuration details live in
   directory.
 - `RIJI_IM_PROVIDER=feishu` selects the default Feishu IM adapter.
 - `RIJI_AGENT_RUNTIME=hermes` selects the default Hermes agent runtime.
-- `RIJI_MODEL_PROVIDER=deepseek` selects the default DeepSeek model adapter.
+- `RIJI_MODEL_PROVIDER=deepseek` selects the default DeepSeek model adapter; set
+  it to `openai` to use any OpenAI-compatible endpoint via the `RIJI_MODEL_*`
+  variables instead.
 - `RIJI_ALLOWED_FEISHU_USER_IDS` is a comma-separated Feishu open ID allowlist;
   group chats are denied by design.
 - The service binds to `127.0.0.1`. Use Feishu/Hermes or a private network proxy
