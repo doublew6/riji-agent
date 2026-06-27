@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 PRD = ROOT / "docs" / "PRD.md"
 ARCHITECTURE = ROOT / "docs" / "architecture" / "mvp-architecture.md"
+PRIVACY = ROOT / "docs" / "privacy.md"
+SECURITY = ROOT / "SECURITY.md"
+LICENSE = ROOT / "LICENSE"
 
 
 def _read(path: Path) -> str:
@@ -60,3 +63,30 @@ def test_architecture_defines_replaceable_module_boundaries() -> None:
     )
     for phrase in required_phrases:
         assert phrase in text
+
+
+def test_release_privacy_and_security_docs_exist() -> None:
+    privacy = _read(PRIVACY)
+    security = _read(SECURITY)
+    license_text = _read(LICENSE)
+
+    for phrase in (
+        "not a zero-egress system",
+        "Feishu/Lark",
+        "DeepSeek/default model provider",
+        "complete vault",
+        "SQLite",
+        "API keys",
+        "private: true",
+    ):
+        assert phrase in privacy
+
+    for phrase in (
+        "Do not include secrets",
+        "Security reports",
+        "git log --all --name-only",
+        "PRIVATE_DEMO_SENTINEL",
+    ):
+        assert phrase in security
+
+    assert "MIT License" in license_text

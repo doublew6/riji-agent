@@ -32,7 +32,8 @@ local journal core.
 ## Privacy Model
 
 This is **not a zero-egress system**. It is a local-control design with bounded
-cloud reasoning.
+cloud reasoning. See [docs/privacy.md](docs/privacy.md) and
+[SECURITY.md](SECURITY.md) before connecting real journal data.
 
 Never sent by riji-agent:
 
