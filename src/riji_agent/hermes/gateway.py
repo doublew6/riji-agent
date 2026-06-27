@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 from riji_agent.drafts.errors import DraftError
 from riji_agent.drafts.service import DraftService
@@ -18,6 +18,7 @@ from riji_agent.hermes.access import authorize_chat, verify_shared_secret
 from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.models import GatewayReply, IncomingMessage
 from riji_agent.hermes.routing import route_persona
+from riji_agent.im.models import IncomingChatMessage
 from riji_agent.memory.models import SessionMessage, session_key
 from riji_agent.memory.store import MemoryStore
 from riji_agent.personas.context import build_context
@@ -88,12 +89,15 @@ class HermesGateway:
         self._default_persona = default_persona
         self._lock = threading.Lock()
 
-    def handle(self, shared_secret: str, message: IncomingMessage) -> GatewayReply:
+    def handle(
+        self, shared_secret: str, message: Union[IncomingChatMessage, IncomingMessage]
+    ) -> GatewayReply:
+        message = _normalize_message(message)
         # Gate 1 + 2: caller identity and chat authorization.
         verify_shared_secret(shared_secret, self._secret)
-        authorize_chat(message.feishu_user_id, message.chat_type, self._allowed)
+        authorize_chat(message.user_id, message.chat_type, self._allowed)
 
-        user = message.feishu_user_id
+        user = message.user_id
         with self._lock:
             seen = self._events.get(message.event_id)
             if seen is not None:
@@ -128,8 +132,10 @@ class HermesGateway:
 
     # --------------------------------------------------------------- internals
 
-    def _respond(self, message: IncomingMessage, persona_id: str, question: str) -> GatewayReply:
-        user, chat = message.feishu_user_id, message.chat_id
+    def _respond(
+        self, message: IncomingChatMessage, persona_id: str, question: str
+    ) -> GatewayReply:
+        user, chat = message.user_id, message.chat_id
         request_id = uuid.uuid4().hex
         assembled = build_context(
             self._store, self._registry, user_id=user, persona_id=persona_id, chat_id=chat
@@ -154,9 +160,9 @@ class HermesGateway:
         return GatewayReply(request_id, persona_id, reply, deduplicated=False)
 
     def _confirm_draft(
-        self, message: IncomingMessage, persona_id: str, draft_id: Optional[str] = None
+        self, message: IncomingChatMessage, persona_id: str, draft_id: Optional[str] = None
     ) -> GatewayReply:
-        user, chat = message.feishu_user_id, message.chat_id
+        user, chat = message.user_id, message.chat_id
         if draft_id is not None:
             # Explicit id: works across persona switches. Treat a draft that is
             # absent or owned by someone else identically, so we never disclose
@@ -199,3 +205,9 @@ class HermesGateway:
     def _unknown_persona_help(self) -> str:
         names = "、".join(f"{p.name}（{p.persona_id}）" for p in self._registry.all())
         return f"未识别的导师。可用导师：{names}。用「/导师 名称」切换。"
+
+
+def _normalize_message(message: Union[IncomingChatMessage, IncomingMessage]) -> IncomingChatMessage:
+    if isinstance(message, IncomingChatMessage):
+        return message
+    return message.to_chat_message()
