@@ -8,6 +8,7 @@ import logging
 import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional, Sequence
 
 import uvicorn
@@ -15,6 +16,7 @@ from fastapi import FastAPI
 
 from riji_agent.agent.hermes import HermesAgentRuntime, build_hermes_runtime_router
 from riji_agent.config import ConfigurationError, Settings, load_settings
+from riji_agent.config_cli import DEFAULT_PRESET, run_doctor, write_init_env
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
     install as install_hermes_bridge,
@@ -134,6 +136,35 @@ def _run_index_command(*, rebuild: bool, status: bool) -> int:
     return 0
 
 
+def _run_init_command(args) -> int:
+    try:
+        write_init_env(
+            Path(args.env_file).expanduser(),
+            preset=args.preset,
+            journal_root=Path(args.journal_root).expanduser() if args.journal_root else None,
+            data_dir=Path(args.data_dir).expanduser() if args.data_dir else None,
+            deepseek_api_key=args.deepseek_api_key,
+            feishu_user_ids=tuple(args.feishu_user_id),
+            hermes_shared_secret=args.hermes_shared_secret,
+            force=args.force,
+        )
+    except FileExistsError:
+        print("env file already exists; use --force to overwrite", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("created env file")
+    return 0
+
+
+def _run_doctor_command(env_file: str) -> int:
+    result = run_doctor(env_file=Path(env_file).expanduser())
+    for message in result.messages:
+        print(message)
+    return 0 if result.ok else 2
+
+
 def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backup: bool) -> int:
     path = Path(gateway_run).expanduser() if gateway_run else None
     try:
@@ -194,6 +225,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         prog="riji-agent", description="Local journal agent boundary."
     )
     sub = parser.add_subparsers(dest="command")
+    init_cmd = sub.add_parser("init", help="Create a local .env for the default stack.")
+    init_cmd.add_argument("--preset", default=DEFAULT_PRESET, choices=(DEFAULT_PRESET,))
+    init_cmd.add_argument("--env-file", default=".env")
+    init_cmd.add_argument("--journal-root")
+    init_cmd.add_argument("--data-dir")
+    init_cmd.add_argument("--deepseek-api-key", default="replace-me")
+    init_cmd.add_argument("--feishu-user-id", action="append", default=["ou_replace_me"])
+    init_cmd.add_argument("--hermes-shared-secret")
+    init_cmd.add_argument("--force", action="store_true")
+    doctor_cmd = sub.add_parser("doctor", help="Validate local configuration safely.")
+    doctor_cmd.add_argument("--env-file", default=".env")
+    sub.add_parser("serve", help="Run the local riji-agent service.")
     index_cmd = sub.add_parser("index", help="Build or inspect the local journal index.")
     index_cmd.add_argument(
         "--rebuild", action="store_true", help="Clear and rebuild the index from scratch."
@@ -219,6 +262,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.command == "index":
         raise SystemExit(_run_index_command(rebuild=args.rebuild, status=args.status))
+    if args.command == "init":
+        raise SystemExit(_run_init_command(args))
+    if args.command == "doctor":
+        raise SystemExit(_run_doctor_command(args.env_file))
+    if args.command == "serve":
+        _serve()
+        return
     if args.command == "hermes-bridge":
         raise SystemExit(
             _run_hermes_bridge_command(args.action, args.gateway_run, args.no_backup)
