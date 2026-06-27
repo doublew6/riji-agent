@@ -55,6 +55,19 @@ May leave the machine when the default stack is enabled:
 
 Requirements: Python 3.9+ and [uv](https://docs.astral.sh/uv/).
 
+Try the fictional demo vault first. It does not read `.env`, your real journal,
+or any real API key:
+
+```bash
+uv run riji-agent demo init --target /tmp/riji-demo-vault
+uv run riji-agent chat --demo --question "launch planning"
+```
+
+The demo answer should include `[[riji/...]]` sources and exclude the sample
+`private: true` note.
+
+For the full default stack:
+
 ```bash
 uv run riji-agent init --preset feishu-hermes-deepseek
 # Edit .env with your journal path, DeepSeek API key, and Feishu user allowlist.

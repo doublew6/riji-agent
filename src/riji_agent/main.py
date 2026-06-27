@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from riji_agent.agent.hermes import HermesAgentRuntime, build_hermes_runtime_router
 from riji_agent.config import ConfigurationError, Settings, load_settings
 from riji_agent.config_cli import DEFAULT_PRESET, run_doctor, write_init_env
+from riji_agent.demo import copy_sample_vault, run_demo_chat
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
     install as install_hermes_bridge,
@@ -165,6 +166,27 @@ def _run_doctor_command(env_file: str) -> int:
     return 0 if result.ok else 2
 
 
+def _run_demo_command(args) -> int:
+    if args.action == "init":
+        try:
+            path = copy_sample_vault(Path(args.target).expanduser(), force=args.force)
+        except FileExistsError:
+            print("sample vault target already exists; use --force to overwrite", file=sys.stderr)
+            return 2
+        print(f"sample vault: {path}")
+        return 0
+    print(f"unknown demo action: {args.action}", file=sys.stderr)
+    return 2
+
+
+def _run_chat_command(args) -> int:
+    if not args.demo:
+        print("only --demo chat is available in this release", file=sys.stderr)
+        return 2
+    print(run_demo_chat(args.question, data_dir=Path(args.data_dir).expanduser()))
+    return 0
+
+
 def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backup: bool) -> int:
     path = Path(gateway_run).expanduser() if gateway_run else None
     try:
@@ -237,6 +259,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     doctor_cmd = sub.add_parser("doctor", help="Validate local configuration safely.")
     doctor_cmd.add_argument("--env-file", default=".env")
     sub.add_parser("serve", help="Run the local riji-agent service.")
+    demo_cmd = sub.add_parser("demo", help="Create or inspect demo assets.")
+    demo_cmd.add_argument("action", choices=("init",))
+    demo_cmd.add_argument("--target", default="sample-riji")
+    demo_cmd.add_argument("--force", action="store_true")
+    chat_cmd = sub.add_parser("chat", help="Run a local demo chat.")
+    chat_cmd.add_argument("--demo", action="store_true")
+    chat_cmd.add_argument("--question", default="launch planning")
+    chat_cmd.add_argument("--data-dir", default=".riji-demo")
     index_cmd = sub.add_parser("index", help="Build or inspect the local journal index.")
     index_cmd.add_argument(
         "--rebuild", action="store_true", help="Clear and rebuild the index from scratch."
@@ -269,6 +299,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.command == "serve":
         _serve()
         return
+    if args.command == "demo":
+        raise SystemExit(_run_demo_command(args))
+    if args.command == "chat":
+        raise SystemExit(_run_chat_command(args))
     if args.command == "hermes-bridge":
         raise SystemExit(
             _run_hermes_bridge_command(args.action, args.gateway_run, args.no_backup)
