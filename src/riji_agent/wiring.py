@@ -3,10 +3,10 @@
 This is the single place that turns configured settings into a runnable
 service. It owns no policy of its own — it only constructs the components the
 tests already exercise (index, retrieval, tools, memory, drafts, audit, the
-Yangming KB and the DeepSeek provider) and hands them to the gateway.
+Yangming KB and the configured model provider) and hands them to the gateway.
 
 Boundaries preserved here: the journal vault is opened read-only, the API key
-only ever reaches the DeepSeek provider, and all local state lives in SQLite
+only ever reaches the model provider, and all local state lives in SQLite
 files under the configured data directory.
 """
 
@@ -26,7 +26,7 @@ from riji_agent.journal.embedding import embedder_from_settings
 from riji_agent.journal.index import JournalIndex
 from riji_agent.journal.scheduler import IndexScheduler
 from riji_agent.memory.store import MemoryStore
-from riji_agent.models.deepseek import DeepSeekProvider
+from riji_agent.models.registry import build_model_provider
 from riji_agent.models.types import LLMProvider
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.service import RetrievalService
@@ -80,11 +80,9 @@ def build_production_gateway(
 
     registry = ToolRegistry(retrieval, draft_service=draft_service, yangming_kb=yangming)
 
-    model = provider or DeepSeekProvider(
-        api_key=settings.deepseek_api_key.get_secret_value(),
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
-    )
+    # Dispatch on settings.model_provider via the registry; DeepSeek is the
+    # default, but no provider is hardcoded here.
+    model = provider or build_model_provider(settings)
 
     audit = AuditStore(data_dir / "audit.sqlite3")
     responder = AgentResponder(model, registry, audit_store=audit)
