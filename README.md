@@ -19,7 +19,8 @@ replaceable IM, agent, and model adapters over a local journal core: each is
 selected by config and resolved through a small registry, so adding an adapter
 means registering it, not editing the wiring. DeepSeek ships alongside a generic
 OpenAI-compatible model adapter (`RIJI_MODEL_PROVIDER=openai`) as a worked
-example.
+example. See [docs/architecture/modules.md](docs/architecture/modules.md) for
+the core/im/agent/models boundaries and how to add an adapter.
 
 ## What It Is
 

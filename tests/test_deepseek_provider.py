@@ -4,8 +4,8 @@ from typing import Any, Dict, List
 import httpx
 import pytest
 
-from riji_agent.llm.deepseek import DeepSeekProvider
-from riji_agent.llm.types import LLMError
+from riji_agent.models.deepseek import DeepSeekProvider
+from riji_agent.models.types import LLMError
 
 API_KEY = "sk-super-secret-key"
 

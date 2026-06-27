@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from riji_agent.config import Settings
 from riji_agent.journal.index import IndexStats, JournalIndex
-from riji_agent.llm.types import AssistantTurn, ToolCall
+from riji_agent.models.types import AssistantTurn, ToolCall
 from riji_agent.main import create_app, create_production_app
 from riji_agent.wiring import build_production_gateway
 
