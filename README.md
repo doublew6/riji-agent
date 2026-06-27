@@ -84,7 +84,8 @@ Feishu private chat -> Hermes -> riji-agent /hermes/messages -> local tools -> D
 
 The bridge forwards message text and identity metadata to riji-agent over
 loopback HTTP. It does not read the journal vault, SQLite databases, local index,
-or model keys.
+or model keys. Inside riji-agent, Feishu payloads are normalized into a neutral
+IM message contract so future adapters can reuse the same gateway path.
 
 ```bash
 uv run riji-agent hermes-bridge install

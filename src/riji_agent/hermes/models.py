@@ -4,19 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Feishu private (peer-to-peer) chat type; anything else is treated as a group.
-PRIVATE_CHAT_TYPE = "p2p"
+from riji_agent.im.feishu import FeishuIncomingMessage
+from riji_agent.im.models import PRIVATE_CHAT_TYPE
 
 
 @dataclass(frozen=True)
-class IncomingMessage:
+class IncomingMessage(FeishuIncomingMessage):
     """A single Feishu message forwarded by Hermes."""
-
-    event_id: str
-    feishu_user_id: str
-    chat_id: str
-    chat_type: str
-    text: str
 
 
 @dataclass(frozen=True)

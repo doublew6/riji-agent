@@ -7,6 +7,7 @@ from riji_agent.hermes.errors import AuthError, AuthErrorCode
 from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.models import IncomingMessage
+from riji_agent.im.models import IncomingChatMessage
 from riji_agent.memory.store import MemoryStore
 from riji_agent.personas.registry import PersonaRegistry
 
@@ -50,6 +51,23 @@ def test_authorized_private_chat_gets_reply(setup) -> None:
     assert reply.persona_id == "gentle_reviewer"  # default
     assert reply.deduplicated is False
     assert len(responder.calls) == 1
+
+
+def test_gateway_accepts_neutral_im_message(setup) -> None:
+    gateway, _store, responder = setup
+    message = IncomingChatMessage(
+        event_id="neutral-1",
+        user_id="ou_1",
+        chat_id="c1",
+        chat_type="p2p",
+        text="你好",
+        platform="feishu",
+    )
+
+    reply = gateway.handle(SECRET, message)
+
+    assert reply.persona_id == "gentle_reviewer"
+    assert responder.calls[-1]["question"] == "你好"
 
 
 def test_bad_secret_is_rejected(setup) -> None:
