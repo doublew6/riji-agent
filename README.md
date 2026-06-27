@@ -1,73 +1,122 @@
 # riji-agent
 
-`riji-agent` 是日记 Agent 的本地数据与隐私边界：它将来为 Hermes 提供受限工具，但绝不让 Hermes、DeepSeek 或飞书直接读取整个 Obsidian vault。
+`riji-agent` is a local-first journal agent gateway for Obsidian-style Markdown
+journals. It keeps the journal vault, local index, drafts, audit records, and
+write permissions on the user's machine, while exposing only bounded,
+auditable tools to an external agent or model runtime.
 
-当前完成了 MVP-01 的服务骨架：配置校验、本地运行目录、仅回环监听的 FastAPI 服务，以及不泄漏配置的健康检查。
+The batteries-included default stack is **Feishu + Hermes + DeepSeek**:
 
-## 本地启动
+- Feishu is the default IM entry point for private chat.
+- Hermes is the default agent runtime and message router.
+- DeepSeek is the default OpenAI-compatible reasoning model provider.
 
-需要 Python 3.9+ 和 [uv](https://docs.astral.sh/uv/)。在项目目录执行：
+That stack is the fastest supported path today, but it is not the only
+supported architecture. In other words, the default stack is **not the only supported architecture**.
+The project is designed around replaceable IM, agent, and model adapters over a
+local journal core.
+
+## What It Is
+
+`riji-agent` provides a local boundary for personal journal intelligence:
+
+- reads an existing Markdown journal vault without copying it into the repo;
+- builds a local SQLite index for search, timeline, and source lookup;
+- lets an agent call narrow tools such as `search_journal` and `read_note`;
+- blocks private notes and caps returned snippets before anything reaches a
+  cloud model;
+- creates journal write drafts that require explicit user confirmation before
+  any Markdown file is changed;
+- records metadata for audit without storing full sensitive text in logs.
+
+## Privacy Model
+
+This is **not a zero-egress system**. It is a local-control design with bounded
+cloud reasoning.
+
+Never sent by riji-agent:
+
+- the complete vault;
+- raw Markdown files as files;
+- local SQLite databases;
+- API keys, Feishu credentials, or the Hermes shared secret;
+- filesystem paths or the vault directory structure;
+- notes marked `private: true`.
+
+May leave the machine when the default stack is enabled:
+
+- Feishu/Lark receives the user's bot messages and bot replies;
+- DeepSeek receives the system prompt, the user's question, and bounded journal
+  snippets returned by local tools;
+- Hermes receives routing metadata and the local gateway response, but should
+  not directly read the vault or SQLite files.
+
+## Quick Start
+
+Requirements: Python 3.9+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入真实绝对路径、DeepSeek API Key、飞书用户 ID 与 Hermes 共享密钥
+# Edit .env with your journal path, DeepSeek API key, Feishu user allowlist,
+# and Hermes shared secret.
 uv sync --extra dev
-uv run riji-agent index    # 首次部署：先预热本地索引
-uv run riji-agent          # 启动服务
+uv run riji-agent index    # prewarm the local index
+uv run riji-agent          # serve http://127.0.0.1:8765
 ```
 
-首次部署建议先 `uv run riji-agent index` 把日记索引建好，再启动服务接入 Hermes，避免冷启动扫描全部 Markdown 时卡顿。服务运行时后台调度器会定期增量索引（默认每 10 分钟，可经 `RIJI_INDEX_*` 配置）。索引 CLI：`index`（增量）、`index --rebuild`（重建）、`index --status`（只读查看元数据）。详见 [docs/deployment.md](docs/deployment.md)。
-
-服务固定监听 `http://127.0.0.1:8765`；浏览器打开 `http://127.0.0.1:8765/healthz`，应得到：
+Open `http://127.0.0.1:8765/healthz` and expect:
 
 ```json
 {"service":"riji-agent","status":"ok"}
 ```
 
-若缺少必需配置或日记路径不可访问，进程会以不含路径、密钥的可读错误退出。`RIJI_DATA_DIR` 默认位于 `~/.local/share/riji-agent`；它用于未来的 SQLite、草稿与审计数据，不会把日记复制进仓库。
+`RIJI_DATA_DIR` defaults to `~/.local/share/riji-agent`; it stores local SQLite
+state outside the repository. See [docs/deployment.md](docs/deployment.md) for
+indexing, startup, and recovery details.
 
-## 配置与安全
+## Default Stack: Feishu + Hermes + DeepSeek
 
-- `.env`、SQLite、审计日志、`data/` 和可能误复制的 `riji/` 均被 Git 忽略。
-- `RIJI_JOURNAL_ROOT` 必须指向一个已存在的 vault 内 `riji` 目录。
-- `RIJI_DATA_DIR` 和可选的 `RIJI_DATABASE_PATH` 必须在日记目录之外，且数据库只能位于数据目录中。
-- `RIJI_ALLOWED_FEISHU_USER_IDS` 是逗号分隔的飞书 open ID 白名单；群聊会在后续鉴权层无条件拒绝。
-- 运行入口把 Uvicorn 固定到 `127.0.0.1`。如需手机访问，应由后续的 Hermes/飞书或受控的 Tailscale 方案处理，而非暴露这个端口到公网。
+Feishu private chat reaches riji-agent through a thin Hermes-side bridge:
 
-## 飞书接入（Hermes bridge）
+```text
+Feishu private chat -> Hermes -> riji-agent /hermes/messages -> local tools -> DeepSeek
+```
 
-飞书私聊经 Hermes 接入后，由一个很薄的 bridge（`src/riji_agent/integrations/hermes_bridge.py`）把消息**原样转发**到 riji-agent 的 `/hermes/messages`，再取回 `reply` 发回飞书。bridge 运行在 Hermes 一侧，无任何 vault / SQLite / DeepSeek key 访问，只需两个环境变量：
-
-- `HERMES_SHARED_SECRET`（必填，与 riji-agent 一致，仅作 `X-Hermes-Secret` 头，不入日志）；
-- `RIJI_AGENT_URL`（可选，默认 `http://127.0.0.1:8765/hermes/messages`）；
-- `RIJI_AGENT_TIMEOUT_SECONDS`（可选，默认 `240`）。
-
-在 Hermes 机器上执行：
+The bridge forwards message text and identity metadata to riji-agent over
+loopback HTTP. It does not read the journal vault, SQLite databases, local index,
+or model keys.
 
 ```bash
 uv run riji-agent hermes-bridge install
 uv run riji-agent hermes-bridge status
 ```
 
-然后重启 `hermes gateway`。群聊、非白名单用户的拒绝与事件幂等仍由 riji-agent 负责，bridge 不自行放行。配置步骤与 Hermes 飞书侧官方变量见 [docs/hermes-integration.md](docs/hermes-integration.md)。
+Then restart `hermes gateway`. Configuration details live in
+[docs/hermes-integration.md](docs/hermes-integration.md).
 
-## 开发验证
+## Configuration And Safety
+
+- `.env`, SQLite files, audit logs, `data/`, and accidental local journal copies
+  are ignored by Git.
+- `RIJI_JOURNAL_ROOT` must point to an existing journal directory.
+- `RIJI_DATA_DIR` and optional `RIJI_DATABASE_PATH` must be outside the journal
+  directory.
+- `RIJI_ALLOWED_FEISHU_USER_IDS` is a comma-separated Feishu open ID allowlist;
+  group chats are denied by design.
+- The service binds to `127.0.0.1`. Use Feishu/Hermes or a private network proxy
+  for remote access; do not expose this port directly to the public internet.
+
+## Development
 
 ```bash
 uv run pytest
 ```
 
-### 冒烟测试（smoke）
-
-`tests/test_smoke_mvp.py` 是一条面向部署路径的端到端冒烟测试，通过真实的 HTTP app
-（`/healthz` 与 `/hermes/messages`）跑通「本地索引 + 检索工具 + DeepSeek 工具循环（stub）
-+ 导师路由 + 幂等 + 隐私最小化」主链路。它全程使用临时 fixture 与 stub 模型，**不读取真实
-`.env`、真实日记库或真实 API Key**。
+Smoke tests cover the main deployment path without reading real `.env`, a real
+journal vault, or a real API key:
 
 ```bash
-uv run pytest -m smoke        # 只跑冒烟测试，快速判断主链路是否通
-uv run pytest -m "not smoke"  # 跑其余单元测试
-uv run pytest                 # 全部
+uv run pytest -m smoke
+uv run pytest -m "not smoke"
+uv run pytest
 ```
-
-适用场景：升级依赖、改动网关/检索/工具循环、或部署前，用 `-m smoke` 做一次快速健康检查。
