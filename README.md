@@ -101,6 +101,7 @@ Then restart `hermes gateway`. Configuration details live in
 - `RIJI_JOURNAL_ROOT` must point to an existing journal directory.
 - `RIJI_DATA_DIR` and optional `RIJI_DATABASE_PATH` must be outside the journal
   directory.
+- `RIJI_MODEL_PROVIDER=deepseek` selects the default DeepSeek model adapter.
 - `RIJI_ALLOWED_FEISHU_USER_IDS` is a comma-separated Feishu open ID allowlist;
   group chats are denied by design.
 - The service binds to `127.0.0.1`. Use Feishu/Hermes or a private network proxy

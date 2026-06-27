@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 from riji_agent.agent.loop import AgentLimits, AgentRunner
 from riji_agent.agent.tools import ToolRegistry
 from riji_agent.audit.store import AuditStore
-from riji_agent.llm.types import LLMProvider
+from riji_agent.models.types import LLMProvider
 from riji_agent.memory.models import SessionMessage
 from riji_agent.retrieval.models import ToolContext
 

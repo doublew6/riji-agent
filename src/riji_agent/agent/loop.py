@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from riji_agent.agent.tools import ToolRegistry, openai_tool_specs
-from riji_agent.llm.types import AssistantTurn, LLMProvider
+from riji_agent.models.types import AssistantTurn, LLMProvider
 from riji_agent.retrieval.models import ToolContext
 
 SYSTEM_PROMPT = (
