@@ -19,7 +19,7 @@ from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.responder import AgentResponder
 from riji_agent.journal.index import JournalIndex
-from riji_agent.llm.types import AssistantTurn, ToolCall
+from riji_agent.models.types import AssistantTurn, ToolCall
 from riji_agent.main import create_app
 from riji_agent.memory.store import MemoryStore
 from riji_agent.personas.registry import PersonaRegistry

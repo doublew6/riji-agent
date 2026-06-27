@@ -7,7 +7,7 @@ import pytest
 from riji_agent.agent.loop import AgentLimits, AgentRunner
 from riji_agent.agent.tools import ToolRegistry
 from riji_agent.journal.index import JournalIndex
-from riji_agent.llm.types import AssistantTurn, ToolCall
+from riji_agent.models.types import AssistantTurn, ToolCall
 from riji_agent.retrieval.models import ToolContext
 from riji_agent.retrieval.service import RetrievalService
 
