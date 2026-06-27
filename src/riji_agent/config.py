@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr = Field(alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
     deepseek_model: str = Field(default="deepseek-reasoner", alias="DEEPSEEK_MODEL")
+    model_provider: str = Field(default="deepseek", alias="RIJI_MODEL_PROVIDER")
     semantic_search_enabled: bool = Field(default=False, alias="RIJI_SEMANTIC_SEARCH")
     index_schedule_enabled: bool = Field(default=True, alias="RIJI_INDEX_SCHEDULE_ENABLED")
     index_interval_seconds: int = Field(default=600, alias="RIJI_INDEX_INTERVAL_SECONDS", ge=1)
@@ -77,6 +78,14 @@ class Settings(BaseSettings):
         if not value.startswith(("http://", "https://")):
             raise ValueError("must be an HTTP(S) URL")
         return value.rstrip("/")
+
+    @field_validator("model_provider")
+    @classmethod
+    def require_supported_model_provider(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned != "deepseek":
+            raise ValueError("unsupported model provider")
+        return cleaned
 
     @model_validator(mode="after")
     def validate_local_paths(self) -> "Settings":

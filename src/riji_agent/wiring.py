@@ -25,9 +25,9 @@ from riji_agent.hermes.responder import AgentResponder
 from riji_agent.journal.embedding import embedder_from_settings
 from riji_agent.journal.index import JournalIndex
 from riji_agent.journal.scheduler import IndexScheduler
-from riji_agent.llm.deepseek import DeepSeekProvider
-from riji_agent.llm.types import LLMProvider
 from riji_agent.memory.store import MemoryStore
+from riji_agent.models.deepseek import DeepSeekProvider
+from riji_agent.models.types import LLMProvider
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.service import RetrievalService
 from riji_agent.yangming.seed import load_seed

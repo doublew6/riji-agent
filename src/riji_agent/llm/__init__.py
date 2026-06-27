@@ -1,7 +1,6 @@
-"""OpenAI-compatible LLM provider adapters (DeepSeek)."""
+"""Backward-compatible import path for model provider adapters."""
 
-from riji_agent.llm.types import AssistantTurn, LLMError, LLMProvider, ToolCall
-from riji_agent.llm.deepseek import DeepSeekProvider
+from riji_agent.models import AssistantTurn, DeepSeekProvider, LLMError, LLMProvider, ToolCall
 
 __all__ = [
     "AssistantTurn",
