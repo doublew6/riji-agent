@@ -1,5 +1,7 @@
 # riji-agent
 
+[![test](https://github.com/doublew6/riji-agent/actions/workflows/test.yml/badge.svg)](https://github.com/doublew6/riji-agent/actions/workflows/test.yml)
+
 `riji-agent` is a local-first journal agent gateway for Obsidian-style Markdown
 journals. It keeps the journal vault, local index, drafts, audit records, and
 write permissions on the user's machine, while exposing only bounded,
