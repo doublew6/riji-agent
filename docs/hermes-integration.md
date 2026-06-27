@@ -19,6 +19,10 @@
 2. **DeepSeek Provider**：base url `https://api.deepseek.com`，模型默认 `deepseek-reasoner`（可切 `deepseek-chat`）。API Key 只配置在本地 Hermes/riji-agent 环境，不出云、不进飞书侧。
 3. **转发到 riji-agent**：把每条私聊消息 POST 到 riji-agent 的 `/hermes/messages`，携带共享密钥头。
 
+### Feishu Bot 头像
+
+仓库内提供默认头像资产：`assets/integrations/feishu/riji-bot-avatar.png`。它是 512x512 PNG，适合作为 Feishu/Lark 自建应用的 Bot 头像上传。
+
 ## riji-agent 端点契约
 
 `POST http://127.0.0.1:8765/hermes/messages`
