@@ -78,8 +78,14 @@ uv run riji-agent init --preset feishu-hermes-deepseek
 uv run riji-agent doctor
 uv sync --extra dev
 uv run riji-agent index    # prewarm the local index
+# Validate your model key + journal retrieval end-to-end before wiring Feishu:
+uv run riji-agent chat --question "本周关于发布我都记了什么？"
 uv run riji-agent          # serve http://127.0.0.1:8765
 ```
+
+`riji-agent chat --question "..."` runs the real agent loop and your configured
+model provider against your vault over loopback — no Feishu or Hermes required —
+so you can confirm the whole local path works before standing up the IM bridge.
 
 Open `http://127.0.0.1:8765/healthz` and expect:
 
