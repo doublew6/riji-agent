@@ -42,3 +42,21 @@ def test_public_docs_do_not_contain_personal_paths() -> None:
     )
     for phrase in forbidden:
         assert phrase not in text
+
+
+def test_architecture_defines_replaceable_module_boundaries() -> None:
+    text = _read(ARCHITECTURE)
+
+    required_phrases = (
+        "core/",
+        "im/",
+        "agent/",
+        "models/",
+        "Core must not depend on Feishu, Hermes, or DeepSeek",
+        "IM adapters only map external chat payloads",
+        "Agent runtimes only orchestrate registered tools",
+        "Model providers only adapt model APIs",
+        "current code to target modules",
+    )
+    for phrase in required_phrases:
+        assert phrase in text
