@@ -13,9 +13,8 @@ from typing import Optional, Sequence
 import uvicorn
 from fastapi import FastAPI
 
+from riji_agent.agent.hermes import HermesAgentRuntime, build_hermes_runtime_router
 from riji_agent.config import ConfigurationError, Settings, load_settings
-from riji_agent.hermes.gateway import HermesGateway
-from riji_agent.hermes.api import build_hermes_router
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
     install as install_hermes_bridge,
@@ -29,7 +28,7 @@ from riji_agent.wiring import build_journal_index, build_production_gateway
 def create_app(
     settings: Optional[Settings] = None,
     *,
-    gateway: Optional[HermesGateway] = None,
+    gateway: Optional[HermesAgentRuntime] = None,
     lifespan=None,
 ) -> FastAPI:
     """Create the application without exposing configuration through its API.
@@ -53,7 +52,7 @@ def create_app(
         return {"service": "riji-agent", "status": "ok"}
 
     if gateway is not None:
-        app.include_router(build_hermes_router(gateway))
+        app.include_router(build_hermes_runtime_router(gateway))
 
     return app
 

@@ -14,13 +14,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+from riji_agent.agent.hermes import HermesAgentRuntime
 from riji_agent.agent.tools import ToolRegistry
 from riji_agent.audit.store import AuditStore
 from riji_agent.config import Settings
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
 from riji_agent.hermes.events import EventLog
-from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.responder import AgentResponder
 from riji_agent.journal.embedding import embedder_from_settings
 from riji_agent.journal.index import JournalIndex
@@ -54,7 +54,7 @@ def build_production_gateway(
     *,
     provider: Optional[LLMProvider] = None,
     index: Optional[JournalIndex] = None,
-) -> HermesGateway:
+) -> HermesAgentRuntime:
     """Construct the fully wired gateway for ``settings``.
 
     ``provider`` lets a test or an alternate local model stand in for the
@@ -89,7 +89,7 @@ def build_production_gateway(
     audit = AuditStore(data_dir / "audit.sqlite3")
     responder = AgentResponder(model, registry, audit_store=audit)
 
-    gateway = HermesGateway(
+    gateway = HermesAgentRuntime(
         hermes_secret=settings.hermes_shared_secret.get_secret_value(),
         allowed_user_ids=settings.allowed_feishu_user_ids,
         registry=PersonaRegistry(),
