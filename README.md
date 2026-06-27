@@ -101,6 +101,9 @@ loopback HTTP. It does not read the journal vault, SQLite databases, local index
 or model keys. Inside riji-agent, Feishu payloads are normalized into a neutral
 IM message contract so future adapters can reuse the same gateway path.
 
+The default Feishu Bot avatar lives at
+`assets/integrations/feishu/riji-bot-avatar.png`.
+
 ```bash
 uv run riji-agent hermes-bridge install
 uv run riji-agent hermes-bridge status
