@@ -15,9 +15,11 @@ import uvicorn
 from fastapi import FastAPI
 
 from riji_agent.agent.hermes import HermesAgentRuntime, build_hermes_runtime_router
+from riji_agent.chat import run_local_chat
 from riji_agent.config import ConfigurationError, Settings, load_settings
 from riji_agent.config_cli import DEFAULT_PRESET, run_doctor, write_init_env
 from riji_agent.demo import copy_sample_vault, run_demo_chat
+from riji_agent.models.types import LLMError
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
     install as install_hermes_bridge,
@@ -180,10 +182,23 @@ def _run_demo_command(args) -> int:
 
 
 def _run_chat_command(args) -> int:
-    if not args.demo:
-        print("only --demo chat is available in this release", file=sys.stderr)
+    if args.demo:
+        print(run_demo_chat(args.question, data_dir=Path(args.data_dir).expanduser()))
+        return 0
+
+    # Real local chat: same agent loop and tools as the gateway, over loopback
+    # against the configured vault and model provider. No Feishu/Hermes needed.
+    try:
+        settings = load_settings()
+    except ConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
-    print(run_demo_chat(args.question, data_dir=Path(args.data_dir).expanduser()))
+    try:
+        print(run_local_chat(settings, args.question))
+    except LLMError:
+        # Never echo the request body or credentials; just the safe failure.
+        print("model request failed; check the model provider configuration.", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -263,10 +278,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     demo_cmd.add_argument("action", choices=("init",))
     demo_cmd.add_argument("--target", default="sample-riji")
     demo_cmd.add_argument("--force", action="store_true")
-    chat_cmd = sub.add_parser("chat", help="Run a local demo chat.")
+    chat_cmd = sub.add_parser(
+        "chat",
+        help="Ask one question via the local agent loop (no Feishu/Hermes). "
+        "Use --demo for the offline sample vault.",
+    )
     chat_cmd.add_argument("--demo", action="store_true")
     chat_cmd.add_argument("--question", default="launch planning")
-    chat_cmd.add_argument("--data-dir", default=".riji-demo")
+    chat_cmd.add_argument(
+        "--data-dir", default=".riji-demo", help="Demo-only: where --demo writes its index."
+    )
     index_cmd = sub.add_parser("index", help="Build or inspect the local journal index.")
     index_cmd.add_argument(
         "--rebuild", action="store_true", help="Clear and rebuild the index from scratch."
