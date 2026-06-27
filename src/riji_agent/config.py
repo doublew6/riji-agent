@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr = Field(alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
     deepseek_model: str = Field(default="deepseek-reasoner", alias="DEEPSEEK_MODEL")
+    im_provider: str = Field(default="feishu", alias="RIJI_IM_PROVIDER")
+    agent_runtime: str = Field(default="hermes", alias="RIJI_AGENT_RUNTIME")
     model_provider: str = Field(default="deepseek", alias="RIJI_MODEL_PROVIDER")
     semantic_search_enabled: bool = Field(default=False, alias="RIJI_SEMANTIC_SEARCH")
     index_schedule_enabled: bool = Field(default=True, alias="RIJI_INDEX_SCHEDULE_ENABLED")
@@ -85,6 +87,22 @@ class Settings(BaseSettings):
         cleaned = value.strip().lower()
         if cleaned != "deepseek":
             raise ValueError("unsupported model provider")
+        return cleaned
+
+    @field_validator("im_provider")
+    @classmethod
+    def require_supported_im_provider(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned != "feishu":
+            raise ValueError("unsupported IM provider")
+        return cleaned
+
+    @field_validator("agent_runtime")
+    @classmethod
+    def require_supported_agent_runtime(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned != "hermes":
+            raise ValueError("unsupported agent runtime")
         return cleaned
 
     @model_validator(mode="after")

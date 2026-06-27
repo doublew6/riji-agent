@@ -56,9 +56,9 @@ May leave the machine when the default stack is enabled:
 Requirements: Python 3.9+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-cp .env.example .env
-# Edit .env with your journal path, DeepSeek API key, Feishu user allowlist,
-# and Hermes shared secret.
+uv run riji-agent init --preset feishu-hermes-deepseek
+# Edit .env with your journal path, DeepSeek API key, and Feishu user allowlist.
+uv run riji-agent doctor
 uv sync --extra dev
 uv run riji-agent index    # prewarm the local index
 uv run riji-agent          # serve http://127.0.0.1:8765
@@ -102,6 +102,8 @@ Then restart `hermes gateway`. Configuration details live in
 - `RIJI_JOURNAL_ROOT` must point to an existing journal directory.
 - `RIJI_DATA_DIR` and optional `RIJI_DATABASE_PATH` must be outside the journal
   directory.
+- `RIJI_IM_PROVIDER=feishu` selects the default Feishu IM adapter.
+- `RIJI_AGENT_RUNTIME=hermes` selects the default Hermes agent runtime.
 - `RIJI_MODEL_PROVIDER=deepseek` selects the default DeepSeek model adapter.
 - `RIJI_ALLOWED_FEISHU_USER_IDS` is a comma-separated Feishu open ID allowlist;
   group chats are denied by design.
