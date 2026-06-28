@@ -19,6 +19,7 @@ class UnknownPersonaError(KeyError):
 class Persona:
     persona_id: str
     name: str
+    description: str
     system_prompt: str
     allowed_tools: Tuple[str, ...]
     answer_boundaries: str

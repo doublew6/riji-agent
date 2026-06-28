@@ -114,7 +114,63 @@ def test_unknown_persona_returns_help(setup) -> None:
     gateway, _store, responder = setup
     reply = gateway.handle(SECRET, _msg("/导师 不存在", event_id="e1"))
     assert "可用导师" in reply.text
+    assert "温柔回顾者" in reply.text
+    assert "直率教练" in reply.text
+    assert "未来的我" in reply.text
+    assert "王阳明" in reply.text
     assert responder.calls == []  # no model call for a routing help message
+
+
+def test_persona_list_question_returns_all_personas_without_model_call(setup) -> None:
+    gateway, _store, responder = setup
+
+    reply = gateway.handle(SECRET, _msg("我有哪些导师可以选择？", event_id="persona-help"))
+
+    assert reply.persona_id == "gentle_reviewer"
+    assert "当前导师：温柔回顾者" in reply.text
+    assert "温柔回顾者" in reply.text
+    assert "直率教练" in reply.text
+    assert "未来的我" in reply.text
+    assert "王阳明" in reply.text
+    assert "/导师 王阳明" in reply.text
+    assert "@直率教练" in reply.text
+    assert "私有对话历史互相隔离" in reply.text
+    assert responder.calls == []
+
+
+def test_persona_switch_guidance_works_from_any_current_persona(setup) -> None:
+    gateway, store, responder = setup
+    gateway.handle(SECRET, _msg("/导师 直率教练", event_id="switch"))
+
+    reply = gateway.handle(SECRET, _msg("怎么切换导师？", event_id="switch-help"))
+
+    assert reply.persona_id == "blunt_coach"
+    assert "当前导师：直率教练" in reply.text
+    assert "/导师 温柔回顾者" in reply.text
+    assert "@未来的我" in reply.text
+    assert store.get_preferences("ou_1")["current_persona"] == "blunt_coach"
+    assert responder.calls == []
+
+
+def test_pure_persona_switch_confirms_without_model_call(setup) -> None:
+    gateway, store, responder = setup
+
+    reply = gateway.handle(SECRET, _msg("/导师 直率教练", event_id="pure-switch"))
+
+    assert reply.persona_id == "blunt_coach"
+    assert "已切换默认导师：直率教练" in reply.text
+    assert store.get_preferences("ou_1")["current_persona"] == "blunt_coach"
+    assert responder.calls == []
+
+
+def test_empty_persona_command_returns_guidance_without_model_call(setup) -> None:
+    gateway, _store, responder = setup
+
+    reply = gateway.handle(SECRET, _msg("/导师", event_id="empty-persona"))
+
+    assert "可用导师" in reply.text
+    assert "/导师 王阳明" in reply.text
+    assert responder.calls == []
 
 
 def test_duplicate_event_is_idempotent(setup) -> None:
