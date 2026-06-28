@@ -28,6 +28,15 @@ from riji_agent.retrieval.models import ToolContext
 
 _CURRENT_PERSONA_PREF = "current_persona"
 _CONFIRM_COMMANDS = {"确认保存", "确认写入", "/确认", "确认"}
+_PERSONA_HELP_COMMANDS = {"/导师", "/persona", "/切换", "导师列表"}
+_PERSONA_HELP_KEYWORDS = (
+    "有哪些导师",
+    "导师可以选择",
+    "导师列表",
+    "怎么切换导师",
+    "如何切换导师",
+    "切换导师",
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +120,10 @@ class HermesGateway:
             current = self._store.get_preferences(user).get(
                 _CURRENT_PERSONA_PREF, self._default_persona
             )
+            if _is_persona_help_request(message.text):
+                reply = self._persona_help(current)
+                self._events.record(message.event_id, current, reply)
+                return GatewayReply(uuid.uuid4().hex, current, reply, deduplicated=False)
 
             # Explicit, user-driven commit: the model can never confirm a draft.
             if self._draft_service is not None:
@@ -121,12 +134,18 @@ class HermesGateway:
             try:
                 route = route_persona(message.text, registry=self._registry, current_persona=current)
             except UnknownPersonaError:
-                reply = self._unknown_persona_help()
+                reply = self._persona_help(current, prefix="未识别的导师。")
                 self._events.record(message.event_id, current, reply)
                 return GatewayReply(uuid.uuid4().hex, current, reply, deduplicated=False)
 
             if route.persist:
                 self._store.set_preference(user, _CURRENT_PERSONA_PREF, route.persona_id)
+                if not route.text:
+                    reply = self._persona_switch_reply(route.persona_id)
+                    self._events.record(message.event_id, route.persona_id, reply)
+                    return GatewayReply(
+                        uuid.uuid4().hex, route.persona_id, reply, deduplicated=False
+                    )
 
             return self._respond(message, route.persona_id, route.text)
 
@@ -202,12 +221,41 @@ class HermesGateway:
         }
         return messages.get(exc.code.value, f"写入失败：{exc.message}")
 
-    def _unknown_persona_help(self) -> str:
-        names = "、".join(f"{p.name}（{p.persona_id}）" for p in self._registry.all())
-        return f"未识别的导师。可用导师：{names}。用「/导师 名称」切换。"
+    def _persona_help(self, current_persona: str, *, prefix: str = "") -> str:
+        current = self._registry.get(current_persona)
+        lines = []
+        if prefix:
+            lines.append(prefix)
+        lines.append(f"当前导师：{current.name}（{current.persona_id}）")
+        lines.append("")
+        lines.append("可用导师：")
+        for persona in self._registry.all():
+            lines.append(f"- {persona.name}（{persona.persona_id}）：{persona.description}")
+        lines.append("")
+        lines.append("切换默认导师：发送 `/导师 导师名`，例如 `/导师 王阳明` 或 `/导师 温柔回顾者`。")
+        lines.append(
+            "只让下一条消息使用某位导师：发送 `@导师名 内容`，例如 `@直率教练 帮我复盘这件事`"
+            " 或 `@未来的我 给我一个提醒`。"
+        )
+        lines.append("各导师的私有对话历史互相隔离；日记事实和已确认长期记忆共享。")
+        return "\n".join(lines)
+
+    def _persona_switch_reply(self, persona_id: str) -> str:
+        persona = self._registry.get(persona_id)
+        return (
+            f"已切换默认导师：{persona.name}（{persona.persona_id}）。\n"
+            "之后的普通消息会由这位导师回复；也可以用 `@导师名 内容` 临时指定其他导师。"
+        )
 
 
 def _normalize_message(message: Union[IncomingChatMessage, IncomingMessage]) -> IncomingChatMessage:
     if isinstance(message, IncomingChatMessage):
         return message
     return message.to_chat_message()
+
+
+def _is_persona_help_request(text: str) -> bool:
+    stripped = text.strip()
+    if stripped in _PERSONA_HELP_COMMANDS:
+        return True
+    return any(keyword in stripped for keyword in _PERSONA_HELP_KEYWORDS)
