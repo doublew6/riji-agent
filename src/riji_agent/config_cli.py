@@ -6,10 +6,11 @@ import secrets
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from riji_agent.config import Settings
 from riji_agent.integrations.hermes_installer import status as hermes_bridge_status
+from riji_agent.service import ServiceStatus, get_default_service_status
 
 DEFAULT_PRESET = "feishu-hermes-deepseek"
 
@@ -62,7 +63,11 @@ def write_init_env(
     env_file.write_text(body, encoding="utf-8")
 
 
-def run_doctor(*, env_file: Path = Path(".env")) -> DoctorResult:
+def run_doctor(
+    *,
+    env_file: Path = Path(".env"),
+    service_status_provider: Callable[[], ServiceStatus] = get_default_service_status,
+) -> DoctorResult:
     messages = []
     ok = True
 
@@ -96,6 +101,12 @@ def run_doctor(*, env_file: Path = Path(".env")) -> DoctorResult:
     except Exception:
         messages.append("hermes_bridge: unknown")
 
+    try:
+        service = service_status_provider()
+        messages.append(_format_service_status(service))
+    except Exception:
+        messages.append("service: unknown")
+
     messages.append(f"model_provider: {settings.model_provider}")
     return DoctorResult(ok, tuple(messages))
 
@@ -110,3 +121,13 @@ def _sqlite_fts5_available() -> bool:
     except sqlite3.Error:
         return False
     return True
+
+
+def _format_service_status(status: ServiceStatus) -> str:
+    if not status.installed:
+        return "service: not installed"
+    if status.running:
+        return f"service: running pid={status.pid} health={status.health}"
+    if status.loaded:
+        return f"service: loaded health={status.health}"
+    return "service: stopped"

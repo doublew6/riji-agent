@@ -10,6 +10,7 @@ ARCHITECTURE = ROOT / "docs" / "architecture" / "mvp-architecture.md"
 PRIVACY = ROOT / "docs" / "privacy.md"
 SECURITY = ROOT / "SECURITY.md"
 LICENSE = ROOT / "LICENSE"
+DEPLOYMENT = ROOT / "docs" / "deployment.md"
 
 
 def _read(path: Path) -> str:
@@ -90,3 +91,19 @@ def test_release_privacy_and_security_docs_exist() -> None:
         assert phrase in security
 
     assert "MIT License" in license_text
+
+
+def test_docs_explain_launchd_service_and_sleep_behavior() -> None:
+    text = _read(README) + "\n" + _read(DEPLOYMENT)
+
+    for phrase in (
+        "riji-agent service install --target launchd",
+        "riji-agent service start",
+        "riji-agent service status",
+        "ai.riji-agent",
+        "127.0.0.1",
+        "Mac is asleep",
+        "launchd should restore the local service",
+        "Hermes gateway",
+    ):
+        assert phrase in text
