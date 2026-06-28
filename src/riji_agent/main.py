@@ -20,6 +20,12 @@ from riji_agent.config import ConfigurationError, Settings, load_settings
 from riji_agent.config_cli import DEFAULT_PRESET, run_doctor, write_init_env
 from riji_agent.demo import copy_sample_vault, run_demo_chat
 from riji_agent.models.types import LLMError
+from riji_agent.service import (
+    LaunchdServiceManager,
+    ServiceError,
+    ServiceStatus,
+    UnsupportedServiceTargetError,
+)
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
     install as install_hermes_bridge,
@@ -230,6 +236,52 @@ def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backu
     return 0 if result.installed or action != "status" else 1
 
 
+def _run_service_command(args) -> int:
+    if args.target != "launchd":
+        print("unsupported service target", file=sys.stderr)
+        return 2
+
+    manager = LaunchdServiceManager()
+    try:
+        if args.action == "install":
+            status = manager.install()
+        elif args.action == "start":
+            status = manager.start()
+        elif args.action == "stop":
+            status = manager.stop()
+        elif args.action == "restart":
+            status = manager.restart()
+        elif args.action == "status":
+            status = manager.status()
+        elif args.action == "logs":
+            print(manager.logs(lines=args.lines))
+            return 0
+        elif args.action == "uninstall":
+            status = manager.uninstall()
+        else:
+            print(f"unknown service action: {args.action}", file=sys.stderr)
+            return 2
+    except UnsupportedServiceTargetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ServiceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    _print_service_status(status)
+    return 0
+
+
+def _print_service_status(status: ServiceStatus) -> None:
+    print(f"label: {status.label}")
+    print(f"plist: {status.plist_path}")
+    print(f"installed: {'yes' if status.installed else 'no'}")
+    print(f"loaded: {'yes' if status.loaded else 'no'}")
+    print(f"running: {'yes' if status.running else 'no'}")
+    print(f"pid: {status.pid if status.pid is not None else '(none)'}")
+    print(f"health: {status.health}")
+
+
 def _cli_progress(done: int, total: int, action: str, source_id: str) -> None:
     # Progress goes to stderr so the final stdout summary stays a single clean
     # line; only the wikilink id is shown, never the file path or contents.
@@ -309,6 +361,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         action="store_true",
         help="Do not create a .riji-agent.bak copy before modifying gateway/run.py.",
     )
+    service_cmd = sub.add_parser(
+        "service",
+        help="Install or manage riji-agent as a local background service.",
+    )
+    service_cmd.add_argument(
+        "action",
+        choices=("install", "start", "stop", "restart", "status", "logs", "uninstall"),
+    )
+    service_cmd.add_argument("--target", default="launchd", choices=("launchd",))
+    service_cmd.add_argument("--lines", type=int, default=80, help="Lines to show for logs.")
     args = parser.parse_args(argv)
 
     if args.command == "index":
@@ -328,5 +390,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         raise SystemExit(
             _run_hermes_bridge_command(args.action, args.gateway_run, args.no_backup)
         )
+    if args.command == "service":
+        raise SystemExit(_run_service_command(args))
 
     _serve()
