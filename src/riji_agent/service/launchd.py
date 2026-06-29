@@ -1,33 +1,25 @@
-"""Local background service management for riji-agent.
-
-The first supported backend is macOS launchd. The public command surface is
-kept backend-neutral so a future systemd manager can implement the same shape.
-"""
+"""macOS launchd backend for riji-agent service management."""
 
 from __future__ import annotations
 
 import os
 import plistlib
-import re
-import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-
-DEFAULT_SERVICE_LABEL = "ai.riji-agent"
-
-
-class ServiceError(RuntimeError):
-    """Safe service-management error; never includes secrets or env contents."""
-
-
-class UnsupportedServiceTargetError(ServiceError):
-    """Raised when the selected service backend is not available here."""
+from riji_agent.service.base import (
+    DEFAULT_SERVICE_LABEL,
+    CommandRunner,
+    ServiceError,
+    ServiceStatus,
+    UnsupportedServiceTargetError,
+    check_url,
+    parse_pid,
+    resolve_default_command,
+)
 
 
 @dataclass(frozen=True)
@@ -53,27 +45,6 @@ class LaunchdServiceConfig:
         return f"http://127.0.0.1:{self.port}/healthz"
 
 
-@dataclass(frozen=True)
-class ServiceStatus:
-    installed: bool
-    loaded: bool
-    running: bool
-    pid: Optional[int]
-    label: str
-    plist_path: Path
-    health: str = "unknown"
-
-
-class CommandRunner:
-    def run(self, args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            args,
-            check=check,
-            text=True,
-            capture_output=True,
-        )
-
-
 def render_launchd_plist(config: LaunchdServiceConfig) -> bytes:
     payload = {
         "Label": config.label,
@@ -88,17 +59,13 @@ def render_launchd_plist(config: LaunchdServiceConfig) -> bytes:
 
 
 def default_launchd_config(*, port: int = 8765) -> LaunchdServiceConfig:
-    executable, arguments = _resolve_default_command()
+    executable, arguments = resolve_default_command()
     return LaunchdServiceConfig(
         executable=executable,
         arguments=arguments,
         working_directory=Path.cwd().resolve(),
         port=port,
     )
-
-
-def get_default_service_status() -> ServiceStatus:
-    return LaunchdServiceManager().status()
 
 
 class LaunchdServiceManager:
@@ -113,7 +80,7 @@ class LaunchdServiceManager:
         self.config = config or default_launchd_config()
         self.runner = runner or CommandRunner()
         self.platform = platform or sys.platform
-        self._url_checker = url_checker or _check_url
+        self._url_checker = url_checker or check_url
         self.domain = f"gui/{os.getuid()}"
 
     def install(self) -> ServiceStatus:
@@ -158,7 +125,7 @@ class LaunchdServiceManager:
         installed = self.config.plist_path.exists()
         result = self.runner.run(["launchctl", "print", f"{self.domain}/{self.config.label}"])
         loaded = result.returncode == 0
-        pid = _parse_pid(result.stdout) if loaded else None
+        pid = parse_pid(result.stdout) if loaded else None
         running = pid is not None
         health = "ok" if running and self._url_checker(self.config.health_url) else "unavailable"
         return ServiceStatus(
@@ -194,35 +161,3 @@ class LaunchdServiceManager:
         if result.returncode != 0:
             raise ServiceError("service command failed")
         return result
-
-
-def _resolve_executable() -> Path:
-    candidate = Path(sys.argv[0]).expanduser()
-    if candidate.exists():
-        return candidate.resolve()
-    found = shutil.which("riji-agent")
-    if found:
-        return Path(found).resolve()
-    raise ServiceError("could not locate riji-agent executable")
-
-
-def _resolve_default_command() -> tuple[Path, tuple[str, ...]]:
-    uv = shutil.which("uv")
-    if uv:
-        return Path(uv).resolve(), ("run", "riji-agent", "serve")
-    return _resolve_executable(), ("serve",)
-
-
-def _parse_pid(output: str) -> Optional[int]:
-    match = re.search(r'(?:"PID"|pid)\s*=\s*(\d+)', output)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def _check_url(url: str) -> bool:
-    try:
-        with urllib.request.urlopen(url, timeout=1.0) as response:
-            return response.status == 200
-    except (OSError, urllib.error.URLError):
-        return False
