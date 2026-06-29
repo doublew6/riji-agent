@@ -30,6 +30,12 @@ from riji_agent.service.registry import (
     register_service_backend,
     supported_service_targets,
 )
+from riji_agent.service.windows import (
+    WindowsServiceConfig,
+    WindowsServiceManager,
+    default_windows_config,
+    render_task_xml,
+)
 
 __all__ = [
     "DEFAULT_SERVICE_LABEL",
@@ -42,6 +48,10 @@ __all__ = [
     "LaunchdServiceManager",
     "default_launchd_config",
     "render_launchd_plist",
+    "WindowsServiceConfig",
+    "WindowsServiceManager",
+    "default_windows_config",
+    "render_task_xml",
     "build_service_manager",
     "default_target",
     "get_default_service_status",

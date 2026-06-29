@@ -16,6 +16,7 @@ from riji_agent.service.base import (
     UnsupportedServiceTargetError,
 )
 from riji_agent.service.launchd import LaunchdServiceManager
+from riji_agent.service.windows import WindowsServiceManager
 
 
 ServiceManagerFactory = Callable[[], ServiceManager]
@@ -25,6 +26,7 @@ _BACKENDS: Dict[str, ServiceManagerFactory] = {}
 # Maps the host platform (sys.platform) to its native service backend name.
 _PLATFORM_DEFAULT: Dict[str, str] = {
     "darwin": "launchd",
+    "win32": "windows",
 }
 
 
@@ -56,3 +58,4 @@ def get_default_service_status() -> ServiceStatus:
 
 
 register_service_backend("launchd", lambda: LaunchdServiceManager())
+register_service_backend("windows", lambda: WindowsServiceManager())
