@@ -21,10 +21,10 @@ from riji_agent.config_cli import DEFAULT_PRESET, run_doctor, write_init_env
 from riji_agent.demo import copy_sample_vault, run_demo_chat
 from riji_agent.models.types import LLMError
 from riji_agent.service import (
-    LaunchdServiceManager,
     ServiceError,
     ServiceStatus,
     UnsupportedServiceTargetError,
+    build_service_manager,
 )
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
@@ -237,11 +237,12 @@ def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backu
 
 
 def _run_service_command(args) -> int:
-    if args.target != "launchd":
-        print("unsupported service target", file=sys.stderr)
+    try:
+        manager = build_service_manager(args.target)
+    except UnsupportedServiceTargetError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
-    manager = LaunchdServiceManager()
     try:
         if args.action == "install":
             status = manager.install()
@@ -369,7 +370,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "action",
         choices=("install", "start", "stop", "restart", "status", "logs", "uninstall"),
     )
-    service_cmd.add_argument("--target", default="launchd", choices=("launchd",))
+    service_cmd.add_argument("--target", default="launchd", choices=("launchd", "windows"))
     service_cmd.add_argument("--lines", type=int, default=80, help="Lines to show for logs.")
     args = parser.parse_args(argv)
 
