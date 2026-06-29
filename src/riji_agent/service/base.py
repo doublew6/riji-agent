@@ -38,7 +38,9 @@ class ServiceStatus:
     running: bool
     pid: Optional[int]
     label: str
-    plist_path: Path
+    # Backend-neutral path to the service definition: a launchd plist, a systemd
+    # unit file, or a Windows scheduled-task path.
+    definition_path: Path
     health: str = "unknown"
 
 

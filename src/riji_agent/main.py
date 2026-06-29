@@ -25,6 +25,7 @@ from riji_agent.service import (
     ServiceStatus,
     UnsupportedServiceTargetError,
     build_service_manager,
+    default_target,
 )
 from riji_agent.integrations.hermes_installer import (
     HermesBridgeInstallError,
@@ -238,7 +239,8 @@ def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backu
 
 def _run_service_command(args) -> int:
     try:
-        manager = build_service_manager(args.target)
+        target = default_target() if args.target == "auto" else args.target
+        manager = build_service_manager(target)
     except UnsupportedServiceTargetError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -275,7 +277,7 @@ def _run_service_command(args) -> int:
 
 def _print_service_status(status: ServiceStatus) -> None:
     print(f"label: {status.label}")
-    print(f"plist: {status.plist_path}")
+    print(f"definition: {status.definition_path}")
     print(f"installed: {'yes' if status.installed else 'no'}")
     print(f"loaded: {'yes' if status.loaded else 'no'}")
     print(f"running: {'yes' if status.running else 'no'}")
@@ -370,7 +372,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "action",
         choices=("install", "start", "stop", "restart", "status", "logs", "uninstall"),
     )
-    service_cmd.add_argument("--target", default="launchd", choices=("launchd", "windows"))
+    service_cmd.add_argument(
+        "--target",
+        default="auto",
+        choices=("auto", "launchd", "systemd", "windows"),
+    )
     service_cmd.add_argument("--lines", type=int, default=80, help="Lines to show for logs.")
     args = parser.parse_args(argv)
 

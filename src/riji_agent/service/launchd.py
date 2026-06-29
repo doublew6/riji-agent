@@ -135,7 +135,7 @@ class LaunchdServiceManager:
             running=running,
             pid=pid,
             label=self.config.label,
-            plist_path=self.config.plist_path,
+            definition_path=self.config.plist_path,
             health=health,
         )
 

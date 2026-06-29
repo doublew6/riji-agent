@@ -96,7 +96,7 @@ def test_launchd_start_stop_restart_status_and_logs_use_injected_runner(tmp_path
     assert status.pid == 1234
     assert status.health == "ok"
     assert status.label == "ai.riji-agent"
-    assert status.plist_path == manager.config.plist_path
+    assert status.definition_path == manager.config.plist_path
     assert logs == "ready"
 
 
@@ -171,7 +171,7 @@ def test_doctor_reports_service_status_when_installed(tmp_path: Path) -> None:
             running=True,
             pid=42,
             label="ai.riji-agent",
-            plist_path=tmp_path / "LaunchAgents" / "ai.riji-agent.plist",
+            definition_path=tmp_path / "LaunchAgents" / "ai.riji-agent.plist",
             health="ok",
         ),
     )

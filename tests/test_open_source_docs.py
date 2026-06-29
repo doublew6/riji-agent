@@ -93,17 +93,22 @@ def test_release_privacy_and_security_docs_exist() -> None:
     assert "MIT License" in license_text
 
 
-def test_docs_explain_launchd_service_and_sleep_behavior() -> None:
+def test_docs_explain_cross_platform_service_and_sleep_behavior() -> None:
     text = _read(README) + "\n" + _read(DEPLOYMENT)
 
     for phrase in (
-        "riji-agent service install --target launchd",
+        "riji-agent service install",
         "riji-agent service start",
         "riji-agent service status",
+        # All three backends and the auto default are documented.
+        "launchd",
+        "systemd",
+        "windows",
+        "auto",
         "ai.riji-agent",
         "127.0.0.1",
-        "Mac is asleep",
-        "launchd should restore the local service",
+        # Sleep / logout behavior must be explained for the cross-platform case.
+        "睡眠",
         "Hermes gateway",
     ):
         assert phrase in text
