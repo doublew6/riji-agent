@@ -99,3 +99,32 @@ def test_iter_note_files_only_yields_period_folders(tmp_path: Path) -> None:
 
     found = {p.relative_to(root).as_posix() for p in iter_note_files(root)}
     assert found == {"daily/2026-06-24.md", "weekly/2026-W26.md"}
+
+
+def test_crlf_frontmatter_is_parsed_and_private_detected(tmp_path: Path) -> None:
+    # Windows/Obsidian vaults often save CRLF; frontmatter (including
+    # `private: true`) must still be parsed so private notes are never leaked.
+    root = tmp_path / "riji"
+    path = root / "daily" / "2026-06-25.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    crlf = (
+        "---\r\n"
+        "date: 2026-06-25\r\n"
+        "title: Secret Day\r\n"
+        "tags: [private, work]\r\n"
+        "private: true\r\n"
+        "---\r\n"
+        "# 2026-06-25\r\n"
+        "绝密内容\r\n"
+    )
+    # Write explicit CRLF bytes so this reproduces on any OS, not just Windows.
+    path.write_bytes(crlf.encode("utf-8"))
+
+    note = parse_note(path, root)
+
+    assert note.private is True
+    assert note.note_date == date(2026, 6, 25)
+    assert note.title == "Secret Day"
+    assert note.tags == ("private", "work")
+    # Body must not retain carriage returns after normalization.
+    assert "\r" not in note.body
