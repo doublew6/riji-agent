@@ -14,7 +14,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import date as Date, datetime
 from typing import Optional, Sequence, Union
-from zoneinfo import ZoneInfo
 
 from riji_agent.drafts.errors import DraftError
 from riji_agent.drafts.models import DraftOperation
@@ -30,6 +29,7 @@ from riji_agent.personas.context import build_context
 from riji_agent.personas.models import UnknownPersonaError
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.models import ToolContext
+from riji_agent.timezone import local_journal_timezone
 
 _CURRENT_PERSONA_PREF = "current_persona"
 _CONFIRM_COMMANDS = {"确认保存", "确认写入", "/确认", "确认"}
@@ -316,7 +316,7 @@ class HermesGateway:
 
     @staticmethod
     def _corrected_date(text: str) -> Date:
-        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        today = datetime.now(local_journal_timezone()).date()
         if "29号" in text or "29 号" in text:
             return today.replace(day=29)
         return today
