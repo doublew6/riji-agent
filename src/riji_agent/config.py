@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from riji_agent.agent.registry import supported_agent_runtimes
 from riji_agent.im.registry import supported_im_providers
 from riji_agent.models.registry import supported_model_providers
+from riji_agent.paths import default_data_dir
 
 
 class ConfigurationError(RuntimeError):
@@ -18,7 +19,7 @@ class ConfigurationError(RuntimeError):
 
 
 def _default_data_dir() -> Path:
-    return Path.home() / ".local" / "share" / "riji-agent"
+    return default_data_dir()
 
 
 class Settings(BaseSettings):

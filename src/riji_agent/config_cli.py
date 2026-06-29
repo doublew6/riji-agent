@@ -10,6 +10,7 @@ from typing import Callable, Optional, Sequence
 
 from riji_agent.config import Settings
 from riji_agent.integrations.hermes_installer import status as hermes_bridge_status
+from riji_agent.paths import default_data_dir
 from riji_agent.service import ServiceStatus, get_default_service_status
 
 DEFAULT_PRESET = "feishu-hermes-deepseek"
@@ -39,7 +40,7 @@ def write_init_env(
 
     secret = hermes_shared_secret or secrets.token_urlsafe(32)
     journal = str(journal_root or Path("/absolute/path/to/your/Obsidian/riji"))
-    data = str(data_dir or Path.home() / ".local" / "share" / "riji-agent")
+    data = str(data_dir or default_data_dir())
     users = ",".join(feishu_user_ids)
 
     body = "\n".join(

@@ -6,10 +6,11 @@ import os
 import plistlib
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from riji_agent.paths import default_log_dir
 from riji_agent.service.base import (
     DEFAULT_SERVICE_LABEL,
     CommandRunner,
@@ -27,7 +28,7 @@ class LaunchdServiceConfig:
     executable: Path
     working_directory: Path
     arguments: tuple[str, ...] = ("serve",)
-    log_dir: Path = Path.home() / ".riji-agent" / "logs"
+    log_dir: Path = field(default_factory=default_log_dir)
     plist_path: Path = Path.home() / "Library" / "LaunchAgents" / "ai.riji-agent.plist"
     label: str = DEFAULT_SERVICE_LABEL
     port: int = 8765
