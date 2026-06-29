@@ -30,6 +30,12 @@ from riji_agent.service.registry import (
     register_service_backend,
     supported_service_targets,
 )
+from riji_agent.service.systemd import (
+    SystemdServiceConfig,
+    SystemdServiceManager,
+    default_systemd_config,
+    render_systemd_unit,
+)
 from riji_agent.service.windows import (
     WindowsServiceConfig,
     WindowsServiceManager,
@@ -48,6 +54,10 @@ __all__ = [
     "LaunchdServiceManager",
     "default_launchd_config",
     "render_launchd_plist",
+    "SystemdServiceConfig",
+    "SystemdServiceManager",
+    "default_systemd_config",
+    "render_systemd_unit",
     "WindowsServiceConfig",
     "WindowsServiceManager",
     "default_windows_config",

@@ -59,6 +59,11 @@ def render_launchd_plist(config: LaunchdServiceConfig) -> bytes:
     return plistlib.dumps(payload, sort_keys=True)
 
 
+def _current_uid() -> int:
+    getuid = getattr(os, "getuid", None)
+    return getuid() if getuid is not None else 0
+
+
 def default_launchd_config(*, port: int = 8765) -> LaunchdServiceConfig:
     executable, arguments = resolve_default_command()
     return LaunchdServiceConfig(
@@ -82,7 +87,10 @@ class LaunchdServiceManager:
         self.runner = runner or CommandRunner()
         self.platform = platform or sys.platform
         self._url_checker = url_checker or check_url
-        self.domain = f"gui/{os.getuid()}"
+        # os.getuid is POSIX-only; guard so the manager can be constructed (and
+        # cross-platform tests can exercise it) on Windows without crashing.
+        # On a real Windows host the darwin guard refuses before domain is used.
+        self.domain = f"gui/{_current_uid()}"
 
     def install(self) -> ServiceStatus:
         self._require_darwin()
@@ -135,7 +143,7 @@ class LaunchdServiceManager:
             running=running,
             pid=pid,
             label=self.config.label,
-            plist_path=self.config.plist_path,
+            definition_path=self.config.plist_path,
             health=health,
         )
 

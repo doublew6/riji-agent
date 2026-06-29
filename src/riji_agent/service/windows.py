@@ -200,7 +200,7 @@ class WindowsServiceManager:
             running=running,
             pid=pid,
             label=self.config.task_name,
-            plist_path=self.config.task_path,
+            definition_path=self.config.task_path,
             health=health,
         )
 

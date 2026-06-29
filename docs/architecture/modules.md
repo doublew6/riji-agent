@@ -68,6 +68,16 @@ instead of constructing a provider directly, and a generic
 Adding an IM or agent-runtime adapter follows the same three steps against
 `im/registry.py` / `agent/registry.py` and the corresponding contract.
 
+## Background service backends
+
+Local background-service management (`riji-agent service ...`) uses the same
+shape, selected by the CLI `--target` (default `auto`) rather than by env config.
+`service/base.py` defines the neutral `ServiceManager` contract + `ServiceStatus`;
+each platform backend (`launchd.py` macOS, `systemd.py` Linux, `windows.py`
+Windows Task Scheduler) implements it; `service/registry.py` maps a target name
+to a factory and `default_target()` resolves the host platform. Backends take an
+injectable command runner so every backend is unit-tested on any OS with a fake.
+
 ## Boundary tests
 
 `tests/test_model_provider_layer.py` asserts the `models/` package never

@@ -6,6 +6,7 @@ import pytest
 
 from riji_agent.service import (
     LaunchdServiceManager,
+    SystemdServiceManager,
     UnsupportedServiceTargetError,
     WindowsServiceManager,
     build_service_manager,
@@ -14,15 +15,21 @@ from riji_agent.service import (
 )
 
 
-def test_registry_exposes_launchd_and_windows_backends() -> None:
+def test_registry_exposes_all_backends() -> None:
     names = supported_service_targets()
     assert "launchd" in names
+    assert "systemd" in names
     assert "windows" in names
 
 
 def test_build_launchd_manager_by_name() -> None:
     manager = build_service_manager("launchd")
     assert isinstance(manager, LaunchdServiceManager)
+
+
+def test_build_systemd_manager_by_name() -> None:
+    manager = build_service_manager("systemd")
+    assert isinstance(manager, SystemdServiceManager)
 
 
 def test_build_windows_manager_by_name() -> None:
@@ -37,17 +44,17 @@ def test_unknown_target_is_rejected_safely() -> None:
     assert "nope" not in str(exc.value)
 
 
-def test_default_target_resolves_launchd_on_macos() -> None:
-    assert default_target("darwin") == "launchd"
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("darwin", "launchd"), ("linux", "systemd"), ("win32", "windows")],
+)
+def test_default_target_resolves_per_platform(platform: str, expected: str) -> None:
+    assert default_target(platform) == expected
 
 
-def test_default_target_resolves_windows_on_win32() -> None:
-    assert default_target("win32") == "windows"
-
-
-def test_default_target_has_no_backend_for_linux_yet() -> None:
+def test_default_target_rejects_unknown_platform() -> None:
     with pytest.raises(UnsupportedServiceTargetError):
-        default_target("linux")
+        default_target("sunos")
 
 
 def test_service_package_has_no_core_or_transport_imports() -> None:

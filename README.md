@@ -90,18 +90,21 @@ uv run riji-agent          # serve http://127.0.0.1:8765
 model provider against your vault over loopback — no Feishu or Hermes required —
 so you can confirm the whole local path works before standing up the IM bridge.
 
-On macOS, install riji-agent as a launchd service when you want it to restart
-after login or an accidental exit:
+Install riji-agent as a background user service so it restarts after login or an
+accidental exit. The commands are the same on macOS (launchd), Linux (systemd
+--user), and Windows (Task Scheduler); `--target` defaults to `auto` and picks
+the right backend for your platform:
 
 ```bash
-uv run riji-agent service install --target launchd
+uv run riji-agent service install
 uv run riji-agent service start
 uv run riji-agent service status
 ```
 
-While the Mac is asleep the bot cannot answer Feishu messages; after wake/login,
-launchd should restore the local service. See
-[docs/deployment.md](docs/deployment.md#macos-launchd-service) for details.
+While the machine is asleep or the user is logged out the bot cannot answer
+Feishu messages; after wake/login the service manager restores the local
+service. See [docs/deployment.md](docs/deployment.md#后台常驻服务macos--linux--windows)
+for the per-platform details.
 
 Open `http://127.0.0.1:8765/healthz` and expect:
 
