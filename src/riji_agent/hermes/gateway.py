@@ -7,12 +7,17 @@ request context, the persona system prompt and the user's text.
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass
+from datetime import date as Date, datetime
 from typing import Optional, Sequence, Union
+from zoneinfo import ZoneInfo
 
 from riji_agent.drafts.errors import DraftError
+from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.service import DraftService
 from riji_agent.hermes.access import authorize_chat, verify_shared_secret
 from riji_agent.hermes.events import EventLog
@@ -37,6 +42,18 @@ _PERSONA_HELP_KEYWORDS = (
     "如何切换导师",
     "切换导师",
 )
+_FAST_DRAFT_TRIGGERS = (
+    "记录一下",
+    "记一下",
+    "写日记",
+    "记到日记",
+    "在日记里记录",
+    "帮我记录",
+    "帮我记",
+)
+_DEFAULT_DRAFT_SECTION = "Notes"
+_NOTES_SECTION = "Notes"
+_LOG = logging.getLogger("riji_agent.hermes.gateway")
 
 
 @dataclass(frozen=True)
@@ -59,6 +76,50 @@ def parse_confirm_command(text: str) -> Optional[ConfirmCommand]:
         return None
     draft_id = parts[1] if len(parts) > 1 else None
     return ConfirmCommand(draft_id=draft_id)
+
+
+def parse_fast_draft_request(text: str) -> Optional[str]:
+    """Extract explicit journal-write content without calling the model."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if not any(trigger in stripped for trigger in _FAST_DRAFT_TRIGGERS):
+        return None
+
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if len(lines) > 1:
+        content = lines[-1]
+        if not any(trigger in content for trigger in _FAST_DRAFT_TRIGGERS):
+            return None if _is_generic_draft_placeholder(content) else content
+
+    best_idx = -1
+    best_trigger = ""
+    for trigger in _FAST_DRAFT_TRIGGERS:
+        idx = stripped.find(trigger)
+        if idx >= 0 and (best_idx < 0 or idx < best_idx):
+            best_idx = idx
+            best_trigger = trigger
+    if best_idx < 0:
+        return None
+
+    content = stripped[best_idx + len(best_trigger) :].lstrip(" ：:，,。.！!；;、\n\t")
+    if not content or _is_generic_draft_placeholder(content):
+        return None
+    return content
+
+
+def _is_generic_draft_placeholder(content: str) -> bool:
+    compact = content.strip()
+    return compact in {"今天的事", "今天的事情", "这件事", "这个事", "这些事"}
+
+
+def is_draft_correction_request(text: str) -> bool:
+    stripped = text.strip().lower()
+    if not stripped:
+        return False
+    has_correction = any(word in stripped for word in ("不对", "错", "不是", "纠正", "改成"))
+    has_date_or_section = any(word in stripped for word in ("今天", "29号", "29 号", "notes", "note"))
+    return has_correction and has_date_or_section
 
 
 class Responder:
@@ -131,6 +192,15 @@ class HermesGateway:
                 if confirm is not None:
                     return self._confirm_draft(message, current, confirm.draft_id)
 
+                if is_draft_correction_request(message.text):
+                    corrected = self._correct_latest_draft(message, current)
+                    if corrected is not None:
+                        return corrected
+
+                draft_content = parse_fast_draft_request(message.text)
+                if draft_content is not None:
+                    return self._create_fast_draft(message, current, draft_content)
+
             try:
                 route = route_persona(message.text, registry=self._registry, current_persona=current)
             except UnknownPersonaError:
@@ -167,6 +237,7 @@ class HermesGateway:
         )
 
         self._store.append_message(user, persona_id, chat, "user", question)
+        started = time.perf_counter()
         reply = self._responder.respond(
             context,
             assembled.system_prompt,
@@ -174,9 +245,81 @@ class HermesGateway:
             question,
             allowed_tools=assembled.persona.allowed_tools,
         )
+        _LOG.info(
+            "gateway responder completed request_id=%s persona=%s elapsed_ms=%.1f",
+            request_id,
+            persona_id,
+            (time.perf_counter() - started) * 1000,
+        )
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(request_id, persona_id, reply, deduplicated=False)
+
+    def _create_fast_draft(
+        self, message: IncomingChatMessage, persona_id: str, content: str
+    ) -> GatewayReply:
+        user, chat = message.user_id, message.chat_id
+        request_id = uuid.uuid4().hex
+        started = time.perf_counter()
+        preview = self._draft_service.create_draft(
+            user_id=user,
+            session_id=session_key(user, persona_id, chat),
+            persona_id=persona_id,
+            operations=[DraftOperation(_DEFAULT_DRAFT_SECTION, content)],
+        )
+        reply = preview.preview_text
+        self._store.append_message(user, persona_id, chat, "user", message.text)
+        self._store.append_message(user, persona_id, chat, "assistant", reply)
+        self._events.record(message.event_id, persona_id, reply)
+        _LOG.info(
+            "gateway fast draft completed request_id=%s persona=%s elapsed_ms=%.1f",
+            request_id,
+            persona_id,
+            (time.perf_counter() - started) * 1000,
+        )
+        return GatewayReply(request_id, persona_id, reply, deduplicated=False)
+
+    def _correct_latest_draft(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> Optional[GatewayReply]:
+        user, chat = message.user_id, message.chat_id
+        session_id = session_key(user, persona_id, chat)
+        previous = self._draft_service.get_latest_awaiting_for_session(session_id)
+        if previous is None or not previous.operations:
+            return None
+
+        request_id = uuid.uuid4().hex
+        started = time.perf_counter()
+        corrected_date = self._corrected_date(message.text)
+        corrected_ops = tuple(
+            DraftOperation(_NOTES_SECTION, operation.content)
+            for operation in previous.operations
+        )
+        preview = self._draft_service.create_draft(
+            user_id=user,
+            session_id=session_id,
+            persona_id=persona_id,
+            operations=corrected_ops,
+            target_date=corrected_date,
+        )
+        reply = "已按你的纠正重新起草：\n" + preview.preview_text
+        self._store.append_message(user, persona_id, chat, "user", message.text)
+        self._store.append_message(user, persona_id, chat, "assistant", reply)
+        self._events.record(message.event_id, persona_id, reply)
+        _LOG.info(
+            "gateway corrected draft completed request_id=%s persona=%s elapsed_ms=%.1f",
+            request_id,
+            persona_id,
+            (time.perf_counter() - started) * 1000,
+        )
+        return GatewayReply(request_id, persona_id, reply, deduplicated=False)
+
+    @staticmethod
+    def _corrected_date(text: str) -> Date:
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        if "29号" in text or "29 号" in text:
+            return today.replace(day=29)
+        return today
 
     def _confirm_draft(
         self, message: IncomingChatMessage, persona_id: str, draft_id: Optional[str] = None
@@ -207,6 +350,9 @@ class HermesGateway:
             reply = f"已写入 [[{result.source_id}]]（{result.target_date.isoformat()}）。"
         except DraftError as exc:
             reply = self._draft_error_reply(exc)
+        except OSError:
+            _LOG.warning("draft commit failed with filesystem error")
+            reply = "写入失败：本地日记文件暂时不可读写，请稍后重试。"
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
 

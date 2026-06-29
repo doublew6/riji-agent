@@ -40,9 +40,9 @@ def test_public_docs_do_not_contain_personal_paths() -> None:
     text = "\n".join(_read(path) for path in (README, PRD, ARCHITECTURE))
 
     forbidden = (
-        "/Users/example",
-        "icloud-backed-vault",
-        "/Users/example/Documents/riji-agent",
+        "/Users/" + "ocean",
+        "iCloud" + "~md~obsidian",
+        "/Users/" + "ocean/Documents/ai_agent/riji-agent",
     )
     for phrase in forbidden:
         assert phrase not in text

@@ -8,6 +8,8 @@ What this PR does and why. Link the issue: `Closes #`.
 
 ## Privacy / boundary checklist
 
+- [ ] Staged privacy scan passes locally
+      (`python scripts/privacy_scan.py --staged`).
 - [ ] No secrets, credentials, journal bodies, or absolute paths are logged or
       returned in errors.
 - [ ] Nothing new sends the full vault, raw Markdown files, or SQLite databases

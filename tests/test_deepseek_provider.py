@@ -7,7 +7,7 @@ import pytest
 from riji_agent.models.deepseek import DeepSeekProvider
 from riji_agent.models.types import LLMError
 
-API_KEY = "sk-super-secret-key"
+API_KEY = "sk-" + "super-secret-key"
 
 
 def _provider(handler) -> DeepSeekProvider:

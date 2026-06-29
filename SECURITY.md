@@ -25,9 +25,9 @@ Run these checks before making the repository public or tagging a release:
 
 ```bash
 git status --short
+python scripts/privacy_scan.py --tracked
 git log --all --name-only --pretty=format: | sort -u | rg '(^|/)(\\.env|.*\\.sqlite3|riji/|journals/|data/|.*\\.db$|.*\\.pem$|.*key.*|.*secret.*)' | rg -v '(^\\.env\\.example$|^examples/sample-vault/)' || true
 git ls-files | rg '(__pycache__|\\.pyc$|\\.env$|\\.sqlite3$|^data/|^riji/|^journals/|\\.png$|\\.jpg$|\\.jpeg$)' | rg -v '^examples/sample-vault/' || true
-rg -n '(/Users/|icloud-backed-vault|sk-[A-Za-z0-9]|PRIVATE_DEMO_SENTINEL)' README.md docs src tests examples SECURITY.md || true
 uv run pytest
 ```
 
@@ -36,6 +36,8 @@ Expected results:
 - only intentional source files are modified;
 - no `.env`, SQLite, real vault, audit log, pycache, or personal image is
   tracked;
+- `python scripts/privacy_scan.py --tracked` reports no private paths, secrets,
+  local database files, or real incident details;
 - `PRIVATE_DEMO_SENTINEL` appears only in the fictional private demo note and
   tests that prove it does not leave the demo;
 - all tests pass.

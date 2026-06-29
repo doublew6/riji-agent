@@ -27,6 +27,7 @@ docker run --rm -v "$(pwd)":/app -w /app python:3.11 \
 Useful test selections:
 
 ```bash
+python scripts/privacy_scan.py --tracked  # public-tree privacy check
 uv run pytest -m smoke        # fast end-to-end check of the main path
 uv run pytest -m "not smoke"  # the rest of the unit tests
 ```
@@ -38,8 +39,28 @@ uv run pytest -m "not smoke"  # the rest of the unit tests
 - Don't bundle unrelated refactors. If you find unrelated local changes, leave
   them; never reset or force-overwrite another contributor's work.
 
+## Privacy scan before commit
+
+Run the staged-file privacy scan before every commit:
+
+```bash
+python scripts/privacy_scan.py --staged
+```
+
+To make Git run it automatically, install the local pre-commit hook:
+
+```bash
+ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+chmod +x scripts/pre-commit
+```
+
+The hook and CI share the same scanner. The hook checks staged files so commits
+fail early; CI checks the tracked tree so pull requests cannot merge with
+private paths, secrets, local databases, or real incident details in source.
+
 ## Before opening a PR
 
+- Run `python scripts/privacy_scan.py --tracked`.
 - Run the most relevant tests, then the full suite; report the result in the PR.
 - Add or update tests. Permission, write, idempotency, and tool-call paths
   **must** test the failure case, not just the happy path.
