@@ -176,7 +176,10 @@ def parse_note(
     kind = _resolve_kind(path, journal_root)
     raw_bytes = reader(path) if reader is not None else path.read_bytes()
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
-    text = raw_bytes.decode("utf-8")
+    # Normalize CRLF/CR to LF before parsing: Windows/Obsidian vaults often use
+    # CRLF, and the frontmatter regex expects LF. Without this, frontmatter
+    # (including `private: true`) is silently dropped and private notes leak.
+    text = raw_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     frontmatter, body = _split_frontmatter(text)
 
     return ParsedNote(
