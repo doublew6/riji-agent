@@ -27,3 +27,5 @@ venv/
 
 # Local agent worktrees / harness state
 .claude/
+AGENTS.md
+CLAUDE.md

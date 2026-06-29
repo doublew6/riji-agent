@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+python scripts/privacy_scan.py --staged

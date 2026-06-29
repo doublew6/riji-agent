@@ -11,9 +11,10 @@ from __future__ import annotations
 import dataclasses
 import uuid
 from datetime import date as Date
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import (
@@ -29,7 +30,7 @@ from riji_agent.journal.index import JournalIndex
 
 
 def _default_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
 class DraftService:

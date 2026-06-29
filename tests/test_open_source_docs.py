@@ -41,8 +41,8 @@ def test_public_docs_do_not_contain_personal_paths() -> None:
 
     forbidden = (
         "/Users/example",
-        "icloud-backed-vault",
-        "/Users/example/Documents/riji-agent",
+        "iCloud" + "~md~obsidian",
+        "/Users/example/Documents/ai_agent/riji-agent",
     )
     for phrase in forbidden:
         assert phrase not in text

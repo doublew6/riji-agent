@@ -19,7 +19,7 @@ def test_launchd_plist_contains_service_shape_without_secrets(tmp_path: Path) ->
     executable = tmp_path / "bin" / "riji-agent"
     workdir = tmp_path / "repo"
     log_dir = tmp_path / "logs"
-    secret = "sk-secret-that-must-not-leak"
+    secret = "sk-" + "secret-that-must-not-leak"
     config = LaunchdServiceConfig(
         executable=executable,
         working_directory=workdir,

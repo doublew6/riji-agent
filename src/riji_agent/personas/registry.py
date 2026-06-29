@@ -10,13 +10,16 @@ from typing import Dict, Mapping, Optional, Tuple
 
 from riji_agent.personas.models import Persona, UnknownPersonaError
 
-# The standard read-only retrieval tools available to every persona.
+# The standard journal tools available to every persona. The draft tool only
+# proposes a preview; the gateway requires an explicit user confirmation to
+# write.
 STANDARD_TOOLS: Tuple[str, ...] = (
     "search_journal",
     "read_note",
     "list_periods",
     "timeline",
     "find_before_after",
+    "draft_daily_entry",
 )
 
 # Shared, non-negotiable boundaries appended to every persona.
