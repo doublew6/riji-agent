@@ -14,7 +14,6 @@ from datetime import date as Date
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
-from zoneinfo import ZoneInfo
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import (
@@ -27,10 +26,11 @@ from riji_agent.drafts.models import (
 from riji_agent.drafts.store import DraftStore
 from riji_agent.drafts.writer import commit_operations
 from riji_agent.journal.index import JournalIndex
+from riji_agent.timezone import local_journal_timezone
 
 
 def _default_now() -> datetime:
-    return datetime.now(ZoneInfo("Asia/Shanghai"))
+    return datetime.now(local_journal_timezone())
 
 
 class DraftService:
