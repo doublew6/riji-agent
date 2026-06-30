@@ -1,0 +1,31 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Local state. Keep all runtime data outside the repository by default.
+# Anchored to the repo root so they don't shadow source packages of the same name.
+/data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+/audit/
+/logs/
+
+# Journal material must never be copied into this repository.
+/riji/
+/journals/
+
+# Local agent worktrees / harness state
+.claude/
+AGENTS.md
+CLAUDE.md
