@@ -24,6 +24,16 @@ OpenAI-compatible model adapter (`RIJI_MODEL_PROVIDER=openai`) as a worked
 example. See [docs/architecture/modules.md](docs/architecture/modules.md) for
 the core/im/agent/models boundaries and how to add an adapter.
 
+riji-agent also has a first built-in journal capability pack,
+`personal-growth`. The pack is the product boundary for reusable journaling
+templates, skills, and future automations derived from
+`doublew6/whit-riji-skills` and the riji-related workflows in
+`doublew6/codex-automations`. Pack loading is capability metadata only: journal
+writes still require a draft preview or the controlled writer boundary, and
+pack automations must not upload the complete vault, raw Markdown files, SQLite
+databases, API keys, or webhook URLs. See
+[docs/architecture/packs.md](docs/architecture/packs.md).
+
 ## What It Is
 
 `riji-agent` provides a local boundary for personal journal intelligence:

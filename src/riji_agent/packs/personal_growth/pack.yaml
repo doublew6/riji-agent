@@ -1,0 +1,87 @@
+id: personal-growth
+name: Personal Growth Journal
+version: 0.1.0
+description: >
+  Built-in journal capability pack for daily capture, weekly and monthly
+  review, light health context, task context, and focused-work reflection.
+templates:
+  - id: daily
+    name: Daily journal
+    target: riji/templates/daily.md
+    description: Daily capture template for tasks, sleep, evening review, learning, and notes.
+  - id: weekly
+    name: Weekly review
+    target: riji/templates/weekly.md
+    description: Weekly review template for goals, learning, relationships, energy, and next priorities.
+  - id: monthly
+    name: Monthly review
+    target: riji/templates/monthly.md
+    description: Monthly review template for themes, progress, resource allocation, and strategic priorities.
+skills:
+  - id: weekly-review-from-daily
+    name: Weekly review from daily notes
+    source: whit-riji-skills
+    description: Draft an evidence-backed weekly review from daily notes and optional health or fitness logs.
+    requires_confirmation: true
+  - id: monthly-review-from-weekly
+    name: Monthly review from weekly notes
+    source: whit-riji-skills
+    description: Draft a monthly review from weekly reviews and exact-date daily evidence.
+    requires_confirmation: true
+  - id: daily-weather
+    name: Daily weather fill
+    source: whit-riji-skills
+    description: Fill a missing daily weather field from a configured location and weather provider.
+    requires_confirmation: true
+  - id: apple-health-sleep
+    name: Apple Health sleep import
+    source: whit-riji-skills
+    description: Import local sleep summary fields from user-exported Apple Health notes.
+    requires_confirmation: true
+  - id: ticktick-tasks
+    name: TickTick task context
+    source: whit-riji-skills
+    description: Summarize incomplete task context for a daily journal review.
+    requires_confirmation: true
+  - id: toggl-deepwork
+    name: Toggl deep work summary
+    source: whit-riji-skills
+    description: Summarize focused-work duration for a daily journal review.
+    requires_confirmation: true
+automations:
+  - id: create-daily-journal
+    name: Create daily journal
+    schedule: FREQ=DAILY;BYHOUR=0;BYMINUTE=5
+    description: Create the next daily journal from the configured daily template without overwriting existing notes.
+    status: planned-installer
+  - id: create-previous-weekly-review
+    name: Create previous weekly review
+    schedule: FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=15
+    description: Draft the previous ISO week's review from exact-date daily evidence.
+    status: planned-installer
+  - id: create-previous-monthly-review
+    name: Create previous monthly review
+    schedule: FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=8;BYMINUTE=20
+    description: Draft the previous month's review from weekly and daily evidence.
+    status: planned-installer
+  - id: fill-daily-weather
+    name: Fill daily weather
+    schedule: FREQ=DAILY;BYHOUR=21;BYMINUTE=30
+    description: Fill one missing weather field after checking configured location and recent daily notes.
+    status: planned-installer
+required_config:
+  - RIJI_JOURNAL_ROOT
+  - RIJI_DATA_DIR
+optional_config:
+  - RIJI_TIMEZONE
+  - RIJI_PACK_PERSONAL_GROWTH_ENABLED
+  - RIJI_WEATHER_PROVIDER
+  - RIJI_TICKTICK_MODE
+  - RIJI_TOGGL_API_TOKEN
+  - RIJI_APPLE_HEALTH_EXPORT_ROOT
+  - RIJI_FEISHU_WEBHOOK_URL
+privacy_notes:
+  - Packs are capability metadata; loading a pack does not read the journal vault or start an automation.
+  - Journal writes must still go through riji-agent draft previews or the controlled writer boundary.
+  - Automations must not upload the complete vault, raw Markdown files, SQLite databases, API keys, or webhook URLs.
+  - Optional data sources must be explicitly configured and must not commit local paths or credentials.
