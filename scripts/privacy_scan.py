@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -39,22 +40,30 @@ FORBIDDEN_PATH_PARTS = (
     ".key",
 )
 
-PRIVATE_EMAIL_TOKENS = (
-    "5300" + "wc501",
-    "ocean" + "_net",
-    "seatothe" + "moon18",
+PRIVATE_EMAIL_TOKENS = tuple(
+    token.strip()
+    for token in os.environ.get("RIJI_PRIVACY_SCAN_EXTRA_TOKENS", "").split(",")
+    if token.strip()
 )
 
 FORBIDDEN_CONTENT = (
     re.compile("/" + r"Users/(?!example(?:/|\b))[^\s'\"`]+"),
     re.compile("Mobile " + "Documents"),
     re.compile("iCloud" + "~md~obsidian"),
-    re.compile(r"\b(?:" + "|".join(PRIVATE_EMAIL_TOKENS) + r")@?[A-Za-z0-9._-]*\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\b(?:cli|ou|oc)_[A-Za-z0-9]{12,}\b"),
     re.compile("Chat" + r"GPT.*(?:20|100).*(?:美|会员)"),
     re.compile("Resource " + "deadlock avoided"),
 )
+
+if PRIVATE_EMAIL_TOKENS:
+    FORBIDDEN_CONTENT += (
+        re.compile(
+            r"\b(?:"
+            + "|".join(re.escape(token) for token in PRIVATE_EMAIL_TOKENS)
+            + r")@?[A-Za-z0-9._-]*\b"
+        ),
+    )
 
 
 def _git(repo: Path, *args: str) -> str:

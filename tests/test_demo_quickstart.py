@@ -13,7 +13,7 @@ def test_sample_vault_is_fictional_and_has_private_note() -> None:
     assert (root / "weekly").is_dir()
     assert (root / "monthly").is_dir()
     assert "private: true" in text
-    assert "/Users/" + "ocean" not in text
+    assert "/Users/example" not in text
     assert "iCloud" + "~md~obsidian" not in text
 
 
