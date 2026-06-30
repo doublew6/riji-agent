@@ -9,6 +9,7 @@ its own.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import uuid
 from datetime import date as Date
 from datetime import datetime, timedelta
@@ -24,6 +25,7 @@ from riji_agent.drafts.models import (
     DraftStatus,
 )
 from riji_agent.drafts.store import DraftStore
+from riji_agent.drafts.polish import polish_draft_content
 from riji_agent.drafts.writer import commit_operations
 from riji_agent.journal.index import JournalIndex
 from riji_agent.timezone import local_journal_timezone
@@ -31,6 +33,9 @@ from riji_agent.timezone import local_journal_timezone
 
 def _default_now() -> datetime:
     return datetime.now(local_journal_timezone())
+
+
+_LOG = logging.getLogger("riji_agent.drafts.service")
 
 
 class DraftService:
@@ -60,6 +65,7 @@ class DraftService:
     ) -> DraftPreview:
         if not operations:
             raise DraftError(DraftErrorCode.NO_OPERATIONS, "a draft needs at least one entry")
+        polished_operations = tuple(_polish_operation(operation) for operation in operations)
         now = self._now()
         target = target_date or now.date()
         draft = Draft(
@@ -68,7 +74,7 @@ class DraftService:
             session_id=session_id,
             persona_id=persona_id,
             target_date=target,
-            operations=tuple(operations),
+            operations=polished_operations,
             token=uuid.uuid4().hex,
             status=DraftStatus.AWAITING,
             created_at=now.isoformat(),
@@ -139,7 +145,10 @@ class DraftService:
                 after_hash=outcome.after_hash,
             )
         )
-        self._index.update_note(outcome.path)
+        try:
+            self._index.update_note(outcome.path)
+        except Exception:
+            _LOG.warning("post-commit incremental index update failed", exc_info=True)
         return CommitResult(
             draft_id=draft.draft_id,
             source_id=outcome.source_id,
@@ -160,3 +169,8 @@ class DraftService:
             f"若期间切换了导师，改用「确认保存 {draft.draft_id}」。"
         )
         return "\n".join(lines)
+
+
+def _polish_operation(operation: DraftOperation) -> DraftOperation:
+    polished = polish_draft_content(operation.content)
+    return dataclasses.replace(operation, content=polished or operation.content.strip())

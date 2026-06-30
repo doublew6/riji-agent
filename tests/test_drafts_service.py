@@ -60,6 +60,63 @@ def test_create_then_commit_writes_and_indexes(setup) -> None:
     assert index.get("riji/daily/2026-06-25") is not None  # incremental index ran
 
 
+def test_create_draft_lightly_polishes_operation_content(setup) -> None:
+    service, _store, _index, _root, _clock = setup
+
+    preview = service.create_draft(
+        user_id="u1",
+        session_id="s",
+        persona_id="gentle",
+        operations=[
+            DraftOperation(
+                "🧠 Notes",
+                "一下，今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140",
+            )
+        ],
+    )
+
+    assert preview.operations[0].content == (
+        "今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140"
+    )
+    assert "一下，" not in preview.preview_text
+    assert "三里屯" in preview.preview_text
+    assert "120" in preview.preview_text
+    assert "140" in preview.preview_text
+
+
+def test_commit_succeeds_when_post_write_index_update_fails(setup, monkeypatch) -> None:
+    service, store, index, root, _clock = setup
+    preview = _create(service)
+
+    def fail_update_note(_path):
+        raise OSError("resource deadlock avoided")
+
+    monkeypatch.setattr(index, "update_note", fail_update_note)
+    result = service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    assert result.source_id == "riji/daily/2026-06-25"
+    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert store.get(preview.draft_id).status is DraftStatus.COMMITTED
+
+
+def test_transient_write_error_keeps_draft_awaiting(setup, monkeypatch) -> None:
+    service, store, _index, root, _clock = setup
+    preview = _create(service)
+
+    def fail_commit_operations(*_args, **_kwargs):
+        raise OSError("resource deadlock avoided")
+
+    monkeypatch.setattr(
+        "riji_agent.drafts.service.commit_operations",
+        fail_commit_operations,
+    )
+    with pytest.raises(OSError):
+        service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    assert not (root / "daily" / "2026-06-25.md").exists()
+    assert store.get(preview.draft_id).status is DraftStatus.AWAITING
+
+
 def test_unconfirmed_draft_never_writes(setup) -> None:
     service, _store, _index, root, _clock = setup
     _create(service)  # no commit
