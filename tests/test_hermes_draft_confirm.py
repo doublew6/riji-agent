@@ -162,6 +162,32 @@ def test_fast_draft_request_creates_preview_without_model_call(tmp_path: Path) -
     index.close()
 
 
+def test_fast_draft_request_preview_is_lightly_polished(tmp_path: Path) -> None:
+    root = tmp_path / "riji"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
+    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    draft_service = DraftService(DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index)
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "d" / "mem.sqlite3"),
+        events=EventLog(tmp_path / "d" / "events.sqlite3"),
+        responder=ExplodingResponder(),
+        draft_service=draft_service,
+    )
+
+    reply = gateway.handle(
+        SECRET,
+        _msg("帮我记录一下，今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140"),
+    )
+
+    assert "今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140" in reply.text
+    assert "一下，今天" not in reply.text
+    index.close()
+
+
 def test_correction_rewrites_latest_draft_to_today_notes(setup) -> None:
     gateway, draft_service, root = setup
     _seed_draft(draft_service, persona="gentle_reviewer")
