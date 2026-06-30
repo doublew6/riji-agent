@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
+README_EN = ROOT / "README.en.md"
 PRD = ROOT / "docs" / "PRD.md"
 ARCHITECTURE = ROOT / "docs" / "architecture" / "mvp-architecture.md"
 PRIVACY = ROOT / "docs" / "privacy.md"
@@ -18,9 +19,19 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_readme_positions_default_stack_without_lock_in() -> None:
+def test_default_readme_is_chinese_first_with_english_link() -> None:
     text = _read(README)
 
+    assert "[English](README.en.md)" in text
+    assert "本地优先" in text
+    assert "飞书 + Hermes + DeepSeek" in text
+    assert "不是唯一架构" in text
+
+
+def test_english_readme_positions_default_stack_without_lock_in() -> None:
+    text = _read(README_EN)
+
+    assert "[中文](README.md)" in text
     assert "local-first" in text
     assert "Feishu + Hermes + DeepSeek" in text
     assert "default stack" in text
