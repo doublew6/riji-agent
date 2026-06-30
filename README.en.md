@@ -9,6 +9,24 @@ journals. It keeps the journal vault, local index, drafts, audit records, and
 write permissions on the user's machine, while exposing only bounded,
 auditable tools to an external agent or model runtime.
 
+## Project Goal
+
+The goal is simple: make AI-assisted journaling useful for long-term personal
+growth without turning a private journal into cloud infrastructure.
+
+Daily notes, weekly reviews, monthly reviews, and thematic reflection work best
+when they become a steady practice: record what happened, notice what changed,
+turn the insight into the next small action. AI can help make that loop more
+structured and easier to keep: it can retrieve old notes, summarize a period,
+draft a review, extract action items, or prepare a journal entry from a chat
+message. The important boundary is that AI remains an assistant to reflection
+and action, not the owner of the journal.
+
+`riji-agent` is the local gateway for that workflow. Template and skill
+repositories can define how to write, review, and summarize; this project
+decides what a model is allowed to see, which tools it may call, and when a
+Markdown file may actually be changed.
+
 The batteries-included default stack is **Feishu + Hermes + DeepSeek**:
 
 - Feishu is the default IM entry point for private chat.
@@ -34,18 +52,43 @@ pack automations must not upload the complete vault, raw Markdown files, SQLite
 databases, API keys, or webhook URLs. See
 [docs/architecture/packs.md](docs/architecture/packs.md).
 
-## What It Is
+## Scope
 
-`riji-agent` provides a local boundary for personal journal intelligence:
+`riji-agent` provides the local boundary for personal journal intelligence. It
+is responsible for:
 
-- reads an existing Markdown journal vault without copying it into the repo;
-- builds a local SQLite index for search, timeline, and source lookup;
-- lets an agent call narrow tools such as `search_journal` and `read_note`;
-- blocks private notes and caps returned snippets before anything reaches a
+- reading an existing Markdown journal vault without copying it into the repo;
+- building a local SQLite index for search, timeline, and source lookup;
+- letting an agent call narrow tools such as `search_journal` and `read_note`;
+- blocking private notes and capping returned snippets before anything reaches a
   cloud model;
-- creates journal write drafts that require explicit user confirmation before
+- creating journal write drafts that require explicit user confirmation before
   any Markdown file is changed;
-- records metadata for audit without storing full sensitive text in logs.
+- recording metadata for audit without storing full sensitive text in logs.
+
+It is not a prompt collection or a template registry. A journaling skill layer
+can decide *how* to produce a daily note, weekly review, monthly review, travel
+log, or reflection summary. `riji-agent` supplies the safer local execution
+boundary those skills need when they touch a real journal.
+
+## Journaling Workflow
+
+A typical personal-growth loop looks like this:
+
+1. Capture a daily note or chat message.
+2. Let the agent retrieve only the minimum relevant journal snippets.
+3. Generate a draft entry, review, or answer with source links.
+4. Show the proposed change in chat.
+5. Write to Markdown only after explicit confirmation.
+
+Example:
+
+```text
+User: Record this in my journal: I finished the privacy review before launch.
+Mentor: Draft ready. Preview follows... Reply "confirm save" to write it.
+User: confirm save
+Mentor: Saved to [[riji/daily/2026-06-30]].
+```
 
 ## Privacy Model
 
