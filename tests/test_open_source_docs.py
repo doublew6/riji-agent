@@ -11,6 +11,7 @@ PRIVACY = ROOT / "docs" / "privacy.md"
 SECURITY = ROOT / "SECURITY.md"
 LICENSE = ROOT / "LICENSE"
 DEPLOYMENT = ROOT / "docs" / "deployment.md"
+PACKS = ROOT / "docs" / "architecture" / "packs.md"
 
 
 def _read(path: Path) -> str:
@@ -110,5 +111,20 @@ def test_docs_explain_cross_platform_service_and_sleep_behavior() -> None:
         # Sleep / logout behavior must be explained for the cross-platform case.
         "睡眠",
         "Hermes gateway",
+    ):
+        assert phrase in text
+
+
+def test_docs_explain_personal_growth_pack_boundary() -> None:
+    text = _read(README) + "\n" + _read(PACKS)
+
+    for phrase in (
+        "personal-growth",
+        "whit-riji-skills",
+        "codex-automations",
+        "capability metadata",
+        "controlled writer",
+        "draft preview",
+        "complete vault",
     ):
         assert phrase in text
