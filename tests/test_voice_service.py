@@ -6,7 +6,7 @@ from riji_agent.voice.service import MacOSSayVoiceReplyService
 def test_macos_say_voice_service_converts_to_feishu_opus(tmp_path: Path, monkeypatch) -> None:
     calls = []
 
-    def fake_which(name: str) -> str | None:
+    def fake_which(name: str):
         return {"say": "/usr/bin/say", "ffmpeg": "/opt/homebrew/bin/ffmpeg"}.get(name)
 
     monkeypatch.setattr("riji_agent.voice.service.shutil.which", fake_which)
