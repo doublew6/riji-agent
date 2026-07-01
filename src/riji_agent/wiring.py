@@ -30,7 +30,11 @@ from riji_agent.models.registry import build_model_provider
 from riji_agent.models.types import LLMProvider
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.service import RetrievalService
-from riji_agent.voice.service import MacOSSayVoiceReplyService, VoiceReplyService
+from riji_agent.voice.service import (
+    MacOSSayVoiceReplyService,
+    MeloTTSVoiceReplyService,
+    VoiceReplyService,
+)
 from riji_agent.yangming.seed import load_seed
 from riji_agent.yangming.store import YangmingKB
 
@@ -58,6 +62,15 @@ def build_voice_reply_service(settings: Settings) -> Optional[VoiceReplyService]
         return MacOSSayVoiceReplyService(
             output_dir,
             voice=settings.tts_voice,
+            max_chars=settings.tts_max_chars,
+        )
+    if settings.tts_provider == "melotts":
+        return MeloTTSVoiceReplyService(
+            output_dir,
+            language=settings.tts_language,
+            speaker=settings.tts_voice,
+            device=settings.tts_device,
+            speed=settings.tts_speed,
             max_chars=settings.tts_max_chars,
         )
     return None

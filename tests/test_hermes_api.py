@@ -24,10 +24,12 @@ class FakeVoiceReplyService:
     def __init__(self, attachment: Optional[VoiceAttachment] = None, fail: bool = False) -> None:
         self.attachment = attachment
         self.fail = fail
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, Optional[str]]] = []
 
-    def synthesize_reply(self, *, text: str, request_id: str) -> Optional[VoiceAttachment]:
-        self.calls.append((text, request_id))
+    def synthesize_reply(
+        self, *, text: str, request_id: str, voice: Optional[str] = None
+    ) -> Optional[VoiceAttachment]:
+        self.calls.append((text, request_id, voice))
         if self.fail:
             raise RuntimeError("tts failed")
         return self.attachment
@@ -97,7 +99,9 @@ def test_voice_reply_metadata_is_returned_when_enabled(tmp_path: Path) -> None:
         "path": "/tmp/riji-agent-voice/reply.opus",
         "mime_type": "audio/ogg",
     }
-    assert voice.calls == [("[gentle_reviewer] 你好", data["request_id"])]
+    assert voice.calls == [
+        ("[gentle_reviewer] 你好", data["request_id"], "Flo (中文（中国大陆）)")
+    ]
 
 
 def test_voice_failure_falls_back_to_text_reply(tmp_path: Path) -> None:

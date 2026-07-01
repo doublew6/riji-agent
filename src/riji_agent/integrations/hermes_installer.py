@@ -186,9 +186,26 @@ def _bridge_block() -> str:
                             and os.path.splitext(_riji_audio_path)[1].lower()
                             in {{".m4a", ".mp3", ".ogg", ".opus", ".wav", ".flac"}}
                         ):
-                            _riji_reply = (
+                            _riji_media_reply = (
                                 f"{{_riji_reply}}\\n\\n[[audio_as_voice]]\\nMEDIA:{{_riji_audio_path}}"
                             )
+                            _riji_adapter = self.adapters.get(source.platform)
+                            if _riji_adapter:
+                                async def _riji_deliver_audio_later():
+                                    try:
+                                        await asyncio.sleep(0.5)
+                                        await self._deliver_media_from_response(
+                                            _riji_media_reply,
+                                            event,
+                                            _riji_adapter,
+                                        )
+                                    except Exception as _riji_audio_exc:
+                                        logger.warning(
+                                            "riji-agent bridge audio delivery failed: %s",
+                                            _riji_audio_exc,
+                                        )
+
+                                asyncio.create_task(_riji_deliver_audio_later())
                     return _riji_reply
                 if _riji_response.status_code in {{401, 403}}:
                     return "这条消息没有通过 riji-agent 的本地授权校验。"

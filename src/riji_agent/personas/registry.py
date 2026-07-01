@@ -45,6 +45,8 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         ),
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
+        voice="Flo (中文（中国大陆）)",
+        voice_by_provider=(("macos_say", "Flo (中文（中国大陆）)"), ("melotts", "ZH")),
     ),
     "blunt_coach": Persona(
         persona_id="blunt_coach",
@@ -56,6 +58,8 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         ),
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
+        voice="Eddy (中文（中国大陆）)",
+        voice_by_provider=(("macos_say", "Eddy (中文（中国大陆）)"), ("melotts", "ZH")),
     ),
     "future_self": Persona(
         persona_id="future_self",
@@ -67,6 +71,8 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         ),
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
+        voice="Shelley (中文（中国大陆）)",
+        voice_by_provider=(("macos_say", "Shelley (中文（中国大陆）)"), ("melotts", "ZH")),
     ),
     "wang_yangming": Persona(
         persona_id="wang_yangming",
@@ -83,6 +89,8 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         ),
         allowed_tools=YANGMING_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
+        voice="Grandpa (中文（中国大陆）)",
+        voice_by_provider=(("macos_say", "Grandpa (中文（中国大陆）)"), ("melotts", "ZH")),
         uses_yangming=True,
     ),
 }

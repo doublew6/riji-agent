@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     tts_voice: Optional[str] = Field(default=None, alias="RIJI_TTS_VOICE")
     tts_max_chars: int = Field(default=1200, alias="RIJI_TTS_MAX_CHARS", ge=1)
     tts_output_dir: Optional[Path] = Field(default=None, alias="RIJI_TTS_OUTPUT_DIR")
+    tts_language: str = Field(default="ZH", alias="RIJI_TTS_LANGUAGE")
+    tts_device: str = Field(default="auto", alias="RIJI_TTS_DEVICE")
+    tts_speed: float = Field(default=1.0, alias="RIJI_TTS_SPEED", ge=0.1)
     allowed_feishu_user_ids: Annotated[FrozenSet[str], NoDecode] = Field(
         alias="RIJI_ALLOWED_FEISHU_USER_IDS"
     )
@@ -132,7 +135,7 @@ class Settings(BaseSettings):
     @classmethod
     def require_supported_tts_provider(cls, value: str) -> str:
         cleaned = value.strip().lower()
-        if cleaned not in {"macos_say"}:
+        if cleaned not in {"macos_say", "melotts"}:
             raise ValueError("unsupported TTS provider")
         return cleaned
 

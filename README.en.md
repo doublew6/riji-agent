@@ -195,6 +195,45 @@ uv run riji-agent hermes-bridge status
 Then restart `hermes gateway`. Configuration details live in
 [docs/hermes-integration.md](docs/hermes-integration.md).
 
+### Feishu Voice Replies
+
+By default, Feishu replies are text-only. Set:
+
+```bash
+RIJI_FEISHU_VOICE_REPLY_MODE=text_and_voice
+```
+
+to keep the text reply and also generate a local audio attachment for
+Hermes/Feishu.
+
+Available TTS providers:
+
+- `macos_say`: zero extra dependencies and fully local, but mechanical; useful
+  as the fallback provider.
+- `melotts`: optional local open-source TTS that is usually more natural than
+  `macos_say`. Install MeloTTS into the same virtualenv before enabling it:
+
+```bash
+uv pip install melotts
+```
+
+Then configure:
+
+```bash
+RIJI_TTS_PROVIDER=melotts
+RIJI_TTS_LANGUAGE=ZH
+RIJI_TTS_VOICE=ZH
+RIJI_TTS_DEVICE=auto
+RIJI_TTS_SPEED=1.0
+```
+
+`melotts` has a heavy dependency tree and model cache, so it is intentionally
+not part of the default dependency lock. It may download or prepare model cache
+assets on first use. Keep those assets outside the repository and outside the
+journal vault. Cloud TTS providers are intentionally not the default; future
+providers such as `edge_tts` or Azure Speech should be explicit opt-ins because
+reply text leaves the local machine.
+
 ## Configuration And Safety
 
 - `.env`, SQLite files, audit logs, `data/`, and accidental local journal copies

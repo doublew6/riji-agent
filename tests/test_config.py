@@ -78,6 +78,29 @@ def test_voice_reply_mode_accepts_text_and_voice(tmp_path: Path) -> None:
     assert settings.tts_max_chars == 300
 
 
+def test_settings_accepts_melotts_provider(tmp_path: Path) -> None:
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    settings = Settings(
+        _env_file=None,
+        RIJI_JOURNAL_ROOT=str(journal_root),
+        RIJI_DATA_DIR=str(tmp_path / "runtime"),
+        DEEPSEEK_API_KEY="secret",
+        RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
+        HERMES_SHARED_SECRET="another-secret",
+        RIJI_TTS_PROVIDER="melotts",
+        RIJI_TTS_LANGUAGE="zh",
+        RIJI_TTS_DEVICE="cpu",
+        RIJI_TTS_SPEED=1.1,
+    )
+
+    assert settings.tts_provider == "melotts"
+    assert settings.tts_language == "zh"
+    assert settings.tts_device == "cpu"
+    assert settings.tts_speed == 1.1
+
+
 def test_voice_reply_mode_rejects_unknown_value(tmp_path: Path) -> None:
     journal_root = tmp_path / "journal"
     journal_root.mkdir()
