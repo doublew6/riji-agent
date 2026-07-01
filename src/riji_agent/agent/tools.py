@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date as Date
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from datetime import date as Date, datetime
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from riji_agent.drafts.errors import DraftError
 from riji_agent.drafts.models import DraftOperation
@@ -20,6 +20,7 @@ from riji_agent.retrieval.errors import RetrievalError
 from riji_agent.retrieval.models import Granularity, ToolContext
 from riji_agent.retrieval.schemas import TOOL_DEFINITIONS
 from riji_agent.retrieval.service import RetrievalService
+from riji_agent.timezone import local_journal_timezone
 from riji_agent.yangming.store import YangmingKB
 
 _YANGMING_SNIPPET_MAX = 400
@@ -104,6 +105,21 @@ def _date(value: Optional[str]) -> Optional[Date]:
     if value is None:
         return None
     return Date.fromisoformat(value)
+
+
+def _local_today() -> Date:
+    return datetime.now(local_journal_timezone()).date()
+
+
+def _operations_mention_today(operations: Sequence[DraftOperation]) -> bool:
+    return any("今天" in operation.content for operation in operations)
+
+
+def _draft_target_date(value: Optional[str], operations: Sequence[DraftOperation]) -> Optional[Date]:
+    target = _date(value)
+    if _operations_mention_today(operations):
+        return _local_today()
+    return target
 
 
 class ToolRegistry:
@@ -305,11 +321,12 @@ class ToolRegistry:
             session_id=context.session_id,
             persona_id=context.persona_id,
             operations=operations,
-            target_date=_date(args.get("target_date")),
+            target_date=_draft_target_date(args.get("target_date"), operations),
         )
         payload = {
             "draft_id": preview.draft_id,
             "target_date": preview.target_date.isoformat(),
+            "weekday": f"{preview.target_date:%A}",
             "operations": [{"section": o.section, "content": o.content} for o in preview.operations],
             "preview": preview.preview_text,
             "expires_at": preview.expires_at,

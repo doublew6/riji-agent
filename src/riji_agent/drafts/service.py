@@ -93,6 +93,9 @@ class DraftService:
     def get_latest_awaiting_for_session(self, session_id: str) -> Optional[Draft]:
         return self._store.get_latest_awaiting_for_session(session_id)
 
+    def get_latest_for_session(self, session_id: str) -> Optional[Draft]:
+        return self._store.get_latest_for_session(session_id)
+
     def get_draft(self, draft_id: str) -> Optional[Draft]:
         """Fetch a draft by its id, regardless of session.
 
@@ -101,6 +104,17 @@ class DraftService:
         status are still enforced in :meth:`commit_draft`.
         """
         return self._store.get(draft_id)
+
+    def cancel_draft(self, draft_id: str, *, user_id: Optional[str] = None) -> bool:
+        draft = self._store.get(draft_id)
+        if draft is None:
+            return False
+        if user_id is not None and draft.user_id != user_id:
+            return False
+        if draft.status is not DraftStatus.AWAITING:
+            return False
+        self._store.save(dataclasses.replace(draft, status=DraftStatus.CANCELLED))
+        return True
 
     def commit_draft(
         self, draft_id: str, *, user_id: str, token: Optional[str] = None
@@ -160,7 +174,7 @@ class DraftService:
 
     @staticmethod
     def _render_preview(draft: Draft) -> str:
-        lines = [f"草稿（{draft.target_date.isoformat()}）将追加："]
+        lines = [f"草稿（{draft.target_date.isoformat()} {draft.target_date:%A}）将追加："]
         for operation in draft.operations:
             lines.append(f"[{operation.section}]")
             lines.append(f"  - {operation.content}")
