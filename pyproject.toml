@@ -7,7 +7,7 @@ name = "riji-agent"
 version = "0.1.0"
 description = "Local privacy and data boundary for the Riji journal agent."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1.0",
   "httpx>=0.27,<1.0",
