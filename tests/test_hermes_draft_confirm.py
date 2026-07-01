@@ -1,7 +1,9 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
+import riji_agent.hermes.gateway as gateway_module
 from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
@@ -204,6 +206,31 @@ def test_correction_rewrites_latest_draft_to_today_notes(setup) -> None:
     text = next((root / "daily").glob("*.md")).read_text(encoding="utf-8")
     assert "## 🧠 Notes" in text
     assert text.index("## 🧠 Notes") < text.index("- 评审通过")
+
+
+def test_correction_after_wrong_date_commit_creates_confirmable_draft(setup, monkeypatch) -> None:
+    gateway, draft_service, root = setup
+    monkeypatch.setattr(
+        gateway_module,
+        "_local_today",
+        lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc).date(),
+        raising=False,
+    )
+    _seed_draft(draft_service, persona="gentle_reviewer")
+    first = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-old"))
+    assert "已写入" in first.text
+
+    revised = gateway.handle(
+        SECRET,
+        _msg("日期不对，今天是7月1日，请改成今天的日记。", event_id="fix-date"),
+    )
+    assert "已按你的纠正重新起草" in revised.text
+    assert "2026-07-01" in revised.text
+
+    confirm = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-corrected"))
+    assert "已写入" in confirm.text
+    assert "2026-07-01" in confirm.text
+    assert (root / "daily" / "2026-07-01.md").exists()
 
 
 def test_commit_filesystem_error_returns_safe_reply(setup, monkeypatch) -> None:

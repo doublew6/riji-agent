@@ -3,11 +3,13 @@ privacy boundary, exercising the full gateway stack with a scripted model.
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import pytest
 
+import riji_agent.agent.tools as tools_module
 from riji_agent.agent.tools import ToolRegistry
 from riji_agent.audit.store import AuditStore
 from riji_agent.drafts.service import DraftService
@@ -117,7 +119,12 @@ def test_us03_shared_memory_reaches_model_after_switch(tmp_path: Path) -> None:
     assert "用户正在写一本书" in system_prompt  # confirmed memory shared across personas
 
 
-def test_us04_draft_then_confirm_writes(tmp_path: Path) -> None:
+def test_us04_draft_then_confirm_writes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        tools_module,
+        "_local_today",
+        lambda: datetime(2026, 6, 26, 8, 0, tzinfo=timezone.utc).date(),
+    )
     gateway, _provider, audit, root, _store = _build(
         tmp_path,
         [_tool("draft_daily_entry", {"operations": [{"section": "🌆 Evening", "content": "今天评审通过"}], "target_date": "2026-06-26"}),

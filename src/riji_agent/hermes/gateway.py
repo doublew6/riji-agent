@@ -8,6 +8,7 @@ request context, the persona system prompt and the user's text.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -54,6 +55,9 @@ _FAST_DRAFT_TRIGGERS = (
 _DEFAULT_DRAFT_SECTION = "Notes"
 _NOTES_SECTION = "Notes"
 _LOG = logging.getLogger("riji_agent.hermes.gateway")
+_ISO_DATE_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
+_MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
+_DAY_RE = re.compile(r"(?P<day>\d{1,2})\s*(?:日|号)")
 
 
 @dataclass(frozen=True)
@@ -118,8 +122,42 @@ def is_draft_correction_request(text: str) -> bool:
     if not stripped:
         return False
     has_correction = any(word in stripped for word in ("不对", "错", "不是", "纠正", "改成"))
-    has_date_or_section = any(word in stripped for word in ("今天", "29号", "29 号", "notes", "note"))
+    has_date_or_section = any(
+        word in stripped for word in ("今天", "日期", "日记日期", "notes", "note")
+    ) or bool(_ISO_DATE_RE.search(stripped) or _MONTH_DAY_RE.search(stripped) or _DAY_RE.search(stripped))
     return has_correction and has_date_or_section
+
+
+def _local_today() -> Date:
+    return datetime.now(local_journal_timezone()).date()
+
+
+def _date_or_none(year: int, month: int, day: int) -> Optional[Date]:
+    try:
+        return Date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _extract_corrected_date(text: str, *, today: Optional[Date] = None) -> Date:
+    local_today = today or _local_today()
+    if match := _ISO_DATE_RE.search(text):
+        parsed = _date_or_none(
+            int(match.group("year")), int(match.group("month")), int(match.group("day"))
+        )
+        if parsed is not None:
+            return parsed
+    if match := _MONTH_DAY_RE.search(text):
+        parsed = _date_or_none(
+            local_today.year, int(match.group("month")), int(match.group("day"))
+        )
+        if parsed is not None:
+            return parsed
+    if match := _DAY_RE.search(text):
+        parsed = _date_or_none(local_today.year, local_today.month, int(match.group("day")))
+        if parsed is not None:
+            return parsed
+    return local_today
 
 
 class Responder:
@@ -285,6 +323,9 @@ class HermesGateway:
         user, chat = message.user_id, message.chat_id
         session_id = session_key(user, persona_id, chat)
         previous = self._draft_service.get_latest_awaiting_for_session(session_id)
+        previous_was_awaiting = previous is not None
+        if previous is None:
+            previous = self._draft_service.get_latest_for_session(session_id)
         if previous is None or not previous.operations:
             return None
 
@@ -302,6 +343,8 @@ class HermesGateway:
             operations=corrected_ops,
             target_date=corrected_date,
         )
+        if previous_was_awaiting:
+            self._draft_service.cancel_draft(previous.draft_id, user_id=user)
         reply = "已按你的纠正重新起草：\n" + preview.preview_text
         self._store.append_message(user, persona_id, chat, "user", message.text)
         self._store.append_message(user, persona_id, chat, "assistant", reply)
@@ -316,10 +359,7 @@ class HermesGateway:
 
     @staticmethod
     def _corrected_date(text: str) -> Date:
-        today = datetime.now(local_journal_timezone()).date()
-        if "29号" in text or "29 号" in text:
-            return today.replace(day=29)
-        return today
+        return _extract_corrected_date(text)
 
     def _confirm_draft(
         self, message: IncomingChatMessage, persona_id: str, draft_id: Optional[str] = None

@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
+import riji_agent.agent.tools as tools_module
 from riji_agent.agent.tools import ToolRegistry
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
@@ -39,6 +41,30 @@ def test_draft_tool_creates_an_awaiting_draft(parts) -> None:
     assert invocation.ok is True
     assert invocation.payload["awaiting_confirmation"] is True
     assert draft_service.get_latest_awaiting_for_session("u1:gentle:c1") is not None
+
+
+def test_draft_tool_treats_today_as_user_timezone_date(parts, monkeypatch) -> None:
+    retrieval, draft_service = parts
+    registry = ToolRegistry(retrieval, draft_service=draft_service)
+    monkeypatch.setattr(
+        tools_module,
+        "_local_today",
+        lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc).date(),
+    )
+
+    args = json.dumps(
+        {
+            "target_date": "2026-06-24",
+            "operations": [{"section": "🌆 Evening", "content": "今天完成了一件匿名事项"}],
+        },
+        ensure_ascii=False,
+    )
+    invocation = registry.invoke(_ctx(), "draft_daily_entry", args)
+
+    assert invocation.ok is True
+    assert invocation.payload["target_date"] == "2026-07-01"
+    assert invocation.payload["weekday"] == "Wednesday"
+    assert "2026-07-01 Wednesday" in invocation.payload["preview"]
 
 
 def test_draft_tool_is_exposed_in_specs_only_when_enabled(parts) -> None:
