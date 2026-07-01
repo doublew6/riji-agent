@@ -291,8 +291,17 @@ class HermesGateway:
         )
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
-        audio = self._synthesize_voice_reply(reply, request_id, voice=assembled.persona.voice)
+        audio = self._synthesize_voice_reply(
+            reply,
+            request_id,
+            voice=assembled.persona.voice_for(self._voice_provider_id()),
+        )
         return GatewayReply(request_id, persona_id, reply, deduplicated=False, audio=audio)
+
+    def _voice_provider_id(self) -> str:
+        if self._voice_reply_service is None:
+            return ""
+        return getattr(self._voice_reply_service, "provider_id", "")
 
     def _synthesize_voice_reply(
         self, reply: str, request_id: str, *, voice: Optional[str] = None

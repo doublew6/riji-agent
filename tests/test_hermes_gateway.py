@@ -25,12 +25,18 @@ class FakeResponder:
 
 
 class FakeVoiceReplyService:
+    provider_id = "macos_say"
+
     def __init__(self) -> None:
         self.calls: List[Dict[str, Any]] = []
 
     def synthesize_reply(self, *, text: str, request_id: str, voice: Optional[str] = None):
         self.calls.append({"text": text, "request_id": request_id, "voice": voice})
         return VoiceAttachment(path="/tmp/riji-agent-voice/reply.opus", mime_type="audio/ogg")
+
+
+class FakeMeloVoiceReplyService(FakeVoiceReplyService):
+    provider_id = "melotts"
 
 
 def _msg(text: str, *, event_id: str = "e1", user: str = "ou_1", chat: str = "c1", chat_type: str = "p2p") -> IncomingMessage:
@@ -143,6 +149,35 @@ def test_voice_reply_uses_selected_persona_voice(tmp_path: Path) -> None:
             "text": "[blunt_coach] 给一句建议",
             "request_id": reply.request_id,
             "voice": "Eddy (中文（中国大陆）)",
+        }
+    ]
+    store.close()
+    events.close()
+
+
+def test_voice_reply_uses_provider_specific_persona_voice(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite3")
+    events = EventLog(tmp_path / "events.sqlite3")
+    voice = FakeMeloVoiceReplyService()
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=store,
+        events=events,
+        responder=FakeResponder(),
+        voice_reply_service=voice,
+    )
+
+    reply = gateway.handle(SECRET, _msg("/导师 王阳明 给一句建议", event_id="voice-melo"))
+
+    assert reply.audio is not None
+    assert reply.persona_id == "wang_yangming"
+    assert voice.calls == [
+        {
+            "text": "[wang_yangming] 给一句建议",
+            "request_id": reply.request_id,
+            "voice": "ZH",
         }
     ]
     store.close()

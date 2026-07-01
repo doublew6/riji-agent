@@ -171,6 +171,41 @@ uv run riji-agent hermes-bridge status
 然后重启 `hermes gateway`。配置细节见
 [docs/hermes-integration.md](docs/hermes-integration.md)。
 
+### 飞书语音回复
+
+默认情况下，飞书回复只发送文字。若设置：
+
+```bash
+RIJI_FEISHU_VOICE_REPLY_MODE=text_and_voice
+```
+
+riji-agent 会在保留文字回复的同时，生成本地音频并交给 Hermes 发回飞书。
+
+可用 TTS provider：
+
+- `macos_say`：零额外依赖，完全本地，但声音较机械，适合作为兜底；
+- `melotts`：可选本地开源 TTS，声音通常比 `macos_say` 自然。启用前需要
+  把 MeloTTS 单独安装进同一个虚拟环境：
+
+```bash
+uv pip install melotts
+```
+
+然后配置：
+
+```bash
+RIJI_TTS_PROVIDER=melotts
+RIJI_TTS_LANGUAGE=ZH
+RIJI_TTS_VOICE=ZH
+RIJI_TTS_DEVICE=auto
+RIJI_TTS_SPEED=1.0
+```
+
+`melotts` 的依赖和模型缓存比较重，所以不放进默认依赖锁定范围。首次运行
+可能会下载或准备模型缓存；这些资产不在代码仓库内，也不应放进日记 vault。
+云端 TTS provider 不作为默认方案：若将来接入 `edge_tts`、Azure Speech 等，
+应明确 opt-in，因为回复文本会离开本机。
+
 ## 配置与安全
 
 - `.env`、SQLite、审计日志、`data/` 和误复制的本地日记目录都应被 Git 忽略；

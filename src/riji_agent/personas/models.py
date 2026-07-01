@@ -24,4 +24,11 @@ class Persona:
     allowed_tools: Tuple[str, ...]
     answer_boundaries: str
     voice: Optional[str] = None
+    voice_by_provider: Tuple[Tuple[str, str], ...] = ()
     uses_yangming: bool = False
+
+    def voice_for(self, provider_id: str) -> Optional[str]:
+        for provider, voice in self.voice_by_provider:
+            if provider == provider_id:
+                return voice
+        return self.voice
