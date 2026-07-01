@@ -83,7 +83,9 @@ def test_authorized_message_returns_reply(client: TestClient) -> None:
 
 
 def test_voice_reply_metadata_is_returned_when_enabled(tmp_path: Path) -> None:
-    voice = FakeVoiceReplyService(VoiceAttachment(path="/tmp/riji-agent-voice/reply.m4a", mime_type="audio/mp4"))
+    voice = FakeVoiceReplyService(
+        VoiceAttachment(path="/tmp/riji-agent-voice/reply.opus", mime_type="audio/ogg")
+    )
     client = _client_with_voice(tmp_path, voice)
 
     resp = client.post("/hermes/messages", json=_body("你好"), headers={"X-Hermes-Secret": SECRET})
@@ -92,8 +94,8 @@ def test_voice_reply_metadata_is_returned_when_enabled(tmp_path: Path) -> None:
     data = resp.json()
     assert data["reply"] == "[gentle_reviewer] 你好"
     assert data["audio"] == {
-        "path": "/tmp/riji-agent-voice/reply.m4a",
-        "mime_type": "audio/mp4",
+        "path": "/tmp/riji-agent-voice/reply.opus",
+        "mime_type": "audio/ogg",
     }
     assert voice.calls == [("[gentle_reviewer] 你好", data["request_id"])]
 

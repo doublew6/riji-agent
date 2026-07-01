@@ -26,7 +26,11 @@ class VoiceReplyService(Protocol):
 
 
 class MacOSSayVoiceReplyService:
-    """Generate ``.m4a`` replies with the local macOS ``say`` command."""
+    """Generate local voice replies with macOS ``say``.
+
+    When ``ffmpeg`` is available, the intermediate ``.m4a`` output is converted
+    to Opus so Feishu can deliver it through its native audio message path.
+    """
 
     def __init__(
         self,
@@ -53,7 +57,8 @@ class MacOSSayVoiceReplyService:
 
         self._output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         safe_request = _SAFE_NAME_RE.sub("-", request_id).strip("-") or "reply"
-        output_path = (self._output_dir / f"{safe_request}.m4a").resolve()
+        m4a_path = (self._output_dir / f"{safe_request}.m4a").resolve()
+        opus_path = (self._output_dir / f"{safe_request}.opus").resolve()
 
         input_path: Optional[Path] = None
         try:
@@ -64,10 +69,11 @@ class MacOSSayVoiceReplyService:
             with open(fd, "w", encoding="utf-8") as handle:
                 handle.write(content)
 
-            command = [say, "-o", str(output_path), "--file-format=m4af", "-f", str(input_path)]
+            command = [say, "-o", str(m4a_path), "--file-format=m4af", "-f", str(input_path)]
             if self._voice:
                 command[1:1] = ["-v", self._voice]
             subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            attachment = self._convert_to_opus_if_available(m4a_path=m4a_path, opus_path=opus_path)
         except Exception:
             _LOG.warning("voice reply synthesis failed", exc_info=True)
             return None
@@ -78,6 +84,47 @@ class MacOSSayVoiceReplyService:
                 except OSError:
                     _LOG.debug("voice reply temp input cleanup failed", exc_info=True)
 
-        if not output_path.is_file():
+        if attachment is None:
             return None
-        return VoiceAttachment(path=str(output_path), mime_type="audio/mp4")
+        return attachment
+
+    def _convert_to_opus_if_available(
+        self, *, m4a_path: Path, opus_path: Path
+    ) -> Optional[VoiceAttachment]:
+        if not m4a_path.is_file():
+            return None
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            return VoiceAttachment(path=str(m4a_path), mime_type="audio/mp4")
+
+        try:
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(m4a_path),
+                    "-vn",
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "32k",
+                    str(opus_path),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            _LOG.warning("voice reply opus conversion failed; keeping m4a", exc_info=True)
+            return VoiceAttachment(path=str(m4a_path), mime_type="audio/mp4")
+
+        if not opus_path.is_file():
+            return VoiceAttachment(path=str(m4a_path), mime_type="audio/mp4")
+
+        try:
+            m4a_path.unlink(missing_ok=True)
+        except OSError:
+            _LOG.debug("voice reply intermediate cleanup failed", exc_info=True)
+        return VoiceAttachment(path=str(opus_path), mime_type="audio/ogg")
