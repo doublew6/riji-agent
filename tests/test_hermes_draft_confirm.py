@@ -190,6 +190,47 @@ def test_fast_draft_request_preview_is_lightly_polished(tmp_path: Path) -> None:
     index.close()
 
 
+def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "riji"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
+    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    draft_service = DraftService(DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index)
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "d" / "mem.sqlite3"),
+        events=EventLog(tmp_path / "d" / "events.sqlite3"),
+        responder=ExplodingResponder(),
+        draft_service=draft_service,
+    )
+    monkeypatch.setattr(
+        gateway_module,
+        "_local_today",
+        lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc).date(),
+        raising=False,
+    )
+
+    reply = gateway.handle(
+        SECRET,
+        _msg("帮忙记录，目前一个匿名团队出现了两条变化：\n1. 一个人调整岗位；\n2. 其他成员离开。"),
+    )
+
+    assert "草稿（2026-07-01）" in reply.text
+    assert "Wednesday" not in reply.text
+    assert "Tuesday" not in reply.text
+    assert "[Notes]" in reply.text
+    assert "[🌆 Evening]" not in reply.text
+    confirm = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-fast"))
+    assert "已写入" in confirm.text
+    text = (root / "daily" / "2026-07-01.md").read_text(encoding="utf-8")
+    assert "## 🧠 Notes" in text
+    assert "匿名团队" in text
+    assert text.index("## 🧠 Notes") < text.index("- 目前一个匿名团队")
+    index.close()
+
+
 def test_correction_rewrites_latest_draft_to_today_notes(setup) -> None:
     gateway, draft_service, root = setup
     _seed_draft(draft_service, persona="gentle_reviewer")

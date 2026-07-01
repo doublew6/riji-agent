@@ -64,7 +64,8 @@ def test_draft_tool_treats_today_as_user_timezone_date(parts, monkeypatch) -> No
     assert invocation.ok is True
     assert invocation.payload["target_date"] == "2026-07-01"
     assert invocation.payload["weekday"] == "Wednesday"
-    assert "2026-07-01 Wednesday" in invocation.payload["preview"]
+    assert "草稿（2026-07-01）" in invocation.payload["preview"]
+    assert "Wednesday" not in invocation.payload["preview"]
 
 
 def test_draft_tool_is_exposed_in_specs_only_when_enabled(parts) -> None:
