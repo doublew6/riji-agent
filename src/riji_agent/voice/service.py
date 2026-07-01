@@ -7,6 +7,7 @@ never sends journal-derived reply text to a cloud TTS provider.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,8 @@ from riji_agent.voice.models import VoiceAttachment
 
 _LOG = logging.getLogger("riji_agent.voice")
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_FFMPEG_FALLBACKS = (Path("/opt/homebrew/bin/ffmpeg"), Path("/usr/local/bin/ffmpeg"))
+_SAY_FALLBACKS = (Path("/usr/bin/say"),)
 
 
 class VoiceReplyService(Protocol):
@@ -44,7 +47,7 @@ class MacOSSayVoiceReplyService:
         self._max_chars = max(1, int(max_chars))
 
     def synthesize_reply(self, *, text: str, request_id: str) -> Optional[VoiceAttachment]:
-        say = shutil.which("say")
+        say = _find_executable("say", _SAY_FALLBACKS)
         if say is None:
             _LOG.warning("voice reply skipped: macOS say command is unavailable")
             return None
@@ -94,7 +97,7 @@ class MacOSSayVoiceReplyService:
         if not m4a_path.is_file():
             return None
 
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = _find_executable("ffmpeg", _FFMPEG_FALLBACKS)
         if ffmpeg is None:
             return VoiceAttachment(path=str(m4a_path), mime_type="audio/mp4")
 
@@ -128,3 +131,13 @@ class MacOSSayVoiceReplyService:
         except OSError:
             _LOG.debug("voice reply intermediate cleanup failed", exc_info=True)
         return VoiceAttachment(path=str(opus_path), mime_type="audio/ogg")
+
+
+def _find_executable(name: str, fallbacks: tuple[Path, ...] = ()) -> Optional[str]:
+    path = shutil.which(name)
+    if path:
+        return path
+    for candidate in fallbacks:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
