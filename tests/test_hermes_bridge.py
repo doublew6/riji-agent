@@ -83,6 +83,38 @@ def test_returns_reply_text_from_response() -> None:
     assert bridge.forward(_event()) == "[gentle_reviewer] 你好"
 
 
+def test_appends_voice_media_directive_from_audio_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "request_id": "r1",
+                "persona_id": "gentle_reviewer",
+                "reply": "你好",
+                "audio": {
+                    "path": "/tmp/riji-agent-voice/reply.m4a",
+                    "mime_type": "audio/mp4",
+                },
+                "deduplicated": False,
+            },
+        )
+
+    bridge = _bridge(handler)
+
+    assert bridge.forward(_event()) == (
+        "你好\n\n[[audio_as_voice]]\nMEDIA:/tmp/riji-agent-voice/reply.m4a"
+    )
+
+
+def test_ignores_invalid_audio_response_path() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"reply": "ok", "audio": {"path": "relative.m4a"}})
+
+    bridge = _bridge(handler)
+
+    assert bridge.forward(_event()) == "ok"
+
+
 def test_passes_feishu_event_id_without_generating_one() -> None:
     captured: dict = {}
 

@@ -176,7 +176,20 @@ def _bridge_block() -> str:
                     )
                 if 200 <= _riji_response.status_code < 300:
                     _riji_data = _riji_response.json()
-                    return str(_riji_data.get("reply") or "")
+                    _riji_reply = str(_riji_data.get("reply") or "")
+                    _riji_audio = _riji_data.get("audio")
+                    if isinstance(_riji_audio, dict):
+                        _riji_audio_path = _riji_audio.get("path")
+                        if (
+                            isinstance(_riji_audio_path, str)
+                            and _riji_audio_path.startswith("/")
+                            and os.path.splitext(_riji_audio_path)[1].lower()
+                            in {{".m4a", ".mp3", ".ogg", ".opus", ".wav", ".flac"}}
+                        ):
+                            _riji_reply = (
+                                f"{{_riji_reply}}\\n\\n[[audio_as_voice]]\\nMEDIA:{{_riji_audio_path}}"
+                            )
+                    return _riji_reply
                 if _riji_response.status_code in {{401, 403}}:
                     return "这条消息没有通过 riji-agent 的本地授权校验。"
                 logger.warning(

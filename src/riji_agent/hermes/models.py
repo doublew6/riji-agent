@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from riji_agent.im.feishu import FeishuIncomingMessage
 from riji_agent.im.models import PRIVATE_CHAT_TYPE
+from riji_agent.voice.models import VoiceAttachment
 
 
 @dataclass(frozen=True)
@@ -19,3 +21,4 @@ class GatewayReply:
     persona_id: str
     text: str
     deduplicated: bool = False
+    audio: Optional[VoiceAttachment] = None

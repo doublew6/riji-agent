@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +10,7 @@ from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.memory.store import MemoryStore
 from riji_agent.personas.registry import PersonaRegistry
+from riji_agent.voice.models import VoiceAttachment
 
 SECRET = "top-secret-shared"
 
@@ -16,6 +18,19 @@ SECRET = "top-secret-shared"
 class FakeResponder:
     def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
         return f"[{context.persona_id}] {question}"
+
+
+class FakeVoiceReplyService:
+    def __init__(self, attachment: Optional[VoiceAttachment] = None, fail: bool = False) -> None:
+        self.attachment = attachment
+        self.fail = fail
+        self.calls: list[tuple[str, str]] = []
+
+    def synthesize_reply(self, *, text: str, request_id: str) -> Optional[VoiceAttachment]:
+        self.calls.append((text, request_id))
+        if self.fail:
+            raise RuntimeError("tts failed")
+        return self.attachment
 
 
 @pytest.fixture
@@ -27,6 +42,21 @@ def client(tmp_path: Path) -> TestClient:
         store=MemoryStore(tmp_path / "mem.sqlite3"),
         events=EventLog(tmp_path / "events.sqlite3"),
         responder=FakeResponder(),
+    )
+    app = FastAPI()
+    app.include_router(build_hermes_router(gateway))
+    return TestClient(app)
+
+
+def _client_with_voice(tmp_path: Path, voice_service: FakeVoiceReplyService) -> TestClient:
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "mem.sqlite3"),
+        events=EventLog(tmp_path / "events.sqlite3"),
+        responder=FakeResponder(),
+        voice_reply_service=voice_service,
     )
     app = FastAPI()
     app.include_router(build_hermes_router(gateway))
@@ -49,6 +79,34 @@ def test_authorized_message_returns_reply(client: TestClient) -> None:
     data = resp.json()
     assert data["persona_id"] == "gentle_reviewer"
     assert "你好" in data["reply"]
+    assert "audio" not in data
+
+
+def test_voice_reply_metadata_is_returned_when_enabled(tmp_path: Path) -> None:
+    voice = FakeVoiceReplyService(VoiceAttachment(path="/tmp/riji-agent-voice/reply.m4a", mime_type="audio/mp4"))
+    client = _client_with_voice(tmp_path, voice)
+
+    resp = client.post("/hermes/messages", json=_body("你好"), headers={"X-Hermes-Secret": SECRET})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reply"] == "[gentle_reviewer] 你好"
+    assert data["audio"] == {
+        "path": "/tmp/riji-agent-voice/reply.m4a",
+        "mime_type": "audio/mp4",
+    }
+    assert voice.calls == [("[gentle_reviewer] 你好", data["request_id"])]
+
+
+def test_voice_failure_falls_back_to_text_reply(tmp_path: Path) -> None:
+    client = _client_with_voice(tmp_path, FakeVoiceReplyService(fail=True))
+
+    resp = client.post("/hermes/messages", json=_body("你好"), headers={"X-Hermes-Secret": SECRET})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reply"] == "[gentle_reviewer] 你好"
+    assert "audio" not in data
 
 
 def test_missing_secret_is_401(client: TestClient) -> None:

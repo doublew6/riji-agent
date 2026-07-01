@@ -35,11 +35,17 @@ def build_hermes_router(gateway: HermesGateway) -> APIRouter:
         except AuthError as exc:
             status = 401 if exc.code is AuthErrorCode.UNAUTHENTICATED else 403
             raise HTTPException(status_code=status, detail={"error": exc.code.value})
-        return {
+        payload = {
             "request_id": reply.request_id,
             "persona_id": reply.persona_id,
             "reply": reply.text,
             "deduplicated": reply.deduplicated,
         }
+        if reply.audio is not None:
+            payload["audio"] = {
+                "path": reply.audio.path,
+                "mime_type": reply.audio.mime_type,
+            }
+        return payload
 
     return router

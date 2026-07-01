@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Optional
 
 import httpx
@@ -35,6 +36,7 @@ DEFAULT_RIJI_AGENT_URL = "http://127.0.0.1:8765/hermes/messages"
 _FAILURE_REPLY = "日记助手暂时无法回应，请稍后再试。"
 _TIMEOUT_REPLY = "日记助手正在处理这条较复杂的问题，但本次等待超时了。请稍后重试，或把问题拆短一点。"
 DEFAULT_TIMEOUT_SECONDS = 240.0
+_AUDIO_EXTENSIONS = {".m4a", ".mp3", ".ogg", ".opus", ".wav", ".flac"}
 
 
 class BridgeConfigError(RuntimeError):
@@ -147,4 +149,15 @@ class HermesFeishuBridge:
         reply = data.get("reply")
         if not isinstance(reply, str) or not reply:
             return _FAILURE_REPLY
+        return _append_audio_media_directive(reply, data.get("audio"))
+
+
+def _append_audio_media_directive(reply: str, audio: object) -> str:
+    if not isinstance(audio, Mapping):
         return reply
+    path = audio.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        return reply
+    if Path(path).suffix.lower() not in _AUDIO_EXTENSIONS:
+        return reply
+    return f"{reply}\n\n[[audio_as_voice]]\nMEDIA:{path}"

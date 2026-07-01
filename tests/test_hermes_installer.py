@@ -43,6 +43,8 @@ def test_install_inserts_managed_bridge_before_anchor(tmp_path: Path) -> None:
     assert text.index(BEGIN_MARKER) < text.index(ANCHOR)
     assert "trust_env=False" in text
     assert "RIJI_AGENT_TIMEOUT_SECONDS" in text
+    assert "[[audio_as_voice]]" in text
+    assert "MEDIA:" in text
     assert (tmp_path / "run.py.riji-agent.bak").exists()
 
 
