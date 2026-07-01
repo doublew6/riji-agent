@@ -92,8 +92,8 @@ def test_appends_voice_media_directive_from_audio_response() -> None:
                 "persona_id": "gentle_reviewer",
                 "reply": "你好",
                 "audio": {
-                    "path": "/tmp/riji-agent-voice/reply.m4a",
-                    "mime_type": "audio/mp4",
+                    "path": "/tmp/riji-agent-voice/reply.opus",
+                    "mime_type": "audio/ogg",
                 },
                 "deduplicated": False,
             },
@@ -102,7 +102,7 @@ def test_appends_voice_media_directive_from_audio_response() -> None:
     bridge = _bridge(handler)
 
     assert bridge.forward(_event()) == (
-        "你好\n\n[[audio_as_voice]]\nMEDIA:/tmp/riji-agent-voice/reply.m4a"
+        "你好\n\n[[audio_as_voice]]\nMEDIA:/tmp/riji-agent-voice/reply.opus"
     )
 
 

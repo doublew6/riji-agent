@@ -48,8 +48,8 @@ X-Hermes-Secret: <HERMES_SHARED_SECRET>
 ```json
 {
   "audio": {
-    "path": "/absolute/path/to/reply.m4a",
-    "mime_type": "audio/mp4"
+    "path": "/absolute/path/to/reply.opus",
+    "mime_type": "audio/ogg"
   }
 }
 ```
@@ -90,7 +90,7 @@ RIJI_TTS_PROVIDER=macos_say
 # RIJI_TTS_MAX_CHARS=1200
 ```
 
-`macos_say` 使用 macOS 本机 `say` 命令，不调用云端 TTS；生成的 `.m4a` 文件保存在 `RIJI_DATA_DIR/voice`（或 `RIJI_TTS_OUTPUT_DIR`）下，不写入日记 vault。若 TTS 不可用或生成失败，bridge 仍会发送原文字回复。
+`macos_say` 使用 macOS 本机 `say` 命令，不调用云端 TTS；如果本机有 `ffmpeg`，会把临时 `.m4a` 转成飞书更稳定支持的 `.opus` 语音文件。生成的音频保存在 `RIJI_DATA_DIR/voice`（或 `RIJI_TTS_OUTPUT_DIR`）下，不写入日记 vault。若 TTS 不可用或生成失败，bridge 仍会发送原文字回复。
 
 ### Hermes 飞书侧官方变量（对照，不在本仓库管理）
 
