@@ -61,8 +61,40 @@ def test_macos_say_voice_service_falls_back_to_m4a_without_ffmpeg(
     assert attachment.mime_type == "audio/mp4"
 
 
+def test_macos_say_voice_service_uses_ffmpeg_fallback_path(tmp_path: Path, monkeypatch) -> None:
+    fallback_ffmpeg = tmp_path / "homebrew" / "ffmpeg"
+    fallback_ffmpeg.parent.mkdir()
+    fallback_ffmpeg.write_text("#!/bin/sh\n")
+    fallback_ffmpeg.chmod(0o755)
+
+    monkeypatch.setattr(
+        "riji_agent.voice.service.shutil.which",
+        lambda name: "/usr/bin/say" if name == "say" else None,
+    )
+    monkeypatch.setattr("riji_agent.voice.service._FFMPEG_FALLBACKS", (fallback_ffmpeg,))
+
+    def fake_run(command, check, stdout, stderr):
+        if command[0].endswith("say"):
+            output = Path(command[command.index("-o") + 1])
+            output.write_bytes(b"m4a")
+        else:
+            assert command[0] == str(fallback_ffmpeg)
+            output = Path(command[-1])
+            output.write_bytes(b"opus")
+
+    monkeypatch.setattr("riji_agent.voice.service.subprocess.run", fake_run)
+
+    service = MacOSSayVoiceReplyService(tmp_path / "voice")
+    attachment = service.synthesize_reply(text="hello", request_id="req")
+
+    assert attachment is not None
+    assert attachment.path.endswith(".opus")
+    assert attachment.mime_type == "audio/ogg"
+
+
 def test_macos_say_voice_service_returns_none_when_say_missing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("riji_agent.voice.service.shutil.which", lambda name: None)
+    monkeypatch.setattr("riji_agent.voice.service._SAY_FALLBACKS", ())
 
     service = MacOSSayVoiceReplyService(tmp_path / "voice")
 
