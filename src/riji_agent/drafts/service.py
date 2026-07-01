@@ -174,7 +174,7 @@ class DraftService:
 
     @staticmethod
     def _render_preview(draft: Draft) -> str:
-        lines = [f"草稿（{draft.target_date.isoformat()} {draft.target_date:%A}）将追加："]
+        lines = [f"草稿（{draft.target_date.isoformat()}）将追加："]
         for operation in draft.operations:
             lines.append(f"[{operation.section}]")
             lines.append(f"  - {operation.content}")

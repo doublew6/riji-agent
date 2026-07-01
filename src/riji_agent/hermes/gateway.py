@@ -49,6 +49,8 @@ _FAST_DRAFT_TRIGGERS = (
     "写日记",
     "记到日记",
     "在日记里记录",
+    "帮忙记录",
+    "帮忙记",
     "帮我记录",
     "帮我记",
 )
@@ -89,12 +91,6 @@ def parse_fast_draft_request(text: str) -> Optional[str]:
         return None
     if not any(trigger in stripped for trigger in _FAST_DRAFT_TRIGGERS):
         return None
-
-    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
-    if len(lines) > 1:
-        content = lines[-1]
-        if not any(trigger in content for trigger in _FAST_DRAFT_TRIGGERS):
-            return None if _is_generic_draft_placeholder(content) else content
 
     best_idx = -1
     best_trigger = ""
