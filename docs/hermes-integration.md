@@ -43,13 +43,24 @@ X-Hermes-Secret: <HERMES_SHARED_SECRET>
 | `chat_type` | `p2p`（私聊）才被接受；其余视为群聊拒绝 |
 | `text` | 用户消息文本 |
 
-响应（JSON）：`{request_id, persona_id, reply, deduplicated}`。
+响应（JSON）：`{request_id, persona_id, reply, deduplicated}`。当启用飞书语音回复且本地 TTS 成功时，还会包含可选字段：
+
+```json
+{
+  "audio": {
+    "path": "/absolute/path/to/reply.m4a",
+    "mime_type": "audio/mp4"
+  }
+}
+```
+
+`audio.path` 是本机临时/运行目录中的音频文件路径。bridge 会把它转换成 Hermes 的 `MEDIA:` 附件指令，由 Hermes/Feishu adapter 上传发送；普通 HTTP 调用方可以忽略该字段。
 
 错误：`401`（共享密钥无效）、`403`（非白名单用户或群聊）。
 
 ## 飞书 → Hermes → bridge → riji-agent 配置步骤
 
-Hermes 的内置飞书接入默认会让 Hermes 自己回复飞书消息，这会绕开 riji-agent 的本地日记隐私边界。为此本仓库提供一个**很薄的 bridge**：`src/riji_agent/integrations/hermes_bridge.py`。它在 Hermes 进程一侧运行，把飞书消息**原样转发**给 riji-agent，取回 `reply` 文本，由 Hermes 发回飞书。
+Hermes 的内置飞书接入默认会让 Hermes 自己回复飞书消息，这会绕开 riji-agent 的本地日记隐私边界。为此本仓库提供一个**很薄的 bridge**：`src/riji_agent/integrations/hermes_bridge.py`。它在 Hermes 进程一侧运行，把飞书消息**原样转发**给 riji-agent，取回 `reply` 文本和可选 `audio` 元数据，由 Hermes 发回飞书。
 
 bridge 的边界：
 
@@ -57,6 +68,7 @@ bridge 的边界：
 - 不自己生成事件 ID（透传飞书 `event_id`，幂等去重仍在 riji-agent 生效）；
 - 不自行放行群聊或非白名单用户（透传 `chat_type`/`feishu_user_id`，由 riji-agent 的 403 拦截）；
 - **无任何 vault / SQLite / 索引 / DeepSeek key 访问**——只转发消息与回复；
+- 语音回复开启时，只把 riji-agent 已生成的本地音频路径转换为 Hermes 媒体附件指令；
 - 共享密钥只放在 `X-Hermes-Secret` 头里，绝不出现在日志、异常或回复中。
 
 ### bridge 侧环境变量
@@ -66,6 +78,19 @@ bridge 的边界：
 | `HERMES_SHARED_SECRET` | 是 | 与 riji-agent 的 `HERMES_SHARED_SECRET` 一致；常量时间比较校验。 |
 | `RIJI_AGENT_URL` | 否 | bridge POST 的目标，默认 `http://127.0.0.1:8765/hermes/messages`。 |
 | `RIJI_AGENT_TIMEOUT_SECONDS` | 否 | bridge 等待 riji-agent 回复的秒数，默认 `240`。复杂日记问题可能需要更久。 |
+
+### 可选：飞书语音回复
+
+默认只发送文字。若想在飞书里同时收到文字和语音附件，可在 riji-agent 的本地 `.env` 中启用：
+
+```bash
+RIJI_FEISHU_VOICE_REPLY_MODE=text_and_voice
+RIJI_TTS_PROVIDER=macos_say
+# RIJI_TTS_VOICE=Tingting
+# RIJI_TTS_MAX_CHARS=1200
+```
+
+`macos_say` 使用 macOS 本机 `say` 命令，不调用云端 TTS；生成的 `.m4a` 文件保存在 `RIJI_DATA_DIR/voice`（或 `RIJI_TTS_OUTPUT_DIR`）下，不写入日记 vault。若 TTS 不可用或生成失败，bridge 仍会发送原文字回复。
 
 ### Hermes 飞书侧官方变量（对照，不在本仓库管理）
 

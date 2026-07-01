@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     index_file_timeout_seconds: float = Field(
         default=5.0, alias="RIJI_INDEX_FILE_TIMEOUT_SECONDS", ge=0
     )
+    feishu_voice_reply_mode: str = Field(default="off", alias="RIJI_FEISHU_VOICE_REPLY_MODE")
+    tts_provider: str = Field(default="macos_say", alias="RIJI_TTS_PROVIDER")
+    tts_voice: Optional[str] = Field(default=None, alias="RIJI_TTS_VOICE")
+    tts_max_chars: int = Field(default=1200, alias="RIJI_TTS_MAX_CHARS", ge=1)
+    tts_output_dir: Optional[Path] = Field(default=None, alias="RIJI_TTS_OUTPUT_DIR")
     allowed_feishu_user_ids: Annotated[FrozenSet[str], NoDecode] = Field(
         alias="RIJI_ALLOWED_FEISHU_USER_IDS"
     )
@@ -115,6 +120,22 @@ class Settings(BaseSettings):
             raise ValueError("unsupported agent runtime")
         return cleaned
 
+    @field_validator("feishu_voice_reply_mode")
+    @classmethod
+    def require_supported_voice_mode(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in {"off", "text_and_voice"}:
+            raise ValueError("unsupported Feishu voice reply mode")
+        return cleaned
+
+    @field_validator("tts_provider")
+    @classmethod
+    def require_supported_tts_provider(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in {"macos_say"}:
+            raise ValueError("unsupported TTS provider")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_selected_model_provider(self) -> "Settings":
         # Each provider declares its own required credentials. The DeepSeek
@@ -139,6 +160,8 @@ class Settings(BaseSettings):
 
         self.journal_root = journal_root
         self.data_dir = data_dir
+        if self.tts_output_dir is not None:
+            self.tts_output_dir = self.tts_output_dir.expanduser().resolve()
         if self.database_path is not None:
             database_path = self.database_path.expanduser().resolve()
             if database_path.parent != data_dir:

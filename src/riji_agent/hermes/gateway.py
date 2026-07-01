@@ -31,6 +31,8 @@ from riji_agent.personas.models import UnknownPersonaError
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.models import ToolContext
 from riji_agent.timezone import local_journal_timezone
+from riji_agent.voice.models import VoiceAttachment
+from riji_agent.voice.service import VoiceReplyService
 
 _CURRENT_PERSONA_PREF = "current_persona"
 _CONFIRM_COMMANDS = {"确认保存", "确认写入", "/确认", "确认"}
@@ -181,6 +183,7 @@ class HermesGateway:
         events: EventLog,
         responder: Responder,
         draft_service: Optional[DraftService] = None,
+        voice_reply_service: Optional[VoiceReplyService] = None,
         default_persona: str = "gentle_reviewer",
     ) -> None:
         self._secret = hermes_secret
@@ -190,6 +193,7 @@ class HermesGateway:
         self._events = events
         self._responder = responder
         self._draft_service = draft_service
+        self._voice_reply_service = voice_reply_service
         self._default_persona = default_persona
         self._lock = threading.Lock()
 
@@ -287,7 +291,19 @@ class HermesGateway:
         )
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
-        return GatewayReply(request_id, persona_id, reply, deduplicated=False)
+        audio = self._synthesize_voice_reply(reply, request_id)
+        return GatewayReply(request_id, persona_id, reply, deduplicated=False, audio=audio)
+
+    def _synthesize_voice_reply(
+        self, reply: str, request_id: str
+    ) -> Optional[VoiceAttachment]:
+        if self._voice_reply_service is None:
+            return None
+        try:
+            return self._voice_reply_service.synthesize_reply(text=reply, request_id=request_id)
+        except Exception:
+            _LOG.warning("voice reply generation failed request_id=%s", request_id, exc_info=True)
+            return None
 
     def _create_fast_draft(
         self, message: IncomingChatMessage, persona_id: str, content: str

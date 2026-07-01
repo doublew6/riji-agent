@@ -30,6 +30,7 @@ from riji_agent.models.registry import build_model_provider
 from riji_agent.models.types import LLMProvider
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.service import RetrievalService
+from riji_agent.voice.service import MacOSSayVoiceReplyService, VoiceReplyService
 from riji_agent.yangming.seed import load_seed
 from riji_agent.yangming.store import YangmingKB
 
@@ -47,6 +48,19 @@ def build_journal_index(settings: Settings) -> JournalIndex:
         embedder=embedder_from_settings(settings),
         file_read_timeout=settings.index_file_timeout_seconds,
     )
+
+
+def build_voice_reply_service(settings: Settings) -> Optional[VoiceReplyService]:
+    if settings.feishu_voice_reply_mode == "off":
+        return None
+    output_dir = settings.tts_output_dir or (settings.data_dir / "voice")
+    if settings.tts_provider == "macos_say":
+        return MacOSSayVoiceReplyService(
+            output_dir,
+            voice=settings.tts_voice,
+            max_chars=settings.tts_max_chars,
+        )
+    return None
 
 
 def build_production_gateway(
@@ -95,6 +109,7 @@ def build_production_gateway(
         events=EventLog(data_dir / "events.sqlite3"),
         responder=responder,
         draft_service=draft_service,
+        voice_reply_service=build_voice_reply_service(settings),
     )
     # Carry the scheduler so the app can prewarm/refresh and report status.
     gateway.index_scheduler = IndexScheduler(
