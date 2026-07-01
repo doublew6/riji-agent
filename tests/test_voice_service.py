@@ -39,6 +39,54 @@ def test_macos_say_voice_service_converts_to_feishu_opus(tmp_path: Path, monkeyp
     assert not list((tmp_path / "voice").glob("*.txt"))
 
 
+def test_macos_say_voice_service_uses_per_reply_voice(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    monkeypatch.setattr(
+        "riji_agent.voice.service.shutil.which",
+        lambda name: "/usr/bin/say" if name == "say" else None,
+    )
+    monkeypatch.setattr("riji_agent.voice.service._available_say_voices", lambda _say: {"Flo"})
+
+    def fake_run(command, check, stdout, stderr):
+        calls.append(command)
+        output = Path(command[command.index("-o") + 1])
+        output.write_bytes(b"m4a")
+
+    monkeypatch.setattr("riji_agent.voice.service.subprocess.run", fake_run)
+
+    service = MacOSSayVoiceReplyService(tmp_path / "voice", voice="Tingting")
+    attachment = service.synthesize_reply(text="hello", request_id="req", voice="Flo")
+
+    assert attachment is not None
+    assert calls[0][1:3] == ["-v", "Flo"]
+
+
+def test_macos_say_voice_service_falls_back_when_persona_voice_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+
+    monkeypatch.setattr(
+        "riji_agent.voice.service.shutil.which",
+        lambda name: "/usr/bin/say" if name == "say" else None,
+    )
+    monkeypatch.setattr("riji_agent.voice.service._available_say_voices", lambda _say: {"Tingting"})
+
+    def fake_run(command, check, stdout, stderr):
+        calls.append(command)
+        output = Path(command[command.index("-o") + 1])
+        output.write_bytes(b"m4a")
+
+    monkeypatch.setattr("riji_agent.voice.service.subprocess.run", fake_run)
+
+    service = MacOSSayVoiceReplyService(tmp_path / "voice", voice="Tingting")
+    attachment = service.synthesize_reply(text="hello", request_id="req", voice="Missing")
+
+    assert attachment is not None
+    assert calls[0][1:3] == ["-v", "Tingting"]
+
+
 def test_macos_say_voice_service_falls_back_to_m4a_without_ffmpeg(
     tmp_path: Path, monkeypatch
 ) -> None:

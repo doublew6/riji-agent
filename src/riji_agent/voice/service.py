@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import FrozenSet, Optional, Protocol
 
 from riji_agent.voice.models import VoiceAttachment
 
@@ -24,7 +24,9 @@ _SAY_FALLBACKS = (Path("/usr/bin/say"),)
 
 
 class VoiceReplyService(Protocol):
-    def synthesize_reply(self, *, text: str, request_id: str) -> Optional[VoiceAttachment]:
+    def synthesize_reply(
+        self, *, text: str, request_id: str, voice: Optional[str] = None
+    ) -> Optional[VoiceAttachment]:
         """Return a local audio attachment, or ``None`` when unavailable."""
 
 
@@ -46,11 +48,14 @@ class MacOSSayVoiceReplyService:
         self._voice = voice.strip() if voice else None
         self._max_chars = max(1, int(max_chars))
 
-    def synthesize_reply(self, *, text: str, request_id: str) -> Optional[VoiceAttachment]:
+    def synthesize_reply(
+        self, *, text: str, request_id: str, voice: Optional[str] = None
+    ) -> Optional[VoiceAttachment]:
         say = _find_executable("say", _SAY_FALLBACKS)
         if say is None:
             _LOG.warning("voice reply skipped: macOS say command is unavailable")
             return None
+        selected_voice = self._select_voice(say, voice)
 
         content = text.strip()
         if not content:
@@ -73,8 +78,8 @@ class MacOSSayVoiceReplyService:
                 handle.write(content)
 
             command = [say, "-o", str(m4a_path), "--file-format=m4af", "-f", str(input_path)]
-            if self._voice:
-                command[1:1] = ["-v", self._voice]
+            if selected_voice:
+                command[1:1] = ["-v", selected_voice]
             subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             attachment = self._convert_to_opus_if_available(m4a_path=m4a_path, opus_path=opus_path)
         except Exception:
@@ -90,6 +95,17 @@ class MacOSSayVoiceReplyService:
         if attachment is None:
             return None
         return attachment
+
+    def _select_voice(self, say: str, voice: Optional[str]) -> Optional[str]:
+        available = _available_say_voices(say)
+        for candidate in (voice, self._voice):
+            if not candidate:
+                continue
+            candidate = candidate.strip()
+            if not available or candidate in available:
+                return candidate
+            _LOG.warning("voice reply requested unavailable macOS voice: %s", candidate)
+        return None
 
     def _convert_to_opus_if_available(
         self, *, m4a_path: Path, opus_path: Path
@@ -141,3 +157,24 @@ def _find_executable(name: str, fallbacks: tuple[Path, ...] = ()) -> Optional[st
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
+
+
+def _available_say_voices(say: str) -> FrozenSet[str]:
+    try:
+        result = subprocess.run(
+            [say, "-v", "?"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        _LOG.debug("macOS say voice list unavailable; accepting configured voice names", exc_info=True)
+        return frozenset()
+
+    voices = set()
+    for line in result.stdout.splitlines():
+        match = re.match(r"^(.+?)\s{2,}[a-z]{2}(?:[_-][A-Z]{2})?\s+#", line)
+        if match:
+            voices.add(match.group(1).strip())
+    return frozenset(voices)
