@@ -100,6 +100,12 @@ _LOG = logging.getLogger("riji_agent.hermes.gateway")
 _ISO_DATE_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
 _MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
 _DAY_RE = re.compile(r"(?P<day>\d{1,2})\s*(?:日|号)")
+_NOT_X_BUT_Y_RE = re.compile(
+    r"不是\s*(?P<old>.+?)\s*[，,、\s]*(?:而?是|应该是|改成)\s*(?P<new>[^。；;\n]+)"
+)
+_CHANGE_X_TO_Y_RE = re.compile(
+    r"把\s*(?P<old>.+?)\s*改成\s*(?P<new>[^。；;\n]+)"
+)
 
 
 @dataclass(frozen=True)
@@ -172,14 +178,46 @@ def _evolution_request_text(text: str) -> Optional[str]:
 
 
 def is_draft_correction_request(text: str) -> bool:
-    stripped = text.strip().lower()
+    stripped = text.strip()
     if not stripped:
         return False
-    has_correction = any(word in stripped for word in ("不对", "错", "不是", "纠正", "改成"))
+    if _extract_text_replacements(stripped):
+        return True
+    lowered = stripped.lower()
+    has_correction = any(word in lowered for word in ("不对", "错", "不是", "纠正", "改成"))
     has_date_or_section = any(
-        word in stripped for word in ("今天", "日期", "日记日期", "notes", "note")
+        word in lowered for word in ("今天", "日期", "日记日期", "notes", "note")
     ) or bool(_ISO_DATE_RE.search(stripped) or _MONTH_DAY_RE.search(stripped) or _DAY_RE.search(stripped))
     return has_correction and has_date_or_section
+
+
+def _extract_text_replacements(text: str) -> tuple[tuple[str, str], ...]:
+    replacements = []
+    for pattern in (_NOT_X_BUT_Y_RE, _CHANGE_X_TO_Y_RE):
+        for match in pattern.finditer(text):
+            old = _clean_replacement_part(match.group("old"))
+            new = _clean_replacement_part(match.group("new"))
+            if old and new and old != new:
+                replacements.append((old, new))
+    return tuple(replacements)
+
+
+def _clean_replacement_part(value: str) -> str:
+    return value.strip(" \t\n\r：:，,、。；;！!？?")
+
+
+def _has_date_or_section_correction(text: str) -> bool:
+    stripped = text.strip().lower()
+    return any(word in stripped for word in ("今天", "日期", "日记日期", "notes", "note")) or bool(
+        _ISO_DATE_RE.search(stripped) or _MONTH_DAY_RE.search(stripped) or _DAY_RE.search(stripped)
+    )
+
+
+def _apply_text_replacements(content: str, replacements: Sequence[tuple[str, str]]) -> str:
+    corrected = content
+    for old, new in replacements:
+        corrected = corrected.replace(old, new)
+    return corrected
 
 
 def _local_today() -> Date:
@@ -520,11 +558,22 @@ class HermesGateway:
 
         request_id = uuid.uuid4().hex
         started = time.perf_counter()
-        corrected_date = self._corrected_date(message.text)
+        has_date_or_section_correction = _has_date_or_section_correction(message.text)
+        corrected_date = (
+            self._corrected_date(message.text)
+            if has_date_or_section_correction
+            else previous.target_date
+        )
+        replacements = _extract_text_replacements(message.text)
         corrected_ops = tuple(
-            DraftOperation(_NOTES_SECTION, operation.content)
+            DraftOperation(
+                _NOTES_SECTION if has_date_or_section_correction else operation.section,
+                _apply_text_replacements(operation.content, replacements),
+            )
             for operation in previous.operations
         )
+        if not has_date_or_section_correction and corrected_ops == previous.operations:
+            return None
         preview = self._draft_service.create_draft(
             user_id=user,
             session_id=session_id,
