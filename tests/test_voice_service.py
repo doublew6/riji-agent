@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from riji_agent.voice.service import MacOSSayVoiceReplyService, MeloTTSVoiceReplyService
+from riji_agent.voice.service import (
+    MacOSSayVoiceReplyService,
+    MeloTTSVoiceReplyService,
+    VoxCPMVoiceReplyService,
+)
 
 
 class FakeMeloModel:
@@ -12,6 +16,16 @@ class FakeMeloModel:
             {"text": text, "speaker_id": speaker_id, "output_path": output_path, "speed": speed}
         )
         Path(output_path).write_bytes(b"wav")
+
+
+class FakeVoxCPMModel:
+    def __init__(self) -> None:
+        self.calls = []
+        self.tts_model = type("TTSModel", (), {"sample_rate": 48000})()
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        return [0.0, 0.1, -0.1]
 
 
 def test_macos_say_voice_service_converts_to_feishu_opus(tmp_path: Path, monkeypatch) -> None:
@@ -45,6 +59,7 @@ def test_macos_say_voice_service_converts_to_feishu_opus(tmp_path: Path, monkeyp
     assert "-f" in say_command
     assert "-i" in ffmpeg_command
     assert "libopus" in ffmpeg_command
+    assert "48k" in ffmpeg_command
     assert "这是一段比较长的回复文本" not in say_command
     assert not list((tmp_path / "voice").glob("*.m4a"))
     assert not list((tmp_path / "voice").glob("*.txt"))
@@ -221,6 +236,67 @@ def test_melotts_voice_service_returns_none_when_package_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
     service = MeloTTSVoiceReplyService(tmp_path / "voice")
+    monkeypatch.setattr(service, "_load_model", lambda: (_ for _ in ()).throw(ImportError()))
+
+    assert service.synthesize_reply(text="hello", request_id="req") is None
+
+
+def test_voxcpm_voice_service_uses_voice_design_and_converts_to_opus(
+    tmp_path: Path, monkeypatch
+) -> None:
+    model = FakeVoxCPMModel()
+    writes = []
+
+    service = VoxCPMVoiceReplyService(
+        tmp_path / "voice",
+        voice="温暖自然的中文女声",
+        cfg_value=2.5,
+        inference_timesteps=12,
+        max_chars=8,
+    )
+    monkeypatch.setattr(service, "_load_model", lambda: model)
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, wav, sample_rate):
+            writes.append({"path": path, "wav": wav, "sample_rate": sample_rate})
+            Path(path).write_bytes(b"wav")
+
+    monkeypatch.setitem(__import__("sys").modules, "soundfile", FakeSoundFile)
+    monkeypatch.setattr(
+        "riji_agent.voice.service.shutil.which",
+        lambda name: "/opt/homebrew/bin/ffmpeg" if name == "ffmpeg" else None,
+    )
+
+    def fake_run(command, check, stdout, stderr):
+        output = Path(command[-1])
+        output.write_bytes(b"opus")
+
+    monkeypatch.setattr("riji_agent.voice.service.subprocess.run", fake_run)
+
+    attachment = service.synthesize_reply(text="这是一段比较长的回复文本", request_id="req/1")
+
+    assert attachment is not None
+    assert attachment.path.endswith(".opus")
+    assert attachment.mime_type == "audio/ogg"
+    assert model.calls[0]["text"] == "(温暖自然的中文女声)" + "这是一段比较长的回复文本"[:8] + "..."
+    assert model.calls[0]["prompt_wav_path"] is None
+    assert model.calls[0]["prompt_text"] is None
+    assert model.calls[0]["cfg_value"] == 2.5
+    assert model.calls[0]["inference_timesteps"] == 12
+    assert writes == [
+        {
+            "path": str(tmp_path / "voice" / "req-1.wav"),
+            "wav": [0.0, 0.1, -0.1],
+            "sample_rate": 48000,
+        }
+    ]
+
+
+def test_voxcpm_voice_service_returns_none_when_package_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = VoxCPMVoiceReplyService(tmp_path / "voice")
     monkeypatch.setattr(service, "_load_model", lambda: (_ for _ in ()).throw(ImportError()))
 
     assert service.synthesize_reply(text="hello", request_id="req") is None

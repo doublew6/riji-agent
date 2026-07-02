@@ -186,6 +186,8 @@ riji-agent 会在保留文字回复的同时，生成本地音频并交给 Herme
 - `macos_say`：零额外依赖，完全本地，但声音较机械，适合作为兜底；
 - `melotts`：可选本地开源 TTS，声音通常比 `macos_say` 自然。启用前需要
   把 MeloTTS 单独安装进同一个虚拟环境：
+- `voxcpm`：可选本地开源 TTS，基于 VoxCPM2，支持用自然语言描述导师音色，
+  不需要真人参考音频；更自然但依赖和模型缓存更重。
 
 ```bash
 uv pip install melotts
@@ -201,7 +203,18 @@ RIJI_TTS_DEVICE=auto
 RIJI_TTS_SPEED=1.0
 ```
 
-`melotts` 的依赖和模型缓存比较重，所以不放进默认依赖锁定范围。首次运行
+如果希望优先尝试更自然的导师音色，可以安装并启用 VoxCPM2：
+
+```bash
+uv pip install voxcpm soundfile
+
+RIJI_TTS_PROVIDER=voxcpm
+RIJI_TTS_MODEL=openbmb/VoxCPM2
+RIJI_TTS_CFG_VALUE=2.0
+RIJI_TTS_INFERENCE_TIMESTEPS=10
+```
+
+`melotts` / `voxcpm` 的依赖和模型缓存比较重，所以不放进默认依赖锁定范围。首次运行
 可能会下载或准备模型缓存；这些资产不在代码仓库内，也不应放进日记 vault。
 云端 TTS provider 不作为默认方案：若将来接入 `edge_tts`、Azure Speech 等，
 应明确 opt-in，因为回复文本会离开本机。

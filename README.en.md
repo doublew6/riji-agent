@@ -212,6 +212,9 @@ Available TTS providers:
   as the fallback provider.
 - `melotts`: optional local open-source TTS that is usually more natural than
   `macos_say`. Install MeloTTS into the same virtualenv before enabling it:
+- `voxcpm`: optional local open-source TTS based on VoxCPM2. It supports
+  natural-language voice design per mentor without reference audio; it is
+  heavier than MeloTTS but should sound more natural.
 
 ```bash
 uv pip install melotts
@@ -227,12 +230,23 @@ RIJI_TTS_DEVICE=auto
 RIJI_TTS_SPEED=1.0
 ```
 
-`melotts` has a heavy dependency tree and model cache, so it is intentionally
-not part of the default dependency lock. It may download or prepare model cache
-assets on first use. Keep those assets outside the repository and outside the
-journal vault. Cloud TTS providers are intentionally not the default; future
-providers such as `edge_tts` or Azure Speech should be explicit opt-ins because
-reply text leaves the local machine.
+For more natural mentor voices, install and enable VoxCPM2:
+
+```bash
+uv pip install voxcpm soundfile
+
+RIJI_TTS_PROVIDER=voxcpm
+RIJI_TTS_MODEL=openbmb/VoxCPM2
+RIJI_TTS_CFG_VALUE=2.0
+RIJI_TTS_INFERENCE_TIMESTEPS=10
+```
+
+`melotts` and `voxcpm` have heavy dependency trees and model caches, so they
+are intentionally not part of the default dependency lock. They may download or
+prepare model cache assets on first use. Keep those assets outside the
+repository and outside the journal vault. Cloud TTS providers are intentionally
+not the default; future providers such as `edge_tts` or Azure Speech should be
+explicit opt-ins because reply text leaves the local machine.
 
 ## Configuration And Safety
 

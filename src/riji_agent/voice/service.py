@@ -196,6 +196,87 @@ class MeloTTSVoiceReplyService:
         raise RuntimeError("MeloTTS model has no speakers")
 
 
+class VoxCPMVoiceReplyService:
+    """Generate local voice replies with the optional VoxCPM package.
+
+    VoxCPM2 supports voice design from a natural-language description, so this
+    provider deliberately avoids reference-audio cloning by default.
+    """
+
+    provider_id = "voxcpm"
+
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        model_name: str = "openbmb/VoxCPM2",
+        voice: Optional[str] = None,
+        cfg_value: float = 2.0,
+        inference_timesteps: int = 10,
+        max_chars: int = 1200,
+    ) -> None:
+        self._output_dir = Path(output_dir)
+        self._model_name = model_name.strip() or "openbmb/VoxCPM2"
+        self._voice = voice.strip() if voice else None
+        self._cfg_value = float(cfg_value)
+        self._inference_timesteps = max(1, int(inference_timesteps))
+        self._max_chars = max(1, int(max_chars))
+        self._model = None
+
+    def synthesize_reply(
+        self, *, text: str, request_id: str, voice: Optional[str] = None
+    ) -> Optional[VoiceAttachment]:
+        content = text.strip()
+        if not content:
+            return None
+        if len(content) > self._max_chars:
+            content = content[: self._max_chars].rstrip() + "..."
+
+        self._output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        safe_request = _SAFE_NAME_RE.sub("-", request_id).strip("-") or "reply"
+        wav_path = (self._output_dir / f"{safe_request}.wav").resolve()
+        opus_path = (self._output_dir / f"{safe_request}.opus").resolve()
+
+        try:
+            model = self._load_model()
+            import soundfile as sf
+
+            wav = model.generate(
+                text=_with_voice_design(content, voice or self._voice),
+                prompt_wav_path=None,
+                prompt_text=None,
+                cfg_value=self._cfg_value,
+                inference_timesteps=self._inference_timesteps,
+                normalize=True,
+                denoise=True,
+                retry_badcase=True,
+                retry_badcase_max_times=3,
+                retry_badcase_ratio_threshold=6.0,
+            )
+            sample_rate = getattr(getattr(model, "tts_model", None), "sample_rate", 16000)
+            sf.write(str(wav_path), wav, int(sample_rate))
+            return _convert_to_opus_if_available(
+                source_path=wav_path,
+                opus_path=opus_path,
+                fallback_mime_type="audio/wav",
+            )
+        except ImportError:
+            _LOG.warning(
+                "voice reply skipped: VoxCPM is not installed; install voxcpm and soundfile"
+            )
+            return None
+        except Exception:
+            _LOG.warning("VoxCPM voice reply synthesis failed", exc_info=True)
+            return None
+
+    def _load_model(self):
+        if self._model is None:
+            from voxcpm import VoxCPM
+
+            self._model = VoxCPM.from_pretrained(self._model_name)
+        return self._model
+
+
 def _find_executable(name: str, fallbacks: tuple[Path, ...] = ()) -> Optional[str]:
     path = shutil.which(name)
     if path:
@@ -227,7 +308,7 @@ def _convert_to_opus_if_available(
                 "-c:a",
                 "libopus",
                 "-b:a",
-                "32k",
+                "48k",
                 str(opus_path),
             ],
             check=True,
@@ -246,6 +327,15 @@ def _convert_to_opus_if_available(
     except OSError:
         _LOG.debug("voice reply intermediate cleanup failed", exc_info=True)
     return VoiceAttachment(path=str(opus_path), mime_type="audio/ogg")
+
+
+def _with_voice_design(text: str, voice: Optional[str]) -> str:
+    if not voice:
+        return text
+    cleaned = voice.strip().strip("()（）")
+    if not cleaned:
+        return text
+    return f"({cleaned}){text}"
 
 
 def _available_say_voices(say: str) -> FrozenSet[str]:

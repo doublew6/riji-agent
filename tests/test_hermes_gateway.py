@@ -39,6 +39,10 @@ class FakeMeloVoiceReplyService(FakeVoiceReplyService):
     provider_id = "melotts"
 
 
+class FakeVoxCPMVoiceReplyService(FakeVoiceReplyService):
+    provider_id = "voxcpm"
+
+
 def _msg(text: str, *, event_id: str = "e1", user: str = "ou_1", chat: str = "c1", chat_type: str = "p2p") -> IncomingMessage:
     return IncomingMessage(event_id=event_id, feishu_user_id=user, chat_id=chat, chat_type=chat_type, text=text)
 
@@ -204,6 +208,37 @@ def test_voice_reply_uses_provider_specific_persona_voice(tmp_path: Path) -> Non
             "text": "[wang_yangming] 请用语音回复，给一句建议",
             "request_id": reply.request_id,
             "voice": "ZH",
+        }
+    ]
+    store.close()
+    events.close()
+
+
+def test_voice_reply_uses_voxcpm_voice_design(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite3")
+    events = EventLog(tmp_path / "events.sqlite3")
+    voice = FakeVoxCPMVoiceReplyService()
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=store,
+        events=events,
+        responder=FakeResponder(),
+        voice_reply_service=voice,
+    )
+
+    reply = gateway.handle(
+        SECRET, _msg("/导师 温柔回顾者 请用语音回复，给一句建议", event_id="voice-voxcpm")
+    )
+
+    assert reply.audio is not None
+    assert reply.persona_id == "gentle_reviewer"
+    assert voice.calls == [
+        {
+            "text": "[gentle_reviewer] 请用语音回复，给一句建议",
+            "request_id": reply.request_id,
+            "voice": "温暖、清晰、自然的中文女声，语速适中，像耐心的朋友在轻声陪伴",
         }
     ]
     store.close()
