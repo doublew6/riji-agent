@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from calendar import monthrange
 from dataclasses import replace
 from datetime import date as Date
 from datetime import datetime, time, timedelta
@@ -13,6 +14,9 @@ from riji_agent.timezone import local_journal_timezone
 
 _ISO_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
 _MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
+_MONTH_OFFSET_RE = re.compile(r"(?P<count>\d{1,2}|[一二两三四五六七八九十]+)\s*个?月后")
+_WEEK_OFFSET_RE = re.compile(r"(?P<count>\d{1,2}|[一二两三四五六七八九十]+)\s*(?:周|星期)后")
+_DAY_OFFSET_RE = re.compile(r"(?P<count>\d{1,2}|[一二两三四五六七八九十]+)\s*天后")
 _TIME_RE = re.compile(
     r"(?P<period>上午|中午|下午|晚上|晚间|今晚|早上|凌晨)?\s*"
     r"(?P<hour>\d{1,2})\s*(?:点|:|：)"
@@ -23,9 +27,13 @@ _DURATION_RE = re.compile(r"(?P<hours>\d+(?:\.\d+)?)\s*(?:小时|个小时)")
 _TITLE_CLEAN_RE = re.compile(
     r"(今天|明天|后天|大后天|上午|中午|下午|晚上|晚间|今晚|早上|凌晨|"
     r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s*月\s*\d{1,2}\s*(?:日|号)?|"
+    r"(?:\d{1,2}|[一二两三四五六七八九十]+)\s*个?月后|"
+    r"(?:\d{1,2}|[一二两三四五六七八九十]+)\s*(?:周|星期|天)后|"
     r"\d{1,2}\s*(?:点|:|：)\s*(?:半|\d{1,2}\s*分?)?|"
-    r"提前\s*\d{1,3}\s*分钟|提醒我|提醒|帮我|请|安排一次|安排|创建|新建|日程|会议|一次)"
+    r"提前\s*\d{1,3}\s*分钟|提醒我|提醒|帮我|请|"
+    r"在日历里|日历里|加一个|安排一次|安排|创建|新建|日程|会议|一次)"
 )
+_DEFAULT_FLOATING_EVENT_TIME = time(hour=9, minute=0)
 
 
 class CalendarParseError(ValueError):
@@ -44,7 +52,9 @@ def parse_calendar_request(
     target_date = _parse_date(text, local_now.date())
     start_time = _parse_time(text)
     if start_time is None:
-        raise CalendarParseError("missing_time")
+        if not _has_explicit_date(text):
+            raise CalendarParseError("missing_time")
+        start_time = _DEFAULT_FLOATING_EVENT_TIME
     start_at = datetime.combine(target_date, start_time, tzinfo=tz)
     if start_at < local_now and not _has_explicit_date(text):
         start_at += timedelta(days=1)
@@ -61,11 +71,12 @@ def parse_calendar_request(
 
 
 def looks_like_calendar_request(text: str) -> bool:
-    if not _TIME_RE.search(text):
+    has_when = _TIME_RE.search(text) or _has_explicit_date(text)
+    if not has_when:
         return False
     return any(
         word in text
-        for word in ("日程", "会议", "安排", "提醒我", "创建", "新建", "复盘", "约")
+        for word in ("日历", "日程", "会议", "安排", "提醒我", "创建", "新建", "复盘", "约")
     )
 
 
@@ -74,6 +85,12 @@ def _parse_date(text: str, today: Date) -> Date:
         return Date(int(match.group("year")), int(match.group("month")), int(match.group("day")))
     if match := _MONTH_DAY_RE.search(text):
         return Date(today.year, int(match.group("month")), int(match.group("day")))
+    if match := _MONTH_OFFSET_RE.search(text):
+        return _add_months(today, _number(match.group("count")))
+    if match := _WEEK_OFFSET_RE.search(text):
+        return today + timedelta(weeks=_number(match.group("count")))
+    if match := _DAY_OFFSET_RE.search(text):
+        return today + timedelta(days=_number(match.group("count")))
     if "大后天" in text:
         return today + timedelta(days=3)
     if "后天" in text:
@@ -95,9 +112,39 @@ def _timezone(timezone_name: str | None):
 
 
 def _has_explicit_date(text: str) -> bool:
-    return bool(_ISO_RE.search(text) or _MONTH_DAY_RE.search(text)) or any(
+    return bool(
+        _ISO_RE.search(text)
+        or _MONTH_DAY_RE.search(text)
+        or _MONTH_OFFSET_RE.search(text)
+        or _WEEK_OFFSET_RE.search(text)
+        or _DAY_OFFSET_RE.search(text)
+    ) or any(
         word in text for word in ("今天", "明天", "后天", "大后天")
     )
+
+
+def _add_months(value: Date, months: int) -> Date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, monthrange(year, month)[1])
+    return Date(year, month, day)
+
+
+def _number(value: str) -> int:
+    if value.isdigit():
+        return int(value)
+    digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value == "十":
+        return 10
+    if value.startswith("十"):
+        return 10 + digits.get(value[-1], 0)
+    if value.endswith("十"):
+        return digits.get(value[0], 1) * 10
+    if "十" in value:
+        left, right = value.split("十", 1)
+        return digits.get(left, 1) * 10 + digits.get(right, 0)
+    return digits[value]
 
 
 def _parse_time(text: str) -> time | None:
