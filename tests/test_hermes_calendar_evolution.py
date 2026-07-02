@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from riji_agent.calendar.models import CalendarEventResult
+from riji_agent.calendar.providers import CalendarProviderError
 from riji_agent.calendar.service import CalendarService
 from riji_agent.calendar.store import CalendarDraftStore
 from riji_agent.evolution.service import EvolutionService
@@ -39,6 +40,12 @@ class FakeCalendarProvider:
         )
 
 
+class PermissionDeniedCalendarProvider(FakeCalendarProvider):
+    def create_event(self, event):
+        self.created.append(event)
+        raise CalendarProviderError("provider_permission_denied")
+
+
 def _msg(text: str, *, event_id: str = "e1") -> IncomingMessage:
     return IncomingMessage(
         event_id=event_id,
@@ -49,12 +56,12 @@ def _msg(text: str, *, event_id: str = "e1") -> IncomingMessage:
     )
 
 
-def _gateway(tmp_path: Path):
+def _gateway(tmp_path: Path, provider=None):
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
     index = JournalIndex(database_path=tmp_path / "data" / "idx.sqlite3", journal_root=root)
-    provider = FakeCalendarProvider()
+    provider = provider or FakeCalendarProvider()
     calendar = CalendarService(
         CalendarDraftStore(tmp_path / "data" / "calendar.sqlite3"),
         provider,
@@ -121,6 +128,22 @@ def test_calendar_confirm_without_pending_draft_is_safe(tmp_path: Path) -> None:
 
     assert "没有待确认的日程草稿" in reply.text
     assert provider.created == []
+    index.close()
+
+
+def test_calendar_permission_error_is_actionable(tmp_path: Path) -> None:
+    provider = PermissionDeniedCalendarProvider()
+    gateway, _provider, _root, index = _gateway(tmp_path, provider=provider)
+
+    gateway.handle(
+        SECRET,
+        _msg("给我日历上加一个日程，3个月之后提醒我处理示例账户余额", event_id="cal-perm-1"),
+    )
+    reply = gateway.handle(SECRET, _msg("确认创建", event_id="cal-perm-2"))
+
+    assert "飞书日历权限不足" in reply.text
+    assert "日历创建权限" in reply.text
+    assert len(provider.created) == 1
     index.close()
 
 

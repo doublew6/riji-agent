@@ -68,10 +68,12 @@ class FeishuCalendarProvider:
                 headers={"Authorization": f"Bearer {token}"},
                 json=payload,
             )
-            response.raise_for_status()
             data = response.json()
         except Exception as exc:
             raise CalendarProviderError("provider_create_failed") from exc
+
+        if response.status_code >= 400 or _feishu_code(data) not in (None, 0):
+            raise CalendarProviderError(_safe_feishu_error(data, fallback="provider_create_failed"))
 
         event_data = data.get("data", {}).get("event", {}) if isinstance(data, dict) else {}
         event_id = event_data.get("event_id") or event_data.get("id")
@@ -102,3 +104,23 @@ class FeishuCalendarProvider:
         if not isinstance(token, str) or not token:
             raise CalendarProviderError("provider_auth_failed")
         return token
+
+
+def _feishu_code(data: object) -> Optional[int]:
+    if not isinstance(data, dict):
+        return None
+    code = data.get("code")
+    return code if isinstance(code, int) else None
+
+
+def _safe_feishu_error(data: object, *, fallback: str) -> str:
+    if not isinstance(data, dict):
+        return fallback
+    code = data.get("code")
+    message = data.get("msg")
+    if code == 99991672 or (
+        isinstance(message, str)
+        and ("Access denied" in message or "应用尚未开通所需的应用身份权限" in message)
+    ):
+        return "provider_permission_denied"
+    return fallback

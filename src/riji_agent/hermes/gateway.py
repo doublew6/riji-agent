@@ -474,6 +474,7 @@ class HermesGateway:
             "calendar_draft_expired": "日程草稿已超过 30 分钟时效，请重新生成。",
             "calendar_provider_disabled": "日历服务尚未启用。",
             "provider_auth_failed": "日历认证失败，请检查本地配置。",
+            "provider_permission_denied": "飞书日历权限不足，请在飞书开发者后台开通日历创建权限并发布生效。",
             "provider_create_failed": "创建日程失败，请稍后重试。",
             "provider_missing_event_id": "创建日程失败：日历服务未返回事件 ID。",
         }
