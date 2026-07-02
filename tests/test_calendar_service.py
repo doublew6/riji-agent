@@ -60,7 +60,7 @@ def test_parse_calendar_request_uses_local_relative_date_and_reminder() -> None:
 
 def test_parse_calendar_request_supports_month_offset_without_time() -> None:
     event = parse_calendar_request(
-        "在日历里加一个日程，提醒我3个月后处理示例账户余额",
+        "给我日历上加一个日程，3个月之后提醒我处理示例账户余额",
         now=datetime(2026, 7, 2, 10, 0, tzinfo=TZ),
         timezone_name="Asia/Shanghai",
     )
