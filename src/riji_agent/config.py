@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     tts_language: str = Field(default="ZH", alias="RIJI_TTS_LANGUAGE")
     tts_device: str = Field(default="auto", alias="RIJI_TTS_DEVICE")
     tts_speed: float = Field(default=1.0, alias="RIJI_TTS_SPEED", ge=0.1)
+    tts_model: str = Field(default="openbmb/VoxCPM2", alias="RIJI_TTS_MODEL")
+    tts_cfg_value: float = Field(default=2.0, alias="RIJI_TTS_CFG_VALUE", ge=0.1)
+    tts_inference_timesteps: int = Field(
+        default=10, alias="RIJI_TTS_INFERENCE_TIMESTEPS", ge=1
+    )
     allowed_feishu_user_ids: Annotated[FrozenSet[str], NoDecode] = Field(
         alias="RIJI_ALLOWED_FEISHU_USER_IDS"
     )
@@ -157,7 +162,7 @@ class Settings(BaseSettings):
     @classmethod
     def require_supported_tts_provider(cls, value: str) -> str:
         cleaned = value.strip().lower()
-        if cleaned not in {"macos_say", "melotts"}:
+        if cleaned not in {"macos_say", "melotts", "voxcpm"}:
             raise ValueError("unsupported TTS provider")
         return cleaned
 

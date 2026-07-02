@@ -46,7 +46,11 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
         voice="Flo (中文（中国大陆）)",
-        voice_by_provider=(("macos_say", "Flo (中文（中国大陆）)"), ("melotts", "ZH")),
+        voice_by_provider=(
+            ("macos_say", "Flo (中文（中国大陆）)"),
+            ("melotts", "ZH"),
+            ("voxcpm", "温暖、清晰、自然的中文女声，语速适中，像耐心的朋友在轻声陪伴"),
+        ),
     ),
     "blunt_coach": Persona(
         persona_id="blunt_coach",
@@ -59,7 +63,11 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
         voice="Eddy (中文（中国大陆）)",
-        voice_by_provider=(("macos_say", "Eddy (中文（中国大陆）)"), ("melotts", "ZH")),
+        voice_by_provider=(
+            ("macos_say", "Eddy (中文（中国大陆）)"),
+            ("melotts", "ZH"),
+            ("voxcpm", "清晰、沉稳、有力量的中文男声，语速略快，像直接但不刺耳的教练"),
+        ),
     ),
     "future_self": Persona(
         persona_id="future_self",
@@ -72,7 +80,11 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         allowed_tools=STANDARD_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
         voice="Shelley (中文（中国大陆）)",
-        voice_by_provider=(("macos_say", "Shelley (中文（中国大陆）)"), ("melotts", "ZH")),
+        voice_by_provider=(
+            ("macos_say", "Shelley (中文（中国大陆）)"),
+            ("melotts", "ZH"),
+            ("voxcpm", "成熟、平静、温柔的中文声音，语速舒缓，像未来的自己在稳稳提醒"),
+        ),
     ),
     "wang_yangming": Persona(
         persona_id="wang_yangming",
@@ -90,7 +102,11 @@ PRESET_PERSONAS: Mapping[str, Persona] = {
         allowed_tools=YANGMING_TOOLS,
         answer_boundaries=SHARED_BOUNDARIES,
         voice="Grandpa (中文（中国大陆）)",
-        voice_by_provider=(("macos_say", "Grandpa (中文（中国大陆）)"), ("melotts", "ZH")),
+        voice_by_provider=(
+            ("macos_say", "Grandpa (中文（中国大陆）)"),
+            ("melotts", "ZH"),
+            ("voxcpm", "沉静、清朗、有书卷气的中文男声，语速适中，不仿古，像平实的学者导师"),
+        ),
         uses_yangming=True,
     ),
 }

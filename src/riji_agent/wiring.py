@@ -38,6 +38,7 @@ from riji_agent.retrieval.service import RetrievalService
 from riji_agent.voice.service import (
     MacOSSayVoiceReplyService,
     MeloTTSVoiceReplyService,
+    VoxCPMVoiceReplyService,
     VoiceReplyService,
 )
 from riji_agent.yangming.seed import load_seed
@@ -76,6 +77,15 @@ def build_voice_reply_service(settings: Settings) -> Optional[VoiceReplyService]
             speaker=settings.tts_voice,
             device=settings.tts_device,
             speed=settings.tts_speed,
+            max_chars=settings.tts_max_chars,
+        )
+    if settings.tts_provider == "voxcpm":
+        return VoxCPMVoiceReplyService(
+            output_dir,
+            model_name=settings.tts_model,
+            voice=settings.tts_voice,
+            cfg_value=settings.tts_cfg_value,
+            inference_timesteps=settings.tts_inference_timesteps,
             max_chars=settings.tts_max_chars,
         )
     return None
