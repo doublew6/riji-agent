@@ -23,6 +23,13 @@ def test_feishu_provider_gets_token_and_creates_event() -> None:
             assert "项目复盘" in payload
             assert "secret" not in payload
             return httpx.Response(200, json={"data": {"event": {"event_id": "evt_1"}}})
+        if request.url.path.endswith("/calendar/v4/calendars/primary/events/evt_1/attendees"):
+            assert request.headers["Authorization"] == "Bearer tenant-token"
+            assert request.url.params["user_id_type"] == "open_id"
+            assert request.url.params["need_notification"] == "false"
+            payload = request.read().decode()
+            assert "ou_1" in payload
+            return httpx.Response(200, json={"data": {"attendees": []}})
         return httpx.Response(404)
 
     provider = FeishuCalendarProvider(
@@ -39,11 +46,12 @@ def test_feishu_provider_gets_token_and_creates_event() -> None:
             timezone="Asia/Shanghai",
             reminder_minutes=10,
             description="由 riji-agent 创建。",
-        )
+        ),
+        user_id="ou_1",
     )
 
     assert result.event_id == "evt_1"
-    assert len(requests) == 2
+    assert len(requests) == 3
 
 
 def test_feishu_provider_raises_safe_error_on_auth_failure() -> None:

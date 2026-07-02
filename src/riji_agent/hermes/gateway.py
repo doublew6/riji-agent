@@ -406,11 +406,12 @@ class HermesGateway:
             except CalendarError as exc:
                 reply = self._calendar_error_reply(exc)
             else:
-                linked = (
-                    f"\n已关联到 [[{result.journal_source_id}]]。"
-                    if result.journal_source_id
-                    else "\n日程已创建，但未能写入日记关联。"
-                )
+                if result.journal_source_id:
+                    linked = f"\n已关联到 [[{result.journal_source_id}]]。"
+                elif result.journal_link_deferred:
+                    linked = "\n未来日期不会提前创建日记，到当天再按当时模板记录。"
+                else:
+                    linked = "\n日程已创建，但未能写入日记关联。"
                 reply = f"已创建日程：{result.title}（{result.start_at:%Y-%m-%d %H:%M}）。{linked}"
             self._events.record(message.event_id, persona_id, reply)
             return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
@@ -476,6 +477,7 @@ class HermesGateway:
             "provider_auth_failed": "日历认证失败，请检查本地配置。",
             "provider_permission_denied": "飞书日历权限不足，请在飞书开发者后台开通日历创建权限并发布生效。",
             "provider_create_failed": "创建日程失败，请稍后重试。",
+            "provider_attendee_failed": "日程已创建，但未能加入你的飞书日历，请稍后重试或检查参与人权限。",
             "provider_missing_event_id": "创建日程失败：日历服务未返回事件 ID。",
         }
         return messages.get(exc.code, "创建日程失败，请稍后重试。")

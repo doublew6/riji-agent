@@ -106,8 +106,11 @@ class CalendarService:
             raise CalendarError("calendar_draft_not_awaiting")
 
         try:
-            result = self._provider.create_event(draft.event)
-            journal_source_id = self._link_to_journal(draft.event, result)
+            result = self._provider.create_event(draft.event, user_id=draft.user_id)
+            journal_link_deferred = self._should_defer_journal_link(draft.event)
+            journal_source_id = (
+                None if journal_link_deferred else self._link_to_journal(draft.event, result)
+            )
         except CalendarProviderError as exc:
             self._store.save(dataclasses.replace(draft, status=CalendarDraftStatus.AWAITING))
             raise CalendarError(exc.code) from exc
@@ -123,20 +126,32 @@ class CalendarService:
                 journal_source_id=journal_source_id,
             )
         )
-        return dataclasses.replace(result, journal_source_id=journal_source_id)
+        return dataclasses.replace(
+            result,
+            journal_source_id=journal_source_id,
+            journal_link_deferred=journal_link_deferred,
+        )
 
     def render_preview(self, draft: CalendarDraft) -> str:
         event = draft.event
+        journal_line = (
+            f"关联日记：[[riji/daily/{event.start_at.date().isoformat()}]]"
+            if not self._should_defer_journal_link(event)
+            else "关联日记：未来日期不提前创建，到当天再按当时模板记录。"
+        )
         lines = [
             "我理解为这条日程：",
             f"标题：{event.title}",
             f"时间：{_format_dt(event.start_at)} - {_format_time(event.end_at)}",
             f"提醒：{_format_reminder(event.reminder_minutes)}",
-            f"关联日记：[[riji/daily/{event.start_at.date().isoformat()}]]",
+            journal_line,
             "",
             "回复「确认创建」写入日历。",
         ]
         return "\n".join(lines)
+
+    def _should_defer_journal_link(self, event: CalendarEventDraft) -> bool:
+        return event.start_at.date() > self._now().date()
 
     def _link_to_journal(
         self, event: CalendarEventDraft, result: CalendarEventResult

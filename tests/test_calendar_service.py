@@ -18,9 +18,11 @@ class FakeCalendarProvider:
 
     def __init__(self) -> None:
         self.created = []
+        self.user_ids = []
 
-    def create_event(self, event):
+    def create_event(self, event, *, user_id=None):
         self.created.append(event)
+        self.user_ids.append(user_id)
         return CalendarEventResult(
             event_id="evt_fake_123456",
             title=event.title,
@@ -71,7 +73,9 @@ def test_parse_calendar_request_supports_month_offset_without_time() -> None:
     assert event.reminder_minutes is None
 
 
-def test_calendar_confirm_creates_provider_event_and_links_journal(tmp_path: Path) -> None:
+def test_calendar_confirm_creates_future_provider_event_without_future_journal(
+    tmp_path: Path,
+) -> None:
     service, provider, root, index = _parts(tmp_path)
     draft = service.create_draft_from_text(
         user_id="ou_1",
@@ -84,9 +88,29 @@ def test_calendar_confirm_creates_provider_event_and_links_journal(tmp_path: Pat
     result = service.confirm(draft.draft_id, user_id="ou_1")
 
     assert provider.created[0].title == "项目复盘"
+    assert provider.user_ids == ["ou_1"]
     assert result.event_id == "evt_fake_123456"
-    assert result.journal_source_id == "riji/daily/2026-07-03"
-    text = (root / "daily" / "2026-07-03.md").read_text(encoding="utf-8")
+    assert result.journal_source_id is None
+    assert result.journal_link_deferred is True
+    assert not (root / "daily" / "2026-07-03.md").exists()
+    index.close()
+
+
+def test_calendar_confirm_links_today_journal(tmp_path: Path) -> None:
+    service, provider, root, index = _parts(tmp_path)
+    draft = service.create_draft_from_text(
+        user_id="ou_1",
+        session_id="s1",
+        persona_id="gentle",
+        text="今天下午 3 点安排一次项目复盘，提前 10 分钟提醒",
+    )
+
+    result = service.confirm(draft.draft_id, user_id="ou_1")
+
+    assert provider.created[0].title == "项目复盘"
+    assert result.journal_source_id == "riji/daily/2026-07-02"
+    assert result.journal_link_deferred is False
+    text = (root / "daily" / "2026-07-02.md").read_text(encoding="utf-8")
     assert "日程：项目复盘" in text
     assert "evt_...3456" in text
     index.close()

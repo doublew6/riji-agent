@@ -29,9 +29,11 @@ class FakeCalendarProvider:
 
     def __init__(self) -> None:
         self.created = []
+        self.user_ids = []
 
-    def create_event(self, event):
+    def create_event(self, event, *, user_id=None):
         self.created.append(event)
+        self.user_ids.append(user_id)
         return CalendarEventResult(
             event_id="evt_fake_123456",
             title=event.title,
@@ -41,7 +43,7 @@ class FakeCalendarProvider:
 
 
 class PermissionDeniedCalendarProvider(FakeCalendarProvider):
-    def create_event(self, event):
+    def create_event(self, event, *, user_id=None):
         self.created.append(event)
         raise CalendarProviderError("provider_permission_denied")
 
@@ -101,8 +103,10 @@ def test_calendar_request_previews_then_confirm_creates_and_links(tmp_path: Path
     created = gateway.handle(SECRET, _msg("确认创建", event_id="cal-2"))
 
     assert "已创建日程" in created.text
+    assert "未来日期不会提前创建日记" in created.text
     assert provider.created[0].title == "项目复盘"
-    assert "日程：项目复盘" in (root / "daily" / "2026-07-03.md").read_text(encoding="utf-8")
+    assert provider.user_ids == ["ou_1"]
+    assert not (root / "daily" / "2026-07-03.md").exists()
     index.close()
 
 
@@ -117,6 +121,7 @@ def test_calendar_month_offset_request_previews_without_model_call(tmp_path: Pat
     assert "我理解为这条日程" in preview.text
     assert "标题：处理示例账户余额" in preview.text
     assert "2026-10-02 09:00" in preview.text
+    assert "未来日期不提前创建" in preview.text
     assert provider.created == []
     index.close()
 
