@@ -17,9 +17,14 @@ from typing import Optional
 from riji_agent.agent.hermes import HermesAgentRuntime
 from riji_agent.agent.tools import ToolRegistry
 from riji_agent.audit.store import AuditStore
+from riji_agent.calendar.providers import FeishuCalendarProvider
+from riji_agent.calendar.service import CalendarService
+from riji_agent.calendar.store import CalendarDraftStore
 from riji_agent.config import Settings
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
+from riji_agent.evolution.service import EvolutionService
+from riji_agent.evolution.store import EvolutionProposalStore
 from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.responder import AgentResponder
 from riji_agent.journal.embedding import embedder_from_settings
@@ -76,6 +81,28 @@ def build_voice_reply_service(settings: Settings) -> Optional[VoiceReplyService]
     return None
 
 
+def build_calendar_service(
+    settings: Settings,
+    *,
+    journal_index: JournalIndex,
+) -> Optional[CalendarService]:
+    if settings.calendar_provider == "off":
+        return None
+    assert settings.feishu_app_secret is not None
+    provider = FeishuCalendarProvider(
+        app_id=settings.feishu_app_id or "",
+        app_secret=settings.feishu_app_secret,
+        calendar_id=settings.feishu_calendar_id,
+        base_url=settings.feishu_open_base_url,
+    )
+    return CalendarService(
+        CalendarDraftStore(settings.data_dir / "calendar.sqlite3"),
+        provider,
+        journal_root=settings.journal_root,
+        index=journal_index,
+    )
+
+
 def build_production_gateway(
     settings: Settings,
     *,
@@ -122,6 +149,8 @@ def build_production_gateway(
         events=EventLog(data_dir / "events.sqlite3"),
         responder=responder,
         draft_service=draft_service,
+        calendar_service=build_calendar_service(settings, journal_index=journal_index),
+        evolution_service=EvolutionService(EvolutionProposalStore(data_dir / "evolution.sqlite3")),
         voice_reply_service=build_voice_reply_service(settings),
     )
     # Carry the scheduler so the app can prewarm/refresh and report status.

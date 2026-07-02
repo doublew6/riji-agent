@@ -56,6 +56,13 @@ class Settings(BaseSettings):
         default=5.0, alias="RIJI_INDEX_FILE_TIMEOUT_SECONDS", ge=0
     )
     feishu_voice_reply_mode: str = Field(default="off", alias="RIJI_FEISHU_VOICE_REPLY_MODE")
+    calendar_provider: str = Field(default="off", alias="RIJI_CALENDAR_PROVIDER")
+    feishu_app_id: Optional[str] = Field(default=None, alias="FEISHU_APP_ID")
+    feishu_app_secret: Optional[SecretStr] = Field(default=None, alias="FEISHU_APP_SECRET")
+    feishu_calendar_id: str = Field(default="primary", alias="FEISHU_CALENDAR_ID")
+    feishu_open_base_url: str = Field(
+        default="https://open.feishu.cn", alias="FEISHU_OPEN_BASE_URL"
+    )
     tts_provider: str = Field(default="macos_say", alias="RIJI_TTS_PROVIDER")
     tts_voice: Optional[str] = Field(default=None, alias="RIJI_TTS_VOICE")
     tts_max_chars: int = Field(default=1200, alias="RIJI_TTS_MAX_CHARS", ge=1)
@@ -131,6 +138,21 @@ class Settings(BaseSettings):
             raise ValueError("unsupported Feishu voice reply mode")
         return cleaned
 
+    @field_validator("calendar_provider")
+    @classmethod
+    def require_supported_calendar_provider(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in {"off", "feishu"}:
+            raise ValueError("unsupported calendar provider")
+        return cleaned
+
+    @field_validator("feishu_open_base_url")
+    @classmethod
+    def require_https_feishu_open_url(cls, value: str) -> str:
+        if not value.startswith("https://"):
+            raise ValueError("must be an HTTPS URL")
+        return value.rstrip("/")
+
     @field_validator("tts_provider")
     @classmethod
     def require_supported_tts_provider(cls, value: str) -> str:
@@ -147,6 +169,11 @@ class Settings(BaseSettings):
         if self.model_provider == "openai":
             if self.model_api_key is None or not self.model_api_key.get_secret_value():
                 raise ValueError("model api key is required for the selected provider")
+        if self.calendar_provider == "feishu":
+            if not self.feishu_app_id:
+                raise ValueError("Feishu app id is required for the selected calendar provider")
+            if self.feishu_app_secret is None or not self.feishu_app_secret.get_secret_value():
+                raise ValueError("Feishu app secret is required for the selected calendar provider")
         return self
 
     @model_validator(mode="after")

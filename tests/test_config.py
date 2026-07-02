@@ -117,6 +117,58 @@ def test_voice_reply_mode_rejects_unknown_value(tmp_path: Path) -> None:
         )
 
 
+def test_calendar_provider_defaults_to_off(tmp_path: Path) -> None:
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    settings = Settings(
+        _env_file=None,
+        RIJI_JOURNAL_ROOT=str(journal_root),
+        RIJI_DATA_DIR=str(tmp_path / "runtime"),
+        DEEPSEEK_API_KEY="secret",
+        RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
+        HERMES_SHARED_SECRET="another-secret",
+    )
+
+    assert settings.calendar_provider == "off"
+
+
+def test_feishu_calendar_provider_requires_local_credentials(tmp_path: Path) -> None:
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    with pytest.raises(ValueError, match="Feishu app id"):
+        Settings(
+            _env_file=None,
+            RIJI_JOURNAL_ROOT=str(journal_root),
+            RIJI_DATA_DIR=str(tmp_path / "runtime"),
+            DEEPSEEK_API_KEY="secret",
+            RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
+            HERMES_SHARED_SECRET="another-secret",
+            RIJI_CALENDAR_PROVIDER="feishu",
+        )
+
+
+def test_feishu_calendar_provider_accepts_credentials(tmp_path: Path) -> None:
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    settings = Settings(
+        _env_file=None,
+        RIJI_JOURNAL_ROOT=str(journal_root),
+        RIJI_DATA_DIR=str(tmp_path / "runtime"),
+        DEEPSEEK_API_KEY="secret",
+        RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
+        HERMES_SHARED_SECRET="another-secret",
+        RIJI_CALENDAR_PROVIDER="feishu",
+        FEISHU_APP_ID="cli_fake",
+        FEISHU_APP_SECRET="secret",
+    )
+
+    assert settings.calendar_provider == "feishu"
+    assert settings.feishu_calendar_id == "primary"
+
+
 def test_settings_reads_comma_separated_users_from_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

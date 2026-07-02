@@ -206,6 +206,23 @@ RIJI_TTS_SPEED=1.0
 云端 TTS provider 不作为默认方案：若将来接入 `edge_tts`、Azure Speech 等，
 应明确 opt-in，因为回复文本会离开本机。
 
+### 飞书日历联动
+
+日历写入默认关闭。启用飞书日历 provider 后，可以在飞书私聊中用自然语言创建
+日程草稿，例如“明天下午 3 点安排一次项目复盘，提前 10 分钟提醒”。riji-agent
+会先返回结构化预览；只有回复「确认创建」后才调用飞书日历 API，并把轻量日程
+关联追加到对应 daily note。
+
+```bash
+RIJI_CALENDAR_PROVIDER=feishu
+FEISHU_APP_ID=cli_replace_me
+FEISHU_APP_SECRET=replace-me
+# FEISHU_CALENDAR_ID=primary
+```
+
+日历标题、描述和地点视为敏感内容；审计与错误回复不应包含 token、App Secret、
+用户 ID 或内部请求体。群聊仍然默认拒绝私人能力。
+
 ## 配置与安全
 
 - `.env`、SQLite、审计日志、`data/` 和误复制的本地日记目录都应被 Git 忽略；
@@ -215,6 +232,8 @@ RIJI_TTS_SPEED=1.0
 - `RIJI_AGENT_RUNTIME=hermes` 选择默认 Hermes Agent runtime；
 - `RIJI_MODEL_PROVIDER=deepseek` 选择默认 DeepSeek adapter；也可以设为
   `openai`，用 `RIJI_MODEL_*` 变量接任意 OpenAI-compatible endpoint；
+- `RIJI_CALENDAR_PROVIDER=off` 默认关闭日历写入；设为 `feishu` 后必须配置
+  `FEISHU_APP_ID` 与 `FEISHU_APP_SECRET`；
 - `RIJI_ALLOWED_FEISHU_USER_IDS` 是飞书 open ID allowlist，群聊默认拒绝；
 - 服务只绑定 `127.0.0.1`。不要把本地端口直接暴露到公网。
 

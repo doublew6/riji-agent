@@ -92,6 +92,23 @@ RIJI_TTS_PROVIDER=macos_say
 
 `macos_say` 使用 macOS 本机 `say` 命令，不调用云端 TTS；如果本机有 `ffmpeg`，会把临时 `.m4a` 转成飞书更稳定支持的 `.opus` 语音文件。生成的音频保存在 `RIJI_DATA_DIR/voice`（或 `RIJI_TTS_OUTPUT_DIR`）下，不写入日记 vault。若 TTS 不可用或生成失败，bridge 仍会发送原文字回复。
 
+### 可选：飞书日历
+
+日历 provider 默认关闭。启用后，飞书私聊里的自然语言日程请求会先生成本地草稿
+预览；只有用户回复「确认创建」后，riji-agent 才调用飞书日历 API 创建日程，
+并把轻量日程关联写入对应 daily note。
+
+```bash
+RIJI_CALENDAR_PROVIDER=feishu
+FEISHU_APP_ID=cli_replace_me
+FEISHU_APP_SECRET=replace-me
+# FEISHU_CALENDAR_ID=primary
+```
+
+日历写入沿用 riji-agent 的私聊白名单和确认边界：群聊不可创建私人日程，错误
+回复不暴露 token、App Secret、内部请求体或用户 ID。日程关联只写轻量摘要和
+provider event id 的脱敏片段，不把完整日记正文发给飞书日历。
+
 ### Hermes 飞书侧官方变量（对照，不在本仓库管理）
 
 以下变量属于 Hermes 的飞书 Provider，按你所用 Hermes 版本官方文档配置，仅供对照：

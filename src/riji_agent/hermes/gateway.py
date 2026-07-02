@@ -16,9 +16,12 @@ from dataclasses import dataclass
 from datetime import date as Date, datetime
 from typing import Optional, Sequence, Union
 
+from riji_agent.calendar.parser import CalendarParseError, looks_like_calendar_request
+from riji_agent.calendar.service import CalendarError, CalendarService
 from riji_agent.drafts.errors import DraftError
 from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.service import DraftService
+from riji_agent.evolution.service import EvolutionError, EvolutionService
 from riji_agent.hermes.access import authorize_chat, verify_shared_secret
 from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.models import GatewayReply, IncomingMessage
@@ -36,6 +39,10 @@ from riji_agent.voice.service import VoiceReplyService
 
 _CURRENT_PERSONA_PREF = "current_persona"
 _CONFIRM_COMMANDS = {"确认保存", "确认写入", "/确认", "确认"}
+_CONFIRM_CALENDAR_COMMANDS = {"确认创建", "确认日程", "/确认日程"}
+_CONFIRM_EVOLUTION_COMMANDS = {"确认改进", "/确认改进"}
+_REJECT_EVOLUTION_COMMANDS = {"拒绝改进", "取消改进", "/拒绝改进"}
+_HERMES_EVOLUTION_PREFIXES = ("/hermes", "hermes：", "hermes:")
 _PERSONA_HELP_COMMANDS = {"/导师", "/persona", "/切换", "导师列表"}
 _PERSONA_HELP_KEYWORDS = (
     "有哪些导师",
@@ -156,6 +163,14 @@ def _requests_voice_reply(text: str) -> bool:
     return any(term in normalized or term in compact for term in _VOICE_REPLY_TRIGGERS)
 
 
+def _evolution_request_text(text: str) -> Optional[str]:
+    lowered = text.lower()
+    for prefix in _HERMES_EVOLUTION_PREFIXES:
+        if lowered.startswith(prefix):
+            return text[len(prefix) :].strip(" ：:\n\t") or "分析系统改进建议"
+    return None
+
+
 def is_draft_correction_request(text: str) -> bool:
     stripped = text.strip().lower()
     if not stripped:
@@ -224,6 +239,8 @@ class HermesGateway:
         events: EventLog,
         responder: Responder,
         draft_service: Optional[DraftService] = None,
+        calendar_service: Optional[CalendarService] = None,
+        evolution_service: Optional[EvolutionService] = None,
         voice_reply_service: Optional[VoiceReplyService] = None,
         default_persona: str = "gentle_reviewer",
     ) -> None:
@@ -234,6 +251,8 @@ class HermesGateway:
         self._events = events
         self._responder = responder
         self._draft_service = draft_service
+        self._calendar_service = calendar_service
+        self._evolution_service = evolution_service
         self._voice_reply_service = voice_reply_service
         self._default_persona = default_persona
         self._lock = threading.Lock()
@@ -264,6 +283,16 @@ class HermesGateway:
                 reply = self._persona_help(current)
                 self._events.record(message.event_id, current, reply)
                 return GatewayReply(uuid.uuid4().hex, current, reply, deduplicated=False)
+
+            if self._evolution_service is not None:
+                evolution = self._handle_evolution(message, current)
+                if evolution is not None:
+                    return evolution
+
+            if self._calendar_service is not None:
+                calendar = self._handle_calendar(message, current)
+                if calendar is not None:
+                    return calendar
 
             # Explicit, user-driven commit: the model can never confirm a draft.
             if self._draft_service is not None:
@@ -360,6 +389,95 @@ class HermesGateway:
         except Exception:
             _LOG.warning("voice reply generation failed request_id=%s", request_id, exc_info=True)
             return None
+
+    def _handle_calendar(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> Optional[GatewayReply]:
+        assert self._calendar_service is not None
+        user, chat = message.user_id, message.chat_id
+        session_id = session_key(user, persona_id, chat)
+        first = message.text.strip().split(maxsplit=1)[0] if message.text.strip() else ""
+        if first in _CONFIRM_CALENDAR_COMMANDS:
+            try:
+                result = self._calendar_service.confirm_latest(
+                    user_id=user,
+                    session_id=session_id,
+                )
+            except CalendarError as exc:
+                reply = self._calendar_error_reply(exc)
+            else:
+                linked = (
+                    f"\n已关联到 [[{result.journal_source_id}]]。"
+                    if result.journal_source_id
+                    else "\n日程已创建，但未能写入日记关联。"
+                )
+                reply = f"已创建日程：{result.title}（{result.start_at:%Y-%m-%d %H:%M}）。{linked}"
+            self._events.record(message.event_id, persona_id, reply)
+            return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+        if not looks_like_calendar_request(message.text):
+            return None
+        try:
+            draft = self._calendar_service.create_draft_from_text(
+                user_id=user,
+                session_id=session_id,
+                persona_id=persona_id,
+                text=message.text,
+            )
+        except CalendarParseError:
+            return None
+        reply = self._calendar_service.render_preview(draft)
+        self._events.record(message.event_id, persona_id, reply)
+        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+
+    def _handle_evolution(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> Optional[GatewayReply]:
+        assert self._evolution_service is not None
+        user, chat = message.user_id, message.chat_id
+        session_id = session_key(user, persona_id, chat)
+        stripped = message.text.strip()
+        first = stripped.split(maxsplit=1)[0] if stripped else ""
+        if first in _CONFIRM_EVOLUTION_COMMANDS:
+            try:
+                self._evolution_service.approve_latest(user_id=user, session_id=session_id)
+                reply = "已标记为已批准。具体代码、权限或自动化变更仍需单独实现和审查。"
+            except EvolutionError:
+                reply = "没有待确认的改进提案。"
+            self._events.record(message.event_id, persona_id, reply)
+            return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+        if first in _REJECT_EVOLUTION_COMMANDS:
+            try:
+                self._evolution_service.reject_latest(user_id=user, session_id=session_id)
+                reply = "已拒绝这条改进提案。"
+            except EvolutionError:
+                reply = "没有待确认的改进提案。"
+            self._events.record(message.event_id, persona_id, reply)
+            return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+        request = _evolution_request_text(stripped)
+        if request is None:
+            return None
+        proposal = self._evolution_service.create_proposal(
+            user_id=user,
+            session_id=session_id,
+            request_text=request,
+        )
+        reply = self._evolution_service.render_preview(proposal)
+        self._events.record(message.event_id, persona_id, reply)
+        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+
+    @staticmethod
+    def _calendar_error_reply(exc: CalendarError) -> str:
+        messages = {
+            "no_pending_calendar_draft": "没有待确认的日程草稿。",
+            "calendar_draft_not_found": "未找到该日程草稿。",
+            "calendar_draft_not_awaiting": "该日程草稿已处理过。",
+            "calendar_draft_expired": "日程草稿已超过 30 分钟时效，请重新生成。",
+            "calendar_provider_disabled": "日历服务尚未启用。",
+            "provider_auth_failed": "日历认证失败，请检查本地配置。",
+            "provider_create_failed": "创建日程失败，请稍后重试。",
+            "provider_missing_event_id": "创建日程失败：日历服务未返回事件 ID。",
+        }
+        return messages.get(exc.code, "创建日程失败，请稍后重试。")
 
     def _create_fast_draft(
         self, message: IncomingChatMessage, persona_id: str, content: str
