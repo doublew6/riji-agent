@@ -327,6 +327,30 @@ def test_correction_rewrites_latest_draft_to_today_notes(setup) -> None:
     assert text.index("## 🧠 Notes") < text.index("- 评审通过")
 
 
+def test_content_correction_supersedes_old_draft_before_plain_confirm(setup) -> None:
+    gateway, _draft_service, root = setup
+    original = gateway.handle(
+        SECRET,
+        _msg("帮忙记录，今天去了地点甲，整理了一些物品。", event_id="draft-original"),
+    )
+    assert "地点甲" in original.text
+    assert "确认保存" in original.text
+
+    revised = gateway.handle(
+        SECRET,
+        _msg("不是地点甲，是地点乙，Place B", event_id="draft-correction"),
+    )
+    assert "已按你的纠正重新起草" in revised.text
+    assert "地点乙，Place B" in revised.text
+    assert "地点甲" not in revised.text
+
+    confirm = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-revised"))
+    assert "已写入" in confirm.text
+    text = (root / "daily" / "2026-07-01.md").read_text(encoding="utf-8")
+    assert "地点乙，Place B" in text
+    assert "地点甲" not in text
+
+
 def test_correction_after_wrong_date_commit_creates_confirmable_draft(setup, monkeypatch) -> None:
     gateway, draft_service, root = setup
     monkeypatch.setattr(
