@@ -56,6 +56,37 @@ _FAST_DRAFT_TRIGGERS = (
     "帮我记录",
     "帮我记",
 )
+_VOICE_REPLY_TRIGGERS = (
+    "用语音",
+    "语音回复",
+    "语音回答",
+    "发语音",
+    "回语音",
+    "用声音",
+    "声音回复",
+    "声音回答",
+    "读出来",
+    "念出来",
+    "朗读",
+    "voice reply",
+    "reply with voice",
+    "audio reply",
+    "send voice",
+    "read aloud",
+)
+_VOICE_REPLY_NEGATIONS = (
+    "不要用语音",
+    "不用语音",
+    "别用语音",
+    "不要发语音",
+    "别发语音",
+    "不要声音",
+    "不用声音",
+    "别用声音",
+    "no voice",
+    "without voice",
+    "text only",
+)
 _DEFAULT_DRAFT_SECTION = "Notes"
 _NOTES_SECTION = "Notes"
 _LOG = logging.getLogger("riji_agent.hermes.gateway")
@@ -113,6 +144,16 @@ def parse_fast_draft_request(text: str) -> Optional[str]:
 def _is_generic_draft_placeholder(content: str) -> bool:
     compact = content.strip()
     return compact in {"今天的事", "今天的事情", "这件事", "这个事", "这些事"}
+
+
+def _requests_voice_reply(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    compact = normalized.replace(" ", "")
+    if not normalized:
+        return False
+    if any(term in normalized or term in compact for term in _VOICE_REPLY_NEGATIONS):
+        return False
+    return any(term in normalized or term in compact for term in _VOICE_REPLY_TRIGGERS)
 
 
 def is_draft_correction_request(text: str) -> bool:
@@ -291,11 +332,13 @@ class HermesGateway:
         )
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
-        audio = self._synthesize_voice_reply(
-            reply,
-            request_id,
-            voice=assembled.persona.voice_for(self._voice_provider_id()),
-        )
+        audio = None
+        if _requests_voice_reply(message.text):
+            audio = self._synthesize_voice_reply(
+                reply,
+                request_id,
+                voice=assembled.persona.voice_for(self._voice_provider_id()),
+            )
         return GatewayReply(request_id, persona_id, reply, deduplicated=False, audio=audio)
 
     def _voice_provider_id(self) -> str:
