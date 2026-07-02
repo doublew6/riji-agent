@@ -104,7 +104,7 @@ def test_calendar_month_offset_request_previews_without_model_call(tmp_path: Pat
 
     preview = gateway.handle(
         SECRET,
-        _msg("在日历里加一个日程，提醒我3个月后处理示例账户余额", event_id="cal-months"),
+        _msg("给我日历上加一个日程，3个月之后提醒我处理示例账户余额", event_id="cal-months"),
     )
 
     assert "我理解为这条日程" in preview.text

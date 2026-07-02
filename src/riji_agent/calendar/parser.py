@@ -14,9 +14,16 @@ from riji_agent.timezone import local_journal_timezone
 
 _ISO_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
 _MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
-_MONTH_OFFSET_RE = re.compile(r"(?P<count>\d{1,2}|[一二两三四五六七八九十]+)\s*个?月后")
-_WEEK_OFFSET_RE = re.compile(r"(?P<count>\d{1,2}|[一二两三四五六七八九十]+)\s*(?:周|星期)后")
-_DAY_OFFSET_RE = re.compile(r"(?P<count>\d{1,2}|[一二两三四五六七八九十]+)\s*天后")
+_AFTER_SUFFIX = r"(?:后|之后|以后)"
+_MONTH_OFFSET_RE = re.compile(
+    rf"(?P<count>\d{{1,2}}|[一二两三四五六七八九十]+)\s*个?月{_AFTER_SUFFIX}"
+)
+_WEEK_OFFSET_RE = re.compile(
+    rf"(?P<count>\d{{1,2}}|[一二两三四五六七八九十]+)\s*(?:周|星期){_AFTER_SUFFIX}"
+)
+_DAY_OFFSET_RE = re.compile(
+    rf"(?P<count>\d{{1,2}}|[一二两三四五六七八九十]+)\s*天{_AFTER_SUFFIX}"
+)
 _TIME_RE = re.compile(
     r"(?P<period>上午|中午|下午|晚上|晚间|今晚|早上|凌晨)?\s*"
     r"(?P<hour>\d{1,2})\s*(?:点|:|：)"
@@ -27,11 +34,11 @@ _DURATION_RE = re.compile(r"(?P<hours>\d+(?:\.\d+)?)\s*(?:小时|个小时)")
 _TITLE_CLEAN_RE = re.compile(
     r"(今天|明天|后天|大后天|上午|中午|下午|晚上|晚间|今晚|早上|凌晨|"
     r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s*月\s*\d{1,2}\s*(?:日|号)?|"
-    r"(?:\d{1,2}|[一二两三四五六七八九十]+)\s*个?月后|"
-    r"(?:\d{1,2}|[一二两三四五六七八九十]+)\s*(?:周|星期|天)后|"
+    r"(?:\d{1,2}|[一二两三四五六七八九十]+)\s*个?月(?:后|之后|以后)|"
+    r"(?:\d{1,2}|[一二两三四五六七八九十]+)\s*(?:周|星期|天)(?:后|之后|以后)|"
     r"\d{1,2}\s*(?:点|:|：)\s*(?:半|\d{1,2}\s*分?)?|"
-    r"提前\s*\d{1,3}\s*分钟|提醒我|提醒|帮我|请|"
-    r"在日历里|日历里|加一个|安排一次|安排|创建|新建|日程|会议|一次)"
+    r"提前\s*\d{1,3}\s*分钟|提醒我|提醒|给我|帮我|请|"
+    r"在日历里|日历里|日历上|加一个|安排一次|安排|创建|新建|日程|会议|一次)"
 )
 _DEFAULT_FLOATING_EVENT_TIME = time(hour=9, minute=0)
 
