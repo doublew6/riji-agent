@@ -126,6 +126,28 @@ def test_at_mention_does_not_change_current_persona(setup) -> None:
     assert store.get_preferences("ou_1")["current_persona"] == "blunt_coach"  # unchanged
 
 
+def test_voice_reply_is_text_only_without_explicit_request(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite3")
+    events = EventLog(tmp_path / "events.sqlite3")
+    voice = FakeVoiceReplyService()
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=store,
+        events=events,
+        responder=FakeResponder(),
+        voice_reply_service=voice,
+    )
+
+    reply = gateway.handle(SECRET, _msg("给一句建议", event_id="voice-default-off"))
+
+    assert reply.audio is None
+    assert voice.calls == []
+    store.close()
+    events.close()
+
+
 def test_voice_reply_uses_selected_persona_voice(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite3")
     events = EventLog(tmp_path / "events.sqlite3")
@@ -140,13 +162,15 @@ def test_voice_reply_uses_selected_persona_voice(tmp_path: Path) -> None:
         voice_reply_service=voice,
     )
 
-    reply = gateway.handle(SECRET, _msg("/导师 直率教练 给一句建议", event_id="voice-persona"))
+    reply = gateway.handle(
+        SECRET, _msg("/导师 直率教练 请用语音回复，给一句建议", event_id="voice-persona")
+    )
 
     assert reply.audio is not None
     assert reply.persona_id == "blunt_coach"
     assert voice.calls == [
         {
-            "text": "[blunt_coach] 给一句建议",
+            "text": "[blunt_coach] 请用语音回复，给一句建议",
             "request_id": reply.request_id,
             "voice": "Eddy (中文（中国大陆）)",
         }
@@ -169,13 +193,15 @@ def test_voice_reply_uses_provider_specific_persona_voice(tmp_path: Path) -> Non
         voice_reply_service=voice,
     )
 
-    reply = gateway.handle(SECRET, _msg("/导师 王阳明 给一句建议", event_id="voice-melo"))
+    reply = gateway.handle(
+        SECRET, _msg("/导师 王阳明 请用语音回复，给一句建议", event_id="voice-melo")
+    )
 
     assert reply.audio is not None
     assert reply.persona_id == "wang_yangming"
     assert voice.calls == [
         {
-            "text": "[wang_yangming] 给一句建议",
+            "text": "[wang_yangming] 请用语音回复，给一句建议",
             "request_id": reply.request_id,
             "voice": "ZH",
         }

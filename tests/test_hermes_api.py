@@ -84,7 +84,7 @@ def test_authorized_message_returns_reply(client: TestClient) -> None:
     assert "audio" not in data
 
 
-def test_voice_reply_metadata_is_returned_when_enabled(tmp_path: Path) -> None:
+def test_voice_reply_metadata_is_omitted_without_explicit_request(tmp_path: Path) -> None:
     voice = FakeVoiceReplyService(
         VoiceAttachment(path="/tmp/riji-agent-voice/reply.opus", mime_type="audio/ogg")
     )
@@ -95,23 +95,50 @@ def test_voice_reply_metadata_is_returned_when_enabled(tmp_path: Path) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert data["reply"] == "[gentle_reviewer] 你好"
+    assert "audio" not in data
+    assert voice.calls == []
+
+
+def test_voice_reply_metadata_is_returned_when_explicitly_requested(tmp_path: Path) -> None:
+    voice = FakeVoiceReplyService(
+        VoiceAttachment(path="/tmp/riji-agent-voice/reply.opus", mime_type="audio/ogg")
+    )
+    client = _client_with_voice(tmp_path, voice)
+
+    resp = client.post(
+        "/hermes/messages",
+        json=_body("请用语音回复：你好"),
+        headers={"X-Hermes-Secret": SECRET},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reply"] == "[gentle_reviewer] 请用语音回复：你好"
     assert data["audio"] == {
         "path": "/tmp/riji-agent-voice/reply.opus",
         "mime_type": "audio/ogg",
     }
     assert voice.calls == [
-        ("[gentle_reviewer] 你好", data["request_id"], "Flo (中文（中国大陆）)")
+        (
+            "[gentle_reviewer] 请用语音回复：你好",
+            data["request_id"],
+            "Flo (中文（中国大陆）)",
+        )
     ]
 
 
 def test_voice_failure_falls_back_to_text_reply(tmp_path: Path) -> None:
     client = _client_with_voice(tmp_path, FakeVoiceReplyService(fail=True))
 
-    resp = client.post("/hermes/messages", json=_body("你好"), headers={"X-Hermes-Secret": SECRET})
+    resp = client.post(
+        "/hermes/messages",
+        json=_body("请用语音回复：你好"),
+        headers={"X-Hermes-Secret": SECRET},
+    )
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["reply"] == "[gentle_reviewer] 你好"
+    assert data["reply"] == "[gentle_reviewer] 请用语音回复：你好"
     assert "audio" not in data
 
 
