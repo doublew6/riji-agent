@@ -69,7 +69,7 @@ class StubModel:
                             "draft_daily_entry",
                             json.dumps(
                                 {
-                                    "operations": [{"section": "🧠 Notes", "content": "今天评审通过"}],
+                                    "operations": [{"section": "🧠 Notes", "content": "评审通过"}],
                                     "target_date": "2026-07-01",
                                 },
                                 ensure_ascii=False,
@@ -250,11 +250,11 @@ def test_wired_tool_loop_returns_sourced_answer(tmp_path: Path) -> None:
 
 def test_wired_draft_then_confirm_writes(tmp_path: Path) -> None:
     client, _stub, _gateway, root = _stub_client(tmp_path)
-    proposed = _post(client, "记录 今天评审通过", event_id="d1")
+    proposed = _post(client, "记录 评审通过", event_id="d1")
     assert proposed.status_code == 200
     confirmed = _post(client, "确认保存", event_id="d2")
     assert "已写入" in confirmed.json()["reply"]
-    assert "- 今天评审通过" in (root / "daily" / "2026-07-01.md").read_text(encoding="utf-8")
+    assert "- 评审通过" in (root / "daily" / "2026-07-01.md").read_text(encoding="utf-8")
 
 
 def test_wired_persona_switch_to_wang_yangming(tmp_path: Path) -> None:
