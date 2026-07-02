@@ -13,7 +13,9 @@ from riji_agent.calendar.models import CalendarEventDraft, CalendarEventResult
 class CalendarProvider(Protocol):
     provider_id: str
 
-    def create_event(self, event: CalendarEventDraft) -> CalendarEventResult:
+    def create_event(
+        self, event: CalendarEventDraft, *, user_id: Optional[str] = None
+    ) -> CalendarEventResult:
         """Create one calendar event and return provider metadata."""
 
 
@@ -45,7 +47,9 @@ class FeishuCalendarProvider:
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=30, trust_env=False)
 
-    def create_event(self, event: CalendarEventDraft) -> CalendarEventResult:
+    def create_event(
+        self, event: CalendarEventDraft, *, user_id: Optional[str] = None
+    ) -> CalendarEventResult:
         token = self._tenant_access_token()
         url = f"{self._base_url}/open-apis/calendar/v4/calendars/{self._calendar_id}/events"
         payload = {
@@ -79,6 +83,8 @@ class FeishuCalendarProvider:
         event_id = event_data.get("event_id") or event_data.get("id")
         if not isinstance(event_id, str) or not event_id:
             raise CalendarProviderError("provider_missing_event_id")
+        if user_id:
+            self._add_user_attendee(token, event_id=event_id, user_id=user_id)
         return CalendarEventResult(
             event_id=event_id,
             title=event.title,
@@ -104,6 +110,24 @@ class FeishuCalendarProvider:
         if not isinstance(token, str) or not token:
             raise CalendarProviderError("provider_auth_failed")
         return token
+
+    def _add_user_attendee(self, token: str, *, event_id: str, user_id: str) -> None:
+        url = (
+            f"{self._base_url}/open-apis/calendar/v4/calendars/{self._calendar_id}"
+            f"/events/{event_id}/attendees"
+        )
+        try:
+            response = self._client.post(
+                url,
+                params={"user_id_type": "open_id", "need_notification": "false"},
+                headers={"Authorization": f"Bearer {token}"},
+                json={"attendees": [{"type": "user", "user_id": user_id}]},
+            )
+            data = response.json()
+        except Exception as exc:
+            raise CalendarProviderError("provider_attendee_failed") from exc
+        if response.status_code >= 400 or _feishu_code(data) not in (None, 0):
+            raise CalendarProviderError(_safe_feishu_error(data, fallback="provider_attendee_failed"))
 
 
 def _feishu_code(data: object) -> Optional[int]:

@@ -39,6 +39,7 @@ class CalendarEventResult:
     end_at: datetime
     calendar_url: Optional[str] = None
     journal_source_id: Optional[str] = None
+    journal_link_deferred: bool = False
 
 
 @dataclass(frozen=True)
