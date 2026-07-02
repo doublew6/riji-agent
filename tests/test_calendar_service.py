@@ -58,6 +58,19 @@ def test_parse_calendar_request_uses_local_relative_date_and_reminder() -> None:
     assert event.reminder_minutes == 10
 
 
+def test_parse_calendar_request_supports_month_offset_without_time() -> None:
+    event = parse_calendar_request(
+        "在日历里加一个日程，提醒我3个月后处理示例账户余额",
+        now=datetime(2026, 7, 2, 10, 0, tzinfo=TZ),
+        timezone_name="Asia/Shanghai",
+    )
+
+    assert event.title == "处理示例账户余额"
+    assert event.start_at.isoformat() == "2026-10-02T09:00:00+08:00"
+    assert event.end_at.isoformat() == "2026-10-02T10:00:00+08:00"
+    assert event.reminder_minutes is None
+
+
 def test_calendar_confirm_creates_provider_event_and_links_journal(tmp_path: Path) -> None:
     service, provider, root, index = _parts(tmp_path)
     draft = service.create_draft_from_text(

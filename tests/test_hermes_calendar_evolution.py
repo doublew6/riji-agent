@@ -99,6 +99,21 @@ def test_calendar_request_previews_then_confirm_creates_and_links(tmp_path: Path
     index.close()
 
 
+def test_calendar_month_offset_request_previews_without_model_call(tmp_path: Path) -> None:
+    gateway, provider, _root, index = _gateway(tmp_path)
+
+    preview = gateway.handle(
+        SECRET,
+        _msg("在日历里加一个日程，提醒我3个月后处理示例账户余额", event_id="cal-months"),
+    )
+
+    assert "我理解为这条日程" in preview.text
+    assert "标题：处理示例账户余额" in preview.text
+    assert "2026-10-02 09:00" in preview.text
+    assert provider.created == []
+    index.close()
+
+
 def test_calendar_confirm_without_pending_draft_is_safe(tmp_path: Path) -> None:
     gateway, provider, _root, index = _gateway(tmp_path)
 
