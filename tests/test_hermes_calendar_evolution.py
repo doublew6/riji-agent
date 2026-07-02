@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from riji_agent.calendar.models import CalendarEventResult
+from riji_agent.calendar.parser import looks_like_calendar_request
 from riji_agent.calendar.providers import CalendarProviderError
 from riji_agent.calendar.service import CalendarService
 from riji_agent.calendar.store import CalendarDraftStore
@@ -124,6 +125,16 @@ def test_calendar_month_offset_request_previews_without_model_call(tmp_path: Pat
     assert "未来日期不提前创建" in preview.text
     assert provider.created == []
     index.close()
+
+
+def test_journal_record_with_arrangement_word_is_not_calendar_intent() -> None:
+    text = (
+        "帮忙记录，今天在家里做了一个选择。具体安排如下：\n"
+        "1. 等事情结束后去运动；\n"
+        "2. 调整工作环境。"
+    )
+
+    assert looks_like_calendar_request(text) is False
 
 
 def test_calendar_confirm_without_pending_draft_is_safe(tmp_path: Path) -> None:
