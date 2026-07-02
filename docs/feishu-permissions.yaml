@@ -1,0 +1,86 @@
+# Feishu permissions required by the riji-agent bot.
+#
+# Keep this file as the single source of truth for Feishu Open Platform scopes.
+# Do not put App IDs, App Secrets, user IDs, chat IDs, event IDs, or diary
+# contents in this file.
+#
+# Token types:
+# - tenant_access_token: app identity permissions.
+# - user_access_token: user identity permissions. Keep these optional unless a
+#   feature explicitly needs user-delegated access.
+
+version: 1
+platform: feishu
+app_type: self_built_bot
+connection_mode: websocket
+
+permission_groups:
+  core_private_chat:
+    required: true
+    purpose: Receive private messages from allowlisted users and send text replies.
+    permissions:
+      - scope: im:message.p2p_msg:readonly
+        token_type: tenant_access_token
+        purpose: Receive one-to-one messages sent to the bot.
+      - scope: im:message:send_as_bot
+        token_type: tenant_access_token
+        purpose: Send bot replies back to the user.
+      - scope: im:message:readonly
+        token_type: tenant_access_token
+        purpose: Read message metadata needed by the Hermes Feishu adapter.
+      - scope: im:chat:read
+        token_type: tenant_access_token
+        purpose: Read chat metadata needed to distinguish private chats from groups.
+      - scope: contact:user.id:readonly
+        token_type: tenant_access_token
+        purpose: Resolve and verify Feishu Open IDs for the local allowlist.
+
+  group_mentions:
+    required: false
+    default_enabled_in_riji_agent: false
+    purpose: Allow Hermes to receive group @ messages. riji-agent still rejects journal access from group chats.
+    permissions:
+      - scope: im:message.group_at_msg.include_bot:readonly
+        token_type: tenant_access_token
+        purpose: Receive group messages that mention the bot, if group routing is enabled in Hermes.
+      - scope: im:message
+        token_type: tenant_access_token
+        purpose: General message receive permission used by some Hermes Feishu configurations.
+
+  media_and_voice_replies:
+    required: false
+    enabled_when:
+      - RIJI_FEISHU_VOICE_REPLY_MODE=text_and_voice
+    purpose: Upload generated local audio files or other bot media resources to Feishu.
+    permissions:
+      - scope: im:resource
+        token_type: tenant_access_token
+        purpose: Upload and send media resources as the bot.
+      - scope: im:resource
+        token_type: user_access_token
+        purpose: Optional fallback for Feishu/Hermes setups that upload resources with user identity.
+
+  calendar_creation:
+    required: false
+    enabled_when:
+      - RIJI_CALENDAR_PROVIDER=feishu
+    purpose: Create calendar events from confirmed IM drafts and add the requesting user as an attendee.
+    permissions:
+      - scope: calendar:calendar.event:create
+        token_type: tenant_access_token
+        purpose: Create Feishu calendar events after the user replies "确认创建".
+      - scope: calendar:calendar
+        token_type: tenant_access_token
+        purpose: Update created events, including adding the requesting user as an attendee so the event appears in their calendar.
+      - scope: calendar:calendar:read
+        token_type: tenant_access_token
+        purpose: Read calendar metadata for diagnostics and smoke tests.
+      - scope: calendar:calendar:readonly
+        token_type: tenant_access_token
+        purpose: Read calendar/event/busy-free metadata for diagnostics and compatibility with Feishu permission prompts.
+
+notes:
+  - The bot should be deployed with only private-chat journal access in riji-agent; group chat payloads may pass through Hermes but are not authorized for journal reads or writes.
+  - Feishu calendar events created with app identity must add the requesting user as an attendee; otherwise the event may exist but not appear in the user's personal Feishu calendar.
+  - Future calendar events must not pre-create future daily notes. The note should be created by the normal daily-note flow when that date arrives.
+  - Keep cloud or unofficial providers opt-in. Feishu receives user messages, bot replies, and any calendar event fields sent through its APIs.

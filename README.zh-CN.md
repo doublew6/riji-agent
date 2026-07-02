@@ -210,8 +210,8 @@ RIJI_TTS_SPEED=1.0
 
 日历写入默认关闭。启用飞书日历 provider 后，可以在飞书私聊中用自然语言创建
 日程草稿，例如“明天下午 3 点安排一次项目复盘，提前 10 分钟提醒”。riji-agent
-会先返回结构化预览；只有回复「确认创建」后才调用飞书日历 API，并把轻量日程
-关联追加到对应 daily note。
+会先返回结构化预览；只有回复「确认创建」后才调用飞书日历 API。当天日程会把
+轻量日程关联追加到当天 daily note；未来日程不会提前创建未来 daily note。
 
 ```bash
 RIJI_CALENDAR_PROVIDER=feishu
@@ -222,6 +222,9 @@ FEISHU_APP_SECRET=replace-me
 
 日历标题、描述和地点视为敏感内容；审计与错误回复不应包含 token、App Secret、
 用户 ID 或内部请求体。群聊仍然默认拒绝私人能力。
+
+飞书开放平台权限统一维护在 [`docs/feishu-permissions.yaml`](docs/feishu-permissions.yaml)。
+启用语音、日历等可选能力前，先对照该文件开通对应权限。
 
 ## 配置与安全
 
