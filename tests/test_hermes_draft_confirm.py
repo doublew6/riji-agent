@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 import pytest
 
 import riji_agent.hermes.gateway as gateway_module
+from riji_agent.calendar.models import CalendarEventResult
+from riji_agent.calendar.service import CalendarService
+from riji_agent.calendar.store import CalendarDraftStore
 from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
@@ -33,6 +36,22 @@ class FakeResponder:
 class ExplodingResponder:
     def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
         raise AssertionError("fast draft path should not call the model")
+
+
+class FakeCalendarProvider:
+    provider_id = "fake"
+
+    def __init__(self) -> None:
+        self.created = []
+
+    def create_event(self, event, *, user_id=None):
+        self.created.append(event)
+        return CalendarEventResult(
+            event_id="evt_fake_123456",
+            title=event.title,
+            start_at=event.start_at,
+            end_at=event.end_at,
+        )
 
 
 def _msg(text: str, *, event_id: str = "e1", chat_type: str = "p2p") -> IncomingMessage:
@@ -236,6 +255,57 @@ def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: 
     assert "## 🧠 Notes" in text
     assert "匿名团队" in text
     assert text.index("## 🧠 Notes") < text.index("- 目前一个匿名团队")
+    index.close()
+
+
+def test_fast_draft_with_arrangement_word_is_not_routed_to_calendar(tmp_path: Path) -> None:
+    root = tmp_path / "riji"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
+    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"),
+        root,
+        index,
+        now=lambda: datetime(2026, 7, 2, 8, 0, tzinfo=timezone.utc),
+    )
+    calendar_provider = FakeCalendarProvider()
+    calendar_service = CalendarService(
+        CalendarDraftStore(tmp_path / "d" / "calendar.sqlite3"),
+        calendar_provider,
+        journal_root=root,
+        index=index,
+        now=lambda: datetime(2026, 7, 2, 8, 0, tzinfo=timezone.utc),
+    )
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "d" / "mem.sqlite3"),
+        events=EventLog(tmp_path / "d" / "events.sqlite3"),
+        responder=ExplodingResponder(),
+        draft_service=draft_service,
+        calendar_service=calendar_service,
+    )
+
+    reply = gateway.handle(
+        SECRET,
+        _msg(
+            "帮忙记录，今天我做了一个选择。具体安排如下：\n"
+            "1. 等一个任务结束后去运动；\n"
+            "2. 调整工作环境。"
+        ),
+    )
+
+    assert "草稿（2026-07-02）" in reply.text
+    assert "确认保存" in reply.text
+    assert "确认创建" not in reply.text
+    assert calendar_provider.created == []
+    confirm = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-note"))
+    assert "已写入" in confirm.text
+    text = (root / "daily" / "2026-07-02.md").read_text(encoding="utf-8")
+    assert "具体安排如下" in text
+    assert "日程：" not in text
     index.close()
 
 

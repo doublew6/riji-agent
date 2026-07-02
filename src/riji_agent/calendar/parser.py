@@ -81,9 +81,29 @@ def looks_like_calendar_request(text: str) -> bool:
     has_when = _TIME_RE.search(text) or _has_explicit_date(text)
     if not has_when:
         return False
+    if _looks_like_journal_record_request(text) and not any(
+        word in text for word in ("日历", "日程", "会议", "提醒我")
+    ):
+        return False
+    if any(word in text for word in ("日历", "日程", "会议", "提醒我")):
+        return True
+    return bool(_TIME_RE.search(text)) and any(word in text for word in ("安排", "复盘", "约"))
+
+
+def _looks_like_journal_record_request(text: str) -> bool:
     return any(
         word in text
-        for word in ("日历", "日程", "会议", "安排", "提醒我", "创建", "新建", "复盘", "约")
+        for word in (
+            "记录一下",
+            "记一下",
+            "写日记",
+            "记到日记",
+            "在日记里记录",
+            "帮忙记录",
+            "帮忙记",
+            "帮我记录",
+            "帮我记",
+        )
     )
 
 
