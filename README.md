@@ -134,7 +134,7 @@ riji-agent 不会发送：
 
 ## 快速开始
 
-要求：Python 3.9+ 和 [uv](https://docs.astral.sh/uv/)。
+要求：Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
 
 先运行虚构 demo vault。它不会读取 `.env`、真实日记或真实 API key：
 

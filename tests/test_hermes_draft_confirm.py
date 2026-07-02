@@ -45,7 +45,12 @@ def setup(tmp_path: Path):
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
     index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
-    draft_service = DraftService(DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index)
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"),
+        root,
+        index,
+        now=lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+    )
     gateway = HermesGateway(
         hermes_secret=SECRET,
         allowed_user_ids={"ou_1"},
@@ -136,7 +141,12 @@ def test_fast_draft_request_creates_preview_without_model_call(tmp_path: Path) -
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
     index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
-    draft_service = DraftService(DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index)
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"),
+        root,
+        index,
+        now=lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+    )
     gateway = HermesGateway(
         hermes_secret=SECRET,
         allowed_user_ids={"ou_1"},
@@ -195,7 +205,12 @@ def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: 
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
     index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
-    draft_service = DraftService(DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index)
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"),
+        root,
+        index,
+        now=lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+    )
     gateway = HermesGateway(
         hermes_secret=SECRET,
         allowed_user_ids={"ou_1"},
@@ -205,13 +220,6 @@ def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: 
         responder=ExplodingResponder(),
         draft_service=draft_service,
     )
-    monkeypatch.setattr(
-        gateway_module,
-        "_local_today",
-        lambda: datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc).date(),
-        raising=False,
-    )
-
     reply = gateway.handle(
         SECRET,
         _msg("帮忙记录，目前一个匿名团队出现了两条变化：\n1. 一个人调整岗位；\n2. 其他成员离开。"),

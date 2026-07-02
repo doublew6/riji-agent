@@ -115,7 +115,7 @@ May leave the machine when the default stack is enabled:
 
 ## Quick Start
 
-Requirements: Python 3.9+ and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 Try the fictional demo vault first. It does not read `.env`, your real journal,
 or any real API key:
