@@ -30,5 +30,7 @@ jobs:
         run: python scripts/privacy_scan.py --tracked
       - name: Run smoke test
         run: python -m pytest -m smoke
+      - name: Run local regression environment
+        run: python -m pytest tests/test_local_regression_environment.py
       - name: Run full test suite
         run: python -m pytest
