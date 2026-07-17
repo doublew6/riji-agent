@@ -42,6 +42,21 @@ X-Hermes-Secret: <HERMES_SHARED_SECRET>
 | `chat_id` | 会话 ID |
 | `chat_type` | `p2p`（私聊）才被接受；其余视为群聊拒绝 |
 | `text` | 用户消息文本 |
+| `message_type` | 可选；Hermes 归一化类型，如 `photo`、`document`，纯文字省略 |
+| `attachment_ids` | 可选；先经附件接口上传后返回的本地 token 列表 |
+| `reply_to_message_id` | 可选；飞书回复关系，用于后续关联扩展 |
+
+图片二进制先上传到：
+
+```text
+PUT /hermes/attachments/{event_id}/{part_index}
+X-Hermes-Secret: <HERMES_SHARED_SECRET>
+Content-Type: application/octet-stream
+```
+
+返回 `{attachment_id, media_type, size_bytes}`。接口最多接受序号 `0..5`，单图
+10 MiB；按事件和序号幂等，且会检查真实图片签名。bridge 不把 Hermes 缓存路径
+交给 riji-agent，也不接触 vault。
 
 响应（JSON）：`{request_id, persona_id, reply, deduplicated}`。当启用飞书语音回复且本地 TTS 成功时，还会包含可选字段：
 
@@ -69,6 +84,7 @@ bridge 的边界：
 - 不自行放行群聊或非白名单用户（透传 `chat_type`/`feishu_user_id`，由 riji-agent 的 403 拦截）；
 - **无任何 vault / SQLite / 索引 / DeepSeek key 访问**——只转发消息与回复；
 - 语音回复开启时，只把 riji-agent 已生成的本地音频路径转换为 Hermes 媒体附件指令；
+- 图文记录时，只读取 Hermes 已下载的消息图片并上传到 riji-agent 的本地暂存接口；
 - 共享密钥只放在 `X-Hermes-Secret` 头里，绝不出现在日志、异常或回复中。
 
 ### bridge 侧环境变量
@@ -195,6 +211,8 @@ installer 的行为：
 - 默认确认当前导师会话里的待确认草稿。
 - **跨导师确认**：若在草稿生成与确认之间切换了导师，普通 `确认保存` 会因会话不同而找不到草稿。此时用「`确认保存 <草稿号>`」按草稿号显式确认——草稿号在预览文本中给出。
 - 显式确认仍校验：草稿归属本人（他人草稿一律按「未找到」处理，不泄露其存在）、未过期、单次 token、状态为待确认。
+- 图片可先发或后发；同一私聊会话 120 秒内自动合并。补图会返回新预览并使旧草稿 token 失效；`取消记录` 会清理草稿和暂存图片。
+- 确认前不修改 vault。确认后图片以内容哈希命名写入 `riji/assets/`，日记使用 `![[文件名]]` 嵌入原图；不做 OCR 或云端视觉理解。
 
 ## 安全与幂等
 
@@ -207,6 +225,7 @@ installer 的行为：
 | 现象 | 排查 |
 | --- | --- |
 | 飞书无回复 | 确认 Hermes 私聊事件已订阅、`event_id` 已透传；查 riji-agent 是否收到 POST。 |
+| 文字可记录但图片丢失 | 检查 `im:resource` 已发布；Hermes 日志应显示 `media>0`，bridge installer block 应包含 `/hermes/attachments`。 |
 | 全部 `401` | `X-Hermes-Secret` 与 riji-agent 的 `HERMES_SHARED_SECRET` 不一致。 |
 | 授权用户却 `403` | 检查 `feishu_user_id` 是否在 `RIJI_ALLOWED_FEISHU_USER_IDS`；确认 `chat_type=p2p`。 |
 | 重复回复 | 确认 Hermes 透传了稳定的 `event_id`；不稳定的 ID 会绕过幂等。 |

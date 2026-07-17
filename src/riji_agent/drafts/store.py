@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from riji_agent.drafts.models import Draft, DraftOperation, DraftStatus
+from riji_agent.media.models import MediaAttachment
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS drafts (
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS drafts (
     persona_id TEXT NOT NULL,
     target_date TEXT NOT NULL,
     operations TEXT NOT NULL,
+    attachments TEXT NOT NULL DEFAULT '[]',
     token      TEXT NOT NULL,
     status     TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -36,6 +38,7 @@ class DraftStore:
         self._conn = sqlite3.connect(str(self._database_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._ensure_attachments_column()
         self._conn.commit()
 
     def close(self) -> None:
@@ -44,8 +47,8 @@ class DraftStore:
     def save(self, draft: Draft) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO drafts (draft_id, user_id, session_id, persona_id, "
-            "target_date, operations, token, status, created_at, expires_at, source_id, after_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "target_date, operations, attachments, token, status, created_at, expires_at, "
+            "source_id, after_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 draft.draft_id,
                 draft.user_id,
@@ -53,6 +56,7 @@ class DraftStore:
                 draft.persona_id,
                 draft.target_date.isoformat(),
                 json.dumps([[o.section, o.content] for o in draft.operations], ensure_ascii=False),
+                json.dumps([_attachment_to_dict(item) for item in draft.attachments]),
                 draft.token,
                 draft.status.value,
                 draft.created_at,
@@ -107,6 +111,9 @@ class DraftStore:
             DraftOperation(section=item[0], content=item[1])
             for item in json.loads(row["operations"])
         )
+        attachments = tuple(
+            MediaAttachment(**item) for item in json.loads(row["attachments"] or "[]")
+        )
         return Draft(
             draft_id=row["draft_id"],
             user_id=row["user_id"],
@@ -114,6 +121,7 @@ class DraftStore:
             persona_id=row["persona_id"],
             target_date=Date.fromisoformat(row["target_date"]),
             operations=operations,
+            attachments=attachments,
             token=row["token"],
             status=DraftStatus(row["status"]),
             created_at=row["created_at"],
@@ -121,3 +129,25 @@ class DraftStore:
             source_id=row["source_id"],
             after_hash=row["after_hash"],
         )
+
+    def _ensure_attachments_column(self) -> None:
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(drafts)").fetchall()
+        }
+        if "attachments" not in columns:
+            self._conn.execute(
+                "ALTER TABLE drafts ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'"
+            )
+
+
+def _attachment_to_dict(item: MediaAttachment) -> dict:
+    return {
+        "attachment_id": item.attachment_id,
+        "event_id": item.event_id,
+        "part_index": item.part_index,
+        "sha256": item.sha256,
+        "media_type": item.media_type,
+        "extension": item.extension,
+        "size_bytes": item.size_bytes,
+        "staged_path": item.staged_path,
+    }

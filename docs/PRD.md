@@ -134,6 +134,12 @@ Hermes 是默认 Agent runtime，使用其自带的 Feishu 接入作为默认 IM
 4. riji-agent 写入目标 Markdown 文件、记录审计事件并更新本地索引。
 5. 系统返回写入的 Obsidian wikilink；非明确确认、重复事件或群聊消息均不得写入。
 
+图文记录同样遵守上述确认边界。飞书单独发送的 `image` 消息和富文本 `post`
+内嵌图片由 Hermes 下载后，经本机 bridge 上传到 riji-agent 暂存区。riji-agent
+在同一白名单私聊会话内使用 120 秒滑动窗口合并文字与图片；确认前不得在 vault
+创建图片或 Markdown 引用。确认后，原图按内容哈希写入 `riji/assets/`，并在对应
+日记 bullet 下追加 `![[<sha256>.<ext>]]`。MVP 不做 OCR 或云端视觉理解。
+
 ### 8.3 飞书安全边界
 
 - 仅允许白名单飞书用户与私聊会话访问日记工具；群聊默认不具备检索和写入权限。

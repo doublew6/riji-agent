@@ -164,11 +164,51 @@ def _bridge_block() -> str:
                     "chat_type": str(riji_chat_type or ""),
                     "text": event.text or "",
                 }}
+                _riji_message_type = str(
+                    getattr(getattr(event, "message_type", None), "value", None)
+                    or getattr(event, "message_type", None)
+                    or "text"
+                )
+                if _riji_message_type != "text":
+                    payload["message_type"] = _riji_message_type
+                _riji_reply_to = str(getattr(event, "reply_to_message_id", None) or "")
+                if _riji_reply_to:
+                    payload["reply_to_message_id"] = _riji_reply_to
                 _riji_timeout = float(os.getenv("RIJI_AGENT_TIMEOUT_SECONDS", "240"))
                 async with _riji_httpx.AsyncClient(
                     timeout=_riji_timeout,
                     trust_env=False,
                 ) as _riji_client:
+                    _riji_attachment_ids = []
+                    _riji_media_paths = list(getattr(event, "media_urls", None) or [])[:6]
+                    _riji_media_types = list(getattr(event, "media_types", None) or [])
+                    _riji_upload_base = os.environ["RIJI_AGENT_URL"].rsplit(
+                        "/messages", 1
+                    )[0] + "/attachments"
+                    for _riji_index, _riji_media_path in enumerate(_riji_media_paths):
+                        _riji_media_type = (
+                            _riji_media_types[_riji_index]
+                            if _riji_index < len(_riji_media_types)
+                            else ""
+                        )
+                        if not str(_riji_media_type).startswith("image/"):
+                            continue
+                        with open(_riji_media_path, "rb") as _riji_media_file:
+                            _riji_upload = await _riji_client.put(
+                                f"{{_riji_upload_base}}/{{riji_event_id}}/{{_riji_index}}",
+                                headers={{
+                                    "X-Hermes-Secret": os.environ["HERMES_SHARED_SECRET"],
+                                    "Content-Type": "application/octet-stream",
+                                }},
+                                content=_riji_media_file.read(),
+                            )
+                        _riji_upload.raise_for_status()
+                        _riji_attachment_id = _riji_upload.json().get("attachment_id")
+                        if not isinstance(_riji_attachment_id, str) or not _riji_attachment_id:
+                            raise ValueError("riji-agent image upload returned no attachment id")
+                        _riji_attachment_ids.append(_riji_attachment_id)
+                    if _riji_attachment_ids:
+                        payload["attachment_ids"] = _riji_attachment_ids
                     _riji_response = await _riji_client.post(
                         os.environ["RIJI_AGENT_URL"],
                         headers={{"X-Hermes-Secret": os.environ["HERMES_SHARED_SECRET"]}},

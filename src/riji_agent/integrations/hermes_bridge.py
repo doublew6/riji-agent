@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Tuple
 
 import httpx
 
@@ -56,6 +56,10 @@ class FeishuMessageEvent:
     chat_id: str
     chat_type: str
     text: str
+    message_type: str = "text"
+    media_paths: Tuple[str, ...] = ()
+    media_types: Tuple[str, ...] = ()
+    reply_to_message_id: str = ""
 
     @classmethod
     def from_mapping(cls, event: Mapping[str, object]) -> "FeishuMessageEvent":
@@ -71,6 +75,10 @@ class FeishuMessageEvent:
             chat_id=str(event.get("chat_id", "")),
             chat_type=str(event.get("chat_type", "")),
             text=str(event.get("text", "")),
+            message_type=str(event.get("message_type", "text")),
+            media_paths=tuple(str(item) for item in event.get("media_paths", ()) or ()),
+            media_types=tuple(str(item) for item in event.get("media_types", ()) or ()),
+            reply_to_message_id=str(event.get("reply_to_message_id", "")),
         )
 
 
@@ -121,6 +129,10 @@ class HermesFeishuBridge:
         reach the Feishu side. Sending the reply back to Feishu is the caller's
         (Hermes') responsibility.
         """
+        try:
+            attachment_ids = self._upload_images(event)
+        except (OSError, httpx.HTTPError, ValueError):
+            return _FAILURE_REPLY
         body = {
             "event_id": event.event_id,
             "feishu_user_id": event.feishu_user_id,
@@ -128,6 +140,12 @@ class HermesFeishuBridge:
             "chat_type": event.chat_type,
             "text": event.text,
         }
+        if event.message_type != "text":
+            body["message_type"] = event.message_type
+        if attachment_ids:
+            body["attachment_ids"] = attachment_ids
+        if event.reply_to_message_id:
+            body["reply_to_message_id"] = event.reply_to_message_id
         try:
             response = self._client.post(
                 self._url,
@@ -150,6 +168,28 @@ class HermesFeishuBridge:
         if not isinstance(reply, str) or not reply:
             return _FAILURE_REPLY
         return _append_audio_media_directive(reply, data.get("audio"))
+
+    def _upload_images(self, event: FeishuMessageEvent) -> list[str]:
+        attachment_ids = []
+        upload_base = self._url.rsplit("/messages", 1)[0] + "/attachments"
+        for index, media_path in enumerate(event.media_paths[:6]):
+            media_type = event.media_types[index] if index < len(event.media_types) else ""
+            if not media_type.startswith("image/"):
+                continue
+            response = self._client.put(
+                f"{upload_base}/{event.event_id}/{index}",
+                content=Path(media_path).read_bytes(),
+                headers={
+                    "X-Hermes-Secret": self._secret,
+                    "Content-Type": "application/octet-stream",
+                },
+            )
+            response.raise_for_status()
+            attachment_id = response.json().get("attachment_id")
+            if not isinstance(attachment_id, str) or not attachment_id:
+                raise ValueError("missing attachment id")
+            attachment_ids.append(attachment_id)
+        return attachment_ids
 
 
 def _append_audio_media_directive(reply: str, audio: object) -> str:

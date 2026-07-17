@@ -7,6 +7,7 @@ import pytest
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.writer import commit_operations
+from riji_agent.media.models import MediaAttachment
 
 TEMPLATE = "# {{date}}\n\n## 🌆 Evening\n\n## 🧠 Notes\n"
 
@@ -106,3 +107,60 @@ def test_missing_template_for_new_note_raises(tmp_path: Path) -> None:
     with pytest.raises(DraftError) as err:
         commit_operations(root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "x")])
     assert err.value.code is DraftErrorCode.TEMPLATE_NOT_FOUND
+
+
+def _attachment(path: Path, data: bytes, extension: str = ".png") -> MediaAttachment:
+    import hashlib
+
+    path.write_bytes(data)
+    return MediaAttachment(
+        attachment_id="attachment",
+        event_id="event",
+        part_index=0,
+        sha256=hashlib.sha256(data).hexdigest(),
+        media_type="image/png",
+        extension=extension,
+        size_bytes=len(data),
+        staged_path=str(path),
+    )
+
+
+def test_commits_image_bytes_and_obsidian_embed(tmp_path: Path) -> None:
+    root = _vault(tmp_path)
+    data = b"\x89PNG\r\n\x1a\nwriter-image"
+    attachment = _attachment(tmp_path / "staged.png", data)
+    commit_operations(
+        root,
+        date(2026, 6, 25),
+        [DraftOperation("🌆 Evening", "看展")],
+        attachments=[attachment],
+    )
+
+    asset = root / "assets" / f"{attachment.sha256}.png"
+    assert asset.read_bytes() == data
+    note = (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert f"- 看展\n  ![[{attachment.sha256}.png]]" in note
+
+
+def test_note_replace_failure_rolls_back_new_asset(tmp_path: Path, monkeypatch) -> None:
+    root = _vault(tmp_path)
+    data = b"\x89PNG\r\n\x1a\nrollback-image"
+    attachment = _attachment(tmp_path / "staged.png", data)
+    original_replace = __import__("os").replace
+
+    def fail_note_replace(source, target):
+        if Path(target).suffix == ".md":
+            raise OSError("note replace failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr("riji_agent.drafts.writer.os.replace", fail_note_replace)
+    with pytest.raises(OSError):
+        commit_operations(
+            root,
+            date(2026, 6, 25),
+            [DraftOperation("🌆 Evening", "回滚")],
+            attachments=[attachment],
+        )
+
+    assert not (root / "assets" / f"{attachment.sha256}.png").exists()
+    assert not (root / "daily" / "2026-06-25.md").exists()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Tuple
 
 PRIVATE_CHAT_TYPE = "p2p"
 
@@ -17,3 +18,6 @@ class IncomingChatMessage:
     chat_type: str
     text: str
     platform: str
+    message_type: str = "text"
+    attachment_ids: Tuple[str, ...] = ()
+    reply_to_message_id: str = ""

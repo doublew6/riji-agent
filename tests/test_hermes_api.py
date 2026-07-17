@@ -9,6 +9,7 @@ from riji_agent.hermes.api import build_hermes_router
 from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.memory.store import MemoryStore
+from riji_agent.media.service import MAX_IMAGE_BYTES, MediaService
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.voice.models import VoiceAttachment
 
@@ -65,6 +66,23 @@ def _client_with_voice(tmp_path: Path, voice_service: FakeVoiceReplyService) -> 
     return TestClient(app)
 
 
+def _client_with_media(tmp_path: Path) -> TestClient:
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "mem.sqlite3"),
+        events=EventLog(tmp_path / "events.sqlite3"),
+        responder=FakeResponder(),
+        media_service=MediaService(
+            tmp_path / "media.sqlite3", tmp_path / "media" / "staging"
+        ),
+    )
+    app = FastAPI()
+    app.include_router(build_hermes_router(gateway))
+    return TestClient(app)
+
+
 def _body(text: str, event_id: str = "e1", chat_type: str = "p2p", user: str = "ou_1") -> dict:
     return {
         "event_id": event_id,
@@ -82,6 +100,32 @@ def test_authorized_message_returns_reply(client: TestClient) -> None:
     assert data["persona_id"] == "gentle_reviewer"
     assert "你好" in data["reply"]
     assert "audio" not in data
+
+
+def test_attachment_upload_is_authenticated_validated_and_idempotent(tmp_path: Path) -> None:
+    client = _client_with_media(tmp_path)
+    png = b"\x89PNG\r\n\x1a\n" + b"api-image"
+    url = "/hermes/attachments/event-1/0"
+
+    assert client.put(url, content=png).status_code == 401
+    invalid = client.put(url, content=b"not-image", headers={"X-Hermes-Secret": SECRET})
+    assert invalid.status_code == 400
+    first = client.put(url, content=png, headers={"X-Hermes-Secret": SECRET})
+    second = client.put(url, content=png, headers={"X-Hermes-Secret": SECRET})
+    assert first.status_code == 200
+    assert second.json()["attachment_id"] == first.json()["attachment_id"]
+    assert first.json()["media_type"] == "image/png"
+
+
+def test_attachment_upload_rejects_oversized_body(tmp_path: Path) -> None:
+    client = _client_with_media(tmp_path)
+    body = b"\x89PNG\r\n\x1a\n" + b"x" * MAX_IMAGE_BYTES
+    response = client.put(
+        "/hermes/attachments/event-large/0",
+        content=body,
+        headers={"X-Hermes-Secret": SECRET},
+    )
+    assert response.status_code == 413
 
 
 def test_voice_reply_metadata_is_omitted_without_explicit_request(tmp_path: Path) -> None:

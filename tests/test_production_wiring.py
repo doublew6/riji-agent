@@ -277,6 +277,47 @@ def test_wired_idempotency_and_audit(tmp_path: Path) -> None:
     assert "riji/daily/2026-06-24" in gateway._responder._audit.all_source_ids()
 
 
+def test_production_wiring_records_feishu_image_and_text(tmp_path: Path) -> None:
+    client, _stub, _gateway, root = _stub_client(tmp_path)
+    image_bytes = b"\x89PNG\r\n\x1a\nproduction-wiring-image"
+    uploaded = client.put(
+        "/hermes/attachments/image-event/0",
+        content=image_bytes,
+        headers={"X-Hermes-Secret": SECRET},
+    )
+    assert uploaded.status_code == 200
+
+    received = client.post(
+        "/hermes/messages",
+        json={
+            "event_id": "image-event",
+            "feishu_user_id": "ou_1",
+            "chat_id": "c1",
+            "chat_type": "p2p",
+            "text": "",
+            "message_type": "photo",
+            "attachment_ids": [uploaded.json()["attachment_id"]],
+        },
+        headers={"X-Hermes-Secret": SECRET},
+    )
+    assert received.status_code == 200 and "2 分钟内" in received.json()["reply"]
+
+    preview = _post(
+        client,
+        "帮我记录：production image wiring",
+        event_id="text-event",
+    )
+    assert preview.status_code == 200
+    assert "图片：1 张（PNG）" in preview.json()["reply"]
+    confirmed = _post(client, "确认保存", event_id="confirm-image")
+    assert confirmed.status_code == 200 and "已写入" in confirmed.json()["reply"]
+
+    assets = list((root / "assets").glob("*.png"))
+    assert len(assets) == 1 and assets[0].read_bytes() == image_bytes
+    notes = [path.read_text(encoding="utf-8") for path in (root / "daily").glob("*.md")]
+    assert any("production image wiring" in note and "![[" in note for note in notes)
+
+
 def test_yangming_seed_loaded_once(tmp_path: Path) -> None:
     # Building twice against the same data dir must not re-seed the KB.
     settings = _settings(tmp_path)

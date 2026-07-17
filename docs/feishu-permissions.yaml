@@ -47,18 +47,16 @@ permission_groups:
         token_type: tenant_access_token
         purpose: General message receive permission used by some Hermes Feishu configurations.
 
-  media_and_voice_replies:
-    required: false
-    enabled_when:
-      - RIJI_FEISHU_VOICE_REPLY_MODE=text_and_voice
-    purpose: Upload generated local audio files or other bot media resources to Feishu.
+  media_resources:
+    required: true
+    purpose: Download inbound journal images and optionally upload generated voice replies.
     permissions:
       - scope: im:resource
         token_type: tenant_access_token
-        purpose: Upload and send media resources as the bot.
+        purpose: Download images from received messages and upload bot media resources.
       - scope: im:resource
         token_type: user_access_token
-        purpose: Optional fallback for Feishu/Hermes setups that upload resources with user identity.
+        purpose: Optional fallback only when Hermes uploads resources with user identity.
 
   calendar_creation:
     required: false

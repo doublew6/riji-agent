@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.template import append_to_section, instantiate_daily
 from riji_agent.journal.parser import build_source_id
+from riji_agent.media.models import MediaAttachment
 
 _T = TypeVar("_T")
 _TRANSIENT_IO_ERRNOS = {
@@ -49,6 +51,7 @@ def commit_operations(
     target_date: Date,
     operations: Sequence[DraftOperation],
     *,
+    attachments: Sequence[MediaAttachment] = (),
     retry_attempts: int = 3,
     retry_delay_seconds: float = 0.2,
 ) -> WriteOutcome:
@@ -79,23 +82,35 @@ def commit_operations(
         before_hash = ""
         new_file = True
 
+    rendered_operations = _render_attachments(operations, attachments)
     sections = []
-    for operation in operations:
+    for operation in rendered_operations:
         text = append_to_section(text, operation.section, operation.content)  # may raise
         sections.append(operation.section)
 
     daily_dir.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f"{path.name}.tmp-{uuid.uuid4().hex}"
-    _retry_transient_io(
-        lambda: tmp.write_text(text, encoding="utf-8"),
-        attempts=retry_attempts,
-        delay_seconds=retry_delay_seconds,
-    )
-    _retry_transient_io(
-        lambda: os.replace(tmp, path),
-        attempts=retry_attempts,
-        delay_seconds=retry_delay_seconds,
-    )  # atomic within the same directory
+    staged_assets, created_assets = _prepare_assets(journal_root, attachments)
+    try:
+        _retry_transient_io(
+            lambda: tmp.write_text(text, encoding="utf-8"),
+            attempts=retry_attempts,
+            delay_seconds=retry_delay_seconds,
+        )
+        for asset_tmp, asset_path in staged_assets:
+            os.replace(asset_tmp, asset_path)
+        _retry_transient_io(
+            lambda: os.replace(tmp, path),
+            attempts=retry_attempts,
+            delay_seconds=retry_delay_seconds,
+        )
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        for asset_tmp, _asset_path in staged_assets:
+            asset_tmp.unlink(missing_ok=True)
+        for asset_path in created_assets:
+            asset_path.unlink(missing_ok=True)
+        raise
 
     return WriteOutcome(
         path=path,
@@ -105,6 +120,46 @@ def commit_operations(
         sections=tuple(sections),
         new_file=new_file,
     )
+
+
+def _render_attachments(
+    operations: Sequence[DraftOperation], attachments: Sequence[MediaAttachment]
+) -> Tuple[DraftOperation, ...]:
+    rendered = list(operations)
+    if not attachments:
+        return tuple(rendered)
+    embeds = "\n".join(f"  ![[{item.sha256}{item.extension}]]" for item in attachments)
+    last = rendered[-1]
+    rendered[-1] = DraftOperation(last.section, f"{last.content}\n{embeds}")
+    return tuple(rendered)
+
+
+def _prepare_assets(
+    journal_root: Path, attachments: Sequence[MediaAttachment]
+) -> tuple[list[tuple[Path, Path]], list[Path]]:
+    assets_dir = journal_root / "assets"
+    staged = []
+    created = []
+    if attachments:
+        assets_dir.mkdir(parents=True, exist_ok=True)
+    for item in attachments:
+        source = Path(item.staged_path)
+        if _sha256_bytes(source.read_bytes()) != item.sha256:
+            raise OSError("staged image hash mismatch")
+        target = assets_dir / f"{item.sha256}{item.extension}"
+        if target.exists():
+            if _sha256_bytes(target.read_bytes()) != item.sha256:
+                raise OSError("existing image hash mismatch")
+            continue
+        temporary = assets_dir / f".{target.name}.tmp-{uuid.uuid4().hex}"
+        shutil.copyfile(source, temporary)
+        staged.append((temporary, target))
+        created.append(target)
+    return staged, created
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _retry_transient_io(

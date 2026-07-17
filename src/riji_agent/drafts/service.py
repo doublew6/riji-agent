@@ -28,6 +28,7 @@ from riji_agent.drafts.store import DraftStore
 from riji_agent.drafts.polish import polish_draft_content
 from riji_agent.drafts.writer import commit_operations
 from riji_agent.journal.index import JournalIndex
+from riji_agent.media.models import MediaAttachment
 from riji_agent.timezone import local_journal_timezone
 
 
@@ -61,6 +62,7 @@ class DraftService:
         session_id: str,
         persona_id: str,
         operations: Sequence[DraftOperation],
+        attachments: Sequence[MediaAttachment] = (),
         target_date: Optional[Date] = None,
     ) -> DraftPreview:
         if not operations:
@@ -75,6 +77,7 @@ class DraftService:
             persona_id=persona_id,
             target_date=target,
             operations=polished_operations,
+            attachments=tuple(attachments),
             token=uuid.uuid4().hex,
             status=DraftStatus.AWAITING,
             created_at=now.isoformat(),
@@ -85,6 +88,7 @@ class DraftService:
             draft_id=draft.draft_id,
             target_date=target,
             operations=draft.operations,
+            attachments=draft.attachments,
             token=draft.token,
             expires_at=draft.expires_at,
             preview_text=self._render_preview(draft),
@@ -145,7 +149,12 @@ class DraftService:
             # May raise SECTION_NOT_FOUND / TEMPLATE_NOT_FOUND before any file is
             # touched (os.replace is atomic and the post-write code cannot raise),
             # so a failure means nothing was written.
-            outcome = commit_operations(self._journal_root, draft.target_date, draft.operations)
+            outcome = commit_operations(
+                self._journal_root,
+                draft.target_date,
+                draft.operations,
+                attachments=draft.attachments,
+            )
         except Exception:
             # Release the claim so the user can fix the issue and retry.
             self._store.save(dataclasses.replace(draft, status=DraftStatus.AWAITING))
@@ -178,6 +187,11 @@ class DraftService:
         for operation in draft.operations:
             lines.append(f"[{operation.section}]")
             lines.append(f"  - {operation.content}")
+        if draft.attachments:
+            formats = ", ".join(
+                item.media_type.split("/", 1)[-1].upper() for item in draft.attachments
+            )
+            lines.append(f"图片：{len(draft.attachments)} 张（{formats}）")
         lines.append(
             f"回复「确认保存」写入（30 分钟内有效，仅一次）。"
             f"若期间切换了导师，改用「确认保存 {draft.draft_id}」。"

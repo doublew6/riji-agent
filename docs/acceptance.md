@@ -7,7 +7,7 @@
 | US-01 带来源的日记问答 | 回答列出 `[[riji/...]]` 来源；无证据时明说 | `test_e2e_acceptance.py::test_us01_sourced_qa` |
 | US-02 复杂时间性回顾 | 调用时间范围工具，多轮检索 | `test_e2e_acceptance.py::test_us02_timeline_review`、`test_timeline.py` |
 | US-03 多个人设 | 独立提示词/会话/记忆；切换不泄露私有记忆 | `test_e2e_acceptance.py::test_us03_*`、`test_persona_context.py`、`test_memory.py` |
-| US-04 飞书导师对话与日记记录 | 私聊路由到导师；写入经 patch 预览 + 确认 + 可回链 | `test_e2e_acceptance.py::test_us04_draft_then_confirm_writes`、`test_hermes_*`、`test_drafts_*` |
+| US-04 飞书导师对话与日记记录 | 私聊路由到导师；文字和图片经 patch 预览 + 确认 + 可回链 | `test_e2e_acceptance.py::test_us04_draft_then_confirm_writes`、`test_hermes_media_drafts.py`、`test_media_service.py`、`test_drafts_*` |
 | 王阳明引用 | 引文可追溯、与日记来源分列、不冒充 | `test_e2e_acceptance.py::test_us05_yangming_citation`、`test_yangming.py` |
 | 隐私边界 | private 内容不出云，审计可证 | `test_e2e_acceptance.py::test_private_content_never_egresses` |
 
@@ -20,7 +20,8 @@
 1. 发普通问题 → 收到带 `[[riji/...]]` 来源的回答。
 2. `/导师 直率教练` 切换 → 回复风格切换且会话隔离。
 3. `记录…今天的事` → 收到草稿预览；回复「确认保存」→ 收到写入成功与 wikilink；Obsidian 中可见追加。
-4. `/导师 王阳明 谈谈知行合一` → 回答区分日记事实 / 可核对引文（带出处）/ 现代阐释。
+4. 先发图片再发 `帮我记录：图文测试`，以及先发记录文字再补图片 → 新预览显示正确图片数；回复 `取消记录` 后 vault 无测试残留。
+5. `/导师 王阳明 谈谈知行合一` → 回答区分日记事实 / 可核对引文（带出处）/ 现代阐释。
 
 ## 已知缺口与修复项（不静默忽略）
 

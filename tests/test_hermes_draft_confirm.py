@@ -7,7 +7,7 @@ import riji_agent.hermes.gateway as gateway_module
 from riji_agent.calendar.models import CalendarEventResult
 from riji_agent.calendar.service import CalendarService
 from riji_agent.calendar.store import CalendarDraftStore
-from riji_agent.drafts.models import DraftOperation
+from riji_agent.drafts.models import DraftOperation, DraftStatus
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
 from riji_agent.hermes.errors import AuthError, AuthErrorCode
@@ -16,6 +16,7 @@ from riji_agent.hermes.gateway import (
     HermesGateway,
     is_draft_correction_request,
     parse_confirm_command,
+    parse_draft_preview_reply,
     parse_fast_draft_request,
 )
 from riji_agent.hermes.models import IncomingMessage
@@ -36,6 +37,14 @@ class FakeResponder:
 class ExplodingResponder:
     def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
         raise AssertionError("fast draft path should not call the model")
+
+
+class StaticResponder:
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+    def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
+        return self.reply
 
 
 class FakeCalendarProvider:
@@ -309,6 +318,35 @@ def test_fast_draft_with_arrangement_word_is_not_routed_to_calendar(tmp_path: Pa
     index.close()
 
 
+def test_explicit_record_with_bushi_is_not_treated_as_draft_correction(setup) -> None:
+    gateway, draft_service, root = setup
+    old = draft_service.create_draft(
+        user_id="ou_1",
+        session_id=session_key("ou_1", "gentle_reviewer", "c1"),
+        persona_id="gentle_reviewer",
+        operations=[DraftOperation("Notes", "下午5点参加的面试：旧草稿内容")],
+    )
+    message = (
+        "帮忙记录，今天我发现我在投简历的时候，有一些很机械的动作，"
+        "就是每天固定的投，但是收效不好。\n"
+        "我觉得应该尽多地去分析市场上的需求，并且修改简历，"
+        "这样来提高投简历的效果，而不是乱投"
+    )
+
+    reply = gateway.handle(SECRET, _msg(message, event_id="resume-record"))
+
+    assert "已按你的纠正重新起草" not in reply.text
+    assert "投简历" in reply.text
+    assert "下午5点参加的面试" not in reply.text
+    assert draft_service.get_draft(old.draft_id).status is DraftStatus.CANCELLED
+
+    confirm = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-resume-record"))
+    assert "已写入" in confirm.text
+    text = (root / "daily" / "2026-07-01.md").read_text(encoding="utf-8")
+    assert "投简历" in text
+    assert "下午5点参加的面试" not in text
+
+
 def test_correction_rewrites_latest_draft_to_today_notes(setup) -> None:
     gateway, draft_service, root = setup
     _seed_draft(draft_service, persona="gentle_reviewer")
@@ -387,6 +425,95 @@ def test_commit_filesystem_error_returns_safe_reply(setup, monkeypatch) -> None:
     reply = gateway.handle(SECRET, _msg("确认保存"))
 
     assert "本地日记文件暂时不可读写" in reply.text
+
+
+def test_model_rendered_preview_replaces_stale_pending_draft(tmp_path: Path) -> None:
+    root = tmp_path / "riji"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
+    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"),
+        root,
+        index,
+        now=lambda: datetime(2026, 7, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    old = draft_service.create_draft(
+        user_id="ou_1",
+        session_id=session_key("ou_1", "gentle_reviewer", "c1"),
+        persona_id="gentle_reviewer",
+        operations=[DraftOperation("Notes", "之前的消息")],
+    )
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "d" / "mem.sqlite3"),
+        events=EventLog(tmp_path / "d" / "events.sqlite3"),
+        responder=StaticResponder(
+            "已按你的纠正重新起草：\n"
+            "草稿（2026-07-08）将在 Notes 追加：\n"
+            "- 刚刚发送的消息：投简历时要先分析市场需求，再修改简历。\n"
+            "回复「确认保存」写入。"
+        ),
+        draft_service=draft_service,
+    )
+
+    reply = gateway.handle(SECRET, _msg("帮我重新记录刚才那条", event_id="model-preview"))
+
+    assert "刚刚发送的消息" in reply.text
+    assert "之前的消息" not in reply.text
+    assert draft_service.get_draft(old.draft_id).status is DraftStatus.CANCELLED
+
+    confirm = gateway.handle(SECRET, _msg("确认保存", event_id="confirm-new"))
+    assert "已写入" in confirm.text
+    text = (root / "daily" / "2026-07-08.md").read_text(encoding="utf-8")
+    assert "刚刚发送的消息" in text
+    assert "之前的消息" not in text
+    index.close()
+
+
+def test_unparseable_confirmation_reply_without_pending_draft_is_blocked(tmp_path: Path) -> None:
+    root = tmp_path / "riji"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
+    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"),
+        root,
+        index,
+        now=lambda: datetime(2026, 7, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "d" / "mem.sqlite3"),
+        events=EventLog(tmp_path / "d" / "events.sqlite3"),
+        responder=StaticResponder("我准备好了草稿，回复「确认保存」写入。"),
+        draft_service=draft_service,
+    )
+
+    reply = gateway.handle(SECRET, _msg("重新起草刚才那条", event_id="bad-preview"))
+
+    assert "没有成功创建可确认草稿" in reply.text
+    assert "确认保存" not in reply.text
+    assert draft_service.get_latest_awaiting_for_session(
+        session_key("ou_1", "gentle_reviewer", "c1")
+    ) is None
+    index.close()
+
+
+def test_parse_model_rendered_draft_preview() -> None:
+    parsed = parse_draft_preview_reply(
+        "草稿（2026-07-08）将在 Notes 追加：\n"
+        "• 今天投简历前，先分析市场需求再修改简历。"
+    )
+
+    assert parsed is not None
+    target_date, operations = parsed
+    assert target_date.isoformat() == "2026-07-08"
+    assert operations == (DraftOperation("Notes", "今天投简历前，先分析市场需求再修改简历。"),)
 
 
 def test_parse_confirm_command_recognises_optional_id() -> None:

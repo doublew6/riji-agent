@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Tuple
 
 from riji_agent.im.models import IncomingChatMessage
 
@@ -18,6 +19,9 @@ class FeishuIncomingMessage:
     chat_id: str
     chat_type: str
     text: str
+    message_type: str = "text"
+    attachment_ids: Tuple[str, ...] = ()
+    reply_to_message_id: str = ""
 
     def to_chat_message(self) -> IncomingChatMessage:
         return IncomingChatMessage(
@@ -27,4 +31,7 @@ class FeishuIncomingMessage:
             chat_type=self.chat_type,
             text=self.text,
             platform=FEISHU_PLATFORM,
+            message_type=self.message_type,
+            attachment_ids=self.attachment_ids,
+            reply_to_message_id=self.reply_to_message_id,
         )

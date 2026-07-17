@@ -14,7 +14,7 @@ from riji_agent.calendar.models import (
     CalendarEventDraft,
     CalendarEventResult,
 )
-from riji_agent.calendar.parser import parse_calendar_request
+from riji_agent.calendar.parser import extract_reminder_minutes, parse_calendar_request
 from riji_agent.calendar.providers import CalendarProvider, CalendarProviderError
 from riji_agent.calendar.store import CalendarDraftStore
 from riji_agent.drafts.errors import DraftError
@@ -84,6 +84,24 @@ class CalendarService:
 
     def latest_awaiting_for_session(self, session_id: str) -> Optional[CalendarDraft]:
         return self._store.latest_awaiting_for_session(session_id)
+
+    def update_latest_reminder_from_text(
+        self, *, user_id: str, session_id: str, text: str
+    ) -> Optional[CalendarDraft]:
+        reminder_minutes = extract_reminder_minutes(text)
+        if reminder_minutes is None:
+            return None
+        draft = self._store.latest_awaiting_for_session(session_id)
+        if draft is None or draft.user_id != user_id:
+            return None
+        event = dataclasses.replace(
+            draft.event,
+            reminder_minutes=reminder_minutes,
+            description=f"由 riji-agent 创建；提前 {reminder_minutes} 分钟提醒。",
+        )
+        updated = dataclasses.replace(draft, event=event)
+        self._store.save(updated)
+        return updated
 
     def confirm_latest(self, *, user_id: str, session_id: str) -> CalendarEventResult:
         draft = self._store.latest_awaiting_for_session(session_id)
@@ -186,6 +204,8 @@ def _format_time(value: datetime) -> str:
 def _format_reminder(minutes: Optional[int]) -> str:
     if minutes is None:
         return "无"
+    if minutes % 60 == 0:
+        return f"提前 {minutes // 60} 小时"
     return f"提前 {minutes} 分钟"
 
 

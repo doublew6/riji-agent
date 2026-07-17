@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from datetime import date as Date, datetime
 from typing import Optional, Sequence, Union
 
-from riji_agent.calendar.parser import CalendarParseError, looks_like_calendar_request
+from riji_agent.calendar.parser import (
+    CalendarParseError,
+    extract_reminder_minutes,
+    looks_like_calendar_request,
+)
 from riji_agent.calendar.service import CalendarError, CalendarService
 from riji_agent.drafts.errors import DraftError
 from riji_agent.drafts.models import DraftOperation
@@ -29,6 +33,8 @@ from riji_agent.hermes.routing import route_persona
 from riji_agent.im.models import IncomingChatMessage
 from riji_agent.memory.models import SessionMessage, session_key
 from riji_agent.memory.store import MemoryStore
+from riji_agent.media.models import MediaAttachment, MediaError, MediaErrorCode
+from riji_agent.media.service import MediaService
 from riji_agent.personas.context import build_context
 from riji_agent.personas.models import UnknownPersonaError
 from riji_agent.personas.registry import PersonaRegistry
@@ -39,6 +45,8 @@ from riji_agent.voice.service import VoiceReplyService
 
 _CURRENT_PERSONA_PREF = "current_persona"
 _CONFIRM_COMMANDS = {"确认保存", "确认写入", "/确认", "确认"}
+_CANCEL_DRAFT_COMMANDS = {"取消记录", "取消保存", "/取消记录"}
+_UNSUPPORTED_MEDIA_TYPES = {"audio", "voice", "video", "document", "file"}
 _CONFIRM_CALENDAR_COMMANDS = {"确认创建", "确认日程", "/确认日程"}
 _CONFIRM_EVOLUTION_COMMANDS = {"确认改进", "/确认改进"}
 _REJECT_EVOLUTION_COMMANDS = {"拒绝改进", "取消改进", "/拒绝改进"}
@@ -97,6 +105,8 @@ _VOICE_REPLY_NEGATIONS = (
 _DEFAULT_DRAFT_SECTION = "Notes"
 _NOTES_SECTION = "Notes"
 _LOG = logging.getLogger("riji_agent.hermes.gateway")
+_DRAFT_DATE_RE = re.compile(r"草稿[（(](\d{4}-\d{2}-\d{2})[）)]")
+_INLINE_SECTION_RE = re.compile(r"将在\s+([^\s:：]+)\s+追加")
 _ISO_DATE_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
 _MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
 _DAY_RE = re.compile(r"(?P<day>\d{1,2})\s*(?:日|号)")
@@ -105,6 +115,9 @@ _NOT_X_BUT_Y_RE = re.compile(
 )
 _CHANGE_X_TO_Y_RE = re.compile(
     r"把\s*(?P<old>.+?)\s*改成\s*(?P<new>[^。；;\n]+)"
+)
+_MEDIA_PLACEHOLDER_RE = re.compile(
+    r"(?m)^\s*\[(?:Image|Attachment)(?::[^\]]*)?\]\s*$"
 )
 
 
@@ -128,6 +141,22 @@ def parse_confirm_command(text: str) -> Optional[ConfirmCommand]:
         return None
     draft_id = parts[1] if len(parts) > 1 else None
     return ConfirmCommand(draft_id=draft_id)
+
+
+def _is_calendar_confirmation(text: str) -> bool:
+    stripped = text.strip()
+    connectors = ("然后", "并且", "同时", "再")
+    for command in _CONFIRM_CALENDAR_COMMANDS:
+        if not stripped.startswith(command):
+            continue
+        tail = stripped[len(command) :]
+        if not tail:
+            return True
+        if tail[0].isspace() or tail[0] in "，,。；;：:、！!":
+            return True
+        if tail.startswith(connectors):
+            return True
+    return False
 
 
 def parse_fast_draft_request(text: str) -> Optional[str]:
@@ -189,6 +218,50 @@ def is_draft_correction_request(text: str) -> bool:
         word in lowered for word in ("今天", "日期", "日记日期", "notes", "note")
     ) or bool(_ISO_DATE_RE.search(stripped) or _MONTH_DAY_RE.search(stripped) or _DAY_RE.search(stripped))
     return has_correction and has_date_or_section
+
+
+def reply_requests_draft_confirmation(text: str) -> bool:
+    return "草稿" in text and "确认保存" in text
+
+
+def parse_draft_preview_reply(text: str) -> Optional[tuple[Date, tuple[DraftOperation, ...]]]:
+    """Recover a rendered preview before asking the user to confirm it."""
+    match = _DRAFT_DATE_RE.search(text)
+    if match is None:
+        return None
+    try:
+        target = Date.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+
+    current_section = _inline_section(text) or _DEFAULT_DRAFT_SECTION
+    operations: list[DraftOperation] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("[") and "]" in line:
+            current_section = line[1 : line.index("]")].strip() or _DEFAULT_DRAFT_SECTION
+            continue
+        content = _bullet_content(line)
+        if content:
+            operations.append(DraftOperation(current_section, content))
+    if not operations:
+        return None
+    return target, tuple(operations)
+
+
+def _inline_section(text: str) -> Optional[str]:
+    match = _INLINE_SECTION_RE.search(text)
+    return match.group(1).strip() if match else None
+
+
+def _bullet_content(line: str) -> Optional[str]:
+    markers = ("- ", "* ", "• ")
+    for marker in markers:
+        if line.startswith(marker):
+            return line[len(marker) :].strip() or None
+    return None
 
 
 def _extract_text_replacements(text: str) -> tuple[tuple[str, str], ...]:
@@ -277,6 +350,7 @@ class HermesGateway:
         events: EventLog,
         responder: Responder,
         draft_service: Optional[DraftService] = None,
+        media_service: Optional[MediaService] = None,
         calendar_service: Optional[CalendarService] = None,
         evolution_service: Optional[EvolutionService] = None,
         voice_reply_service: Optional[VoiceReplyService] = None,
@@ -289,6 +363,7 @@ class HermesGateway:
         self._events = events
         self._responder = responder
         self._draft_service = draft_service
+        self._media_service = media_service
         self._calendar_service = calendar_service
         self._evolution_service = evolution_service
         self._voice_reply_service = voice_reply_service
@@ -317,6 +392,9 @@ class HermesGateway:
             current = self._store.get_preferences(user).get(
                 _CURRENT_PERSONA_PREF, self._default_persona
             )
+            media_reply = self._handle_media_message(message, current)
+            if media_reply is not None:
+                return media_reply
             if _is_persona_help_request(message.text):
                 reply = self._persona_help(current)
                 self._events.record(message.event_id, current, reply)
@@ -334,18 +412,20 @@ class HermesGateway:
 
             # Explicit, user-driven commit: the model can never confirm a draft.
             if self._draft_service is not None:
+                if message.text.strip() in _CANCEL_DRAFT_COMMANDS:
+                    return self._cancel_latest_draft(message, current)
                 confirm = parse_confirm_command(message.text)
                 if confirm is not None:
                     return self._confirm_draft(message, current, confirm.draft_id)
+
+                draft_content = parse_fast_draft_request(message.text)
+                if draft_content is not None:
+                    return self._create_fast_draft(message, current, draft_content)
 
                 if is_draft_correction_request(message.text):
                     corrected = self._correct_latest_draft(message, current)
                     if corrected is not None:
                         return corrected
-
-                draft_content = parse_fast_draft_request(message.text)
-                if draft_content is not None:
-                    return self._create_fast_draft(message, current, draft_content)
 
             try:
                 route = route_persona(message.text, registry=self._registry, current_persona=current)
@@ -364,6 +444,16 @@ class HermesGateway:
                     )
 
             return self._respond(message, route.persona_id, route.text)
+
+    def stage_attachment(
+        self, shared_secret: str, event_id: str, part_index: int, data: bytes
+    ) -> MediaAttachment:
+        verify_shared_secret(shared_secret, self._secret)
+        if self._media_service is None:
+            raise MediaError(
+                MediaErrorCode.ATTACHMENT_NOT_FOUND, "image staging is unavailable"
+            )
+        return self._media_service.stage(event_id, part_index, data)
 
     # --------------------------------------------------------------- internals
 
@@ -391,6 +481,7 @@ class HermesGateway:
             question,
             allowed_tools=assembled.persona.allowed_tools,
         )
+        reply = self._ensure_confirmable_draft_reply(message, persona_id, reply)
         _LOG.info(
             "gateway responder completed request_id=%s persona=%s elapsed_ms=%.1f",
             request_id,
@@ -407,6 +498,38 @@ class HermesGateway:
                 voice=assembled.persona.voice_for(self._voice_provider_id()),
             )
         return GatewayReply(request_id, persona_id, reply, deduplicated=False, audio=audio)
+
+    def _ensure_confirmable_draft_reply(
+        self, message: IncomingChatMessage, persona_id: str, reply: str
+    ) -> str:
+        if self._draft_service is None or not reply_requests_draft_confirmation(reply):
+            return reply
+
+        user, chat = message.user_id, message.chat_id
+        session_id = session_key(user, persona_id, chat)
+        previous = self._draft_service.get_latest_awaiting_for_session(session_id)
+        parsed = parse_draft_preview_reply(reply)
+        if parsed is None:
+            if previous is not None:
+                return reply
+            _LOG.warning("blocked draft confirmation reply without a parseable draft")
+            return "我没有成功创建可确认草稿。请重新发送「帮我记录：...」，我会生成真正可保存的草稿。"
+
+        target_date, operations = parsed
+        attachments = self._capture_attachments(message, persona_id)
+        preview = self._draft_service.create_draft(
+            user_id=user,
+            session_id=session_id,
+            persona_id=persona_id,
+            operations=operations,
+            attachments=attachments,
+            target_date=target_date,
+        )
+        if previous is not None:
+            self._draft_service.cancel_draft(previous.draft_id, user_id=user)
+        self._bind_capture(message, persona_id, preview.draft_id, preview.attachments)
+        _LOG.info("materialized model-rendered draft preview draft_id=%s", preview.draft_id)
+        return preview.preview_text
 
     def _voice_provider_id(self) -> str:
         if self._voice_reply_service is None:
@@ -434,8 +557,12 @@ class HermesGateway:
         assert self._calendar_service is not None
         user, chat = message.user_id, message.chat_id
         session_id = session_key(user, persona_id, chat)
-        first = message.text.strip().split(maxsplit=1)[0] if message.text.strip() else ""
-        if first in _CONFIRM_CALENDAR_COMMANDS:
+        if _is_calendar_confirmation(message.text):
+            self._calendar_service.update_latest_reminder_from_text(
+                user_id=user,
+                session_id=session_id,
+                text=message.text,
+            )
             try:
                 result = self._calendar_service.confirm_latest(
                     user_id=user,
@@ -453,6 +580,30 @@ class HermesGateway:
                 reply = f"已创建日程：{result.title}（{result.start_at:%Y-%m-%d %H:%M}）。{linked}"
             self._events.record(message.event_id, persona_id, reply)
             return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+        pending = self._calendar_service.latest_awaiting_for_session(session_id)
+        reminder_minutes = extract_reminder_minutes(message.text)
+        if (
+            pending is not None
+            and reminder_minutes is not None
+            and not looks_like_calendar_request(message.text)
+        ):
+            updated = self._calendar_service.update_latest_reminder_from_text(
+                user_id=user,
+                session_id=session_id,
+                text=message.text,
+            )
+            if updated is not None:
+                reply = (
+                    "已更新刚才日程的提醒：\n"
+                    + self._calendar_service.render_preview(updated)
+                )
+                self._events.record(message.event_id, persona_id, reply)
+                return GatewayReply(
+                    uuid.uuid4().hex,
+                    persona_id,
+                    reply,
+                    deduplicated=False,
+                )
         if not looks_like_calendar_request(message.text):
             return None
         try:
@@ -521,17 +672,32 @@ class HermesGateway:
         return messages.get(exc.code, "创建日程失败，请稍后重试。")
 
     def _create_fast_draft(
-        self, message: IncomingChatMessage, persona_id: str, content: str
+        self,
+        message: IncomingChatMessage,
+        persona_id: str,
+        content: str,
+        attachments: Sequence[MediaAttachment] = (),
     ) -> GatewayReply:
         user, chat = message.user_id, message.chat_id
         request_id = uuid.uuid4().hex
         started = time.perf_counter()
+        session_id = session_key(user, persona_id, chat)
+        if self._media_service is not None:
+            capture = self._media_service.open_capture(session_id, user)
+            attachments = tuple(attachments) or capture
+        if attachments:
+            content = _MEDIA_PLACEHOLDER_RE.sub("", content).strip()
+        previous = self._draft_service.get_latest_awaiting_for_session(session_id)
         preview = self._draft_service.create_draft(
             user_id=user,
-            session_id=session_key(user, persona_id, chat),
+            session_id=session_id,
             persona_id=persona_id,
             operations=[DraftOperation(_DEFAULT_DRAFT_SECTION, content)],
+            attachments=attachments,
         )
+        if previous is not None:
+            self._draft_service.cancel_draft(previous.draft_id, user_id=user)
+        self._bind_capture(message, persona_id, preview.draft_id, preview.attachments)
         reply = preview.preview_text
         self._store.append_message(user, persona_id, chat, "user", message.text)
         self._store.append_message(user, persona_id, chat, "assistant", reply)
@@ -579,10 +745,12 @@ class HermesGateway:
             session_id=session_id,
             persona_id=persona_id,
             operations=corrected_ops,
+            attachments=previous.attachments,
             target_date=corrected_date,
         )
         if previous_was_awaiting:
             self._draft_service.cancel_draft(previous.draft_id, user_id=user)
+        self._bind_capture(message, persona_id, preview.draft_id, preview.attachments)
         reply = "已按你的纠正重新起草：\n" + preview.preview_text
         self._store.append_message(user, persona_id, chat, "user", message.text)
         self._store.append_message(user, persona_id, chat, "assistant", reply)
@@ -626,11 +794,92 @@ class HermesGateway:
                 draft.draft_id, user_id=user, token=draft.token
             )
             reply = f"已写入 [[{result.source_id}]]（{result.target_date.isoformat()}）。"
+            if self._media_service is not None:
+                self._media_service.finish_draft(draft.draft_id)
         except DraftError as exc:
             reply = self._draft_error_reply(exc)
         except OSError:
             _LOG.warning("draft commit failed with filesystem error")
             reply = "写入失败：本地日记文件暂时不可读写，请稍后重试。"
+        self._events.record(message.event_id, persona_id, reply)
+        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+
+    def _handle_media_message(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> Optional[GatewayReply]:
+        if message.message_type in _UNSUPPORTED_MEDIA_TYPES:
+            return self._simple_reply(message, persona_id, "目前只支持记录图片，不支持视频、文件或语音。")
+        if not message.attachment_ids:
+            return None
+        if self._media_service is None or self._draft_service is None:
+            return self._simple_reply(message, persona_id, "图片记录功能尚未启用。")
+
+        attachments = self._media_service.resolve(message.event_id, message.attachment_ids)
+        session_id = session_key(message.user_id, persona_id, message.chat_id)
+        capture = self._media_service.add_to_capture(
+            session_id, message.user_id, attachments
+        )
+        content = parse_fast_draft_request(message.text)
+        if content is not None:
+            return self._create_fast_draft(message, persona_id, content, capture)
+
+        previous = self._draft_service.get_latest_awaiting_for_session(session_id)
+        if previous is not None and self._media_service.capture_draft_id(session_id) == previous.draft_id:
+            preview = self._draft_service.create_draft(
+                user_id=message.user_id,
+                session_id=session_id,
+                persona_id=persona_id,
+                operations=previous.operations,
+                attachments=capture,
+                target_date=previous.target_date,
+            )
+            self._draft_service.cancel_draft(previous.draft_id, user_id=message.user_id)
+            self._media_service.bind_capture(session_id, preview.draft_id)
+            return self._simple_reply(message, persona_id, "已把图片加入草稿：\n" + preview.preview_text)
+
+        reply = f"已收到 {len(capture)} 张图片。请在 2 分钟内发送「帮我记录：...」合并成图文草稿。"
+        return self._simple_reply(message, persona_id, reply)
+
+    def _cancel_latest_draft(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> GatewayReply:
+        session_id = session_key(message.user_id, persona_id, message.chat_id)
+        draft = self._draft_service.get_latest_awaiting_for_session(session_id)
+        cancelled = bool(
+            draft and self._draft_service.cancel_draft(draft.draft_id, user_id=message.user_id)
+        )
+        if draft is not None and self._media_service is not None:
+            self._media_service.discard_draft(draft.draft_id)
+        elif self._media_service is not None:
+            self._media_service.clear_capture(session_id, discard=True)
+        reply = "已取消这条记录草稿。" if cancelled or draft else "没有待取消的记录草稿。"
+        return self._simple_reply(message, persona_id, reply)
+
+    def _capture_attachments(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> tuple[MediaAttachment, ...]:
+        if self._media_service is None:
+            return ()
+        return self._media_service.active_capture(
+            session_key(message.user_id, persona_id, message.chat_id)
+        )
+
+    def _bind_capture(
+        self,
+        message: IncomingChatMessage,
+        persona_id: str,
+        draft_id: str,
+        attachments: Sequence[MediaAttachment],
+    ) -> None:
+        if self._media_service is not None:
+            self._media_service.bind_capture(
+                session_key(message.user_id, persona_id, message.chat_id), draft_id
+            )
+            self._media_service.bind_attachments(draft_id, attachments)
+
+    def _simple_reply(
+        self, message: IncomingChatMessage, persona_id: str, reply: str
+    ) -> GatewayReply:
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
 

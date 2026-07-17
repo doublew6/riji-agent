@@ -97,6 +97,12 @@ stateDiagram-v2
   indexed --> [*]
 ```
 
+图片先由受 shared secret 保护的 loopback 接口写入
+`RIJI_DATA_DIR/media/staging`，并绑定到飞书事件与草稿。单条消息最多 6 张、每张
+最多 10 MiB，仅接受 JPEG、PNG、WebP、GIF、BMP 的实际文件签名。图片与文字可
+来自同一富文本，也可在同一私聊会话的 120 秒窗口内先后到达。补图会生成新草稿
+与新确认 token，并取消旧草稿；取消、过期或成功提交后清理暂存文件。
+
 ### 5.1 Patch 是唯一的写入意图
 
 模型不能返回整篇日记或任意文件路径，只能生成受限 patch：
@@ -131,6 +137,7 @@ riji-agent 校验 patch、生成 diff、显示预览并负责执行；不信任�
 - 目标日期不存在：基于 `riji/templates/daily.md` 实例化当天文件，再追加 patch。
 - 找不到目标标题或内容无法安全写入表格：拒绝提交，保留草稿，要求人工调整；不猜测位置。
 - 写入通过临时文件和原子替换完成。成功后记录 `before_hash`、`after_hash`、区块和 `request_id`，再触发增量索引。
+- 图文草稿提交时先校验暂存图片哈希，再把内容寻址图片写入 `riji/assets/`，并以缩进的 Obsidian embed 跟随对应 bullet；Markdown 写入失败时回滚本次新增图片。
 
 确认 token 绑定 `draft_id + feishu_user_id + session_id`，30 分钟失效且只能使用一次。群聊永远不可创建或确认草稿。
 

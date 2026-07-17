@@ -8,6 +8,7 @@ server is started.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -81,6 +82,65 @@ def test_returns_reply_text_from_response() -> None:
 
     bridge = _bridge(handler)
     assert bridge.forward(_event()) == "[gentle_reviewer] 你好"
+
+
+def test_uploads_images_before_forwarding_message(tmp_path: Path) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.jpg"
+    first.write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+    second.write_bytes(b"\xff\xd8\xffsecond")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "PUT":
+            index = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={"attachment_id": f"attachment-{index}"})
+        return httpx.Response(200, json={"reply": "ok"})
+
+    bridge = _bridge(handler)
+    event = FeishuMessageEvent(
+        "image-event",
+        "ou_1",
+        "oc_1",
+        "p2p",
+        "帮我记录：图文",
+        message_type="photo",
+        media_paths=(str(first), str(second)),
+        media_types=("image/png", "image/jpeg"),
+        reply_to_message_id="om_parent",
+    )
+
+    assert bridge.forward(event) == "ok"
+    assert [request.method for request in requests] == ["PUT", "PUT", "POST"]
+    assert requests[0].content == first.read_bytes()
+    assert requests[1].content == second.read_bytes()
+    body = json.loads(requests[2].content)
+    assert body["attachment_ids"] == ["attachment-0", "attachment-1"]
+    assert body["message_type"] == "photo"
+    assert body["reply_to_message_id"] == "om_parent"
+    assert all(request.headers["X-Hermes-Secret"] == SECRET for request in requests)
+
+
+def test_image_upload_failure_returns_safe_reply_without_forwarding(tmp_path: Path) -> None:
+    image = tmp_path / "image.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    methods = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(400, json={"error": "unsupported_type"})
+
+    bridge = _bridge(handler)
+    reply = bridge.forward(
+        FeishuMessageEvent(
+            "event", "ou_1", "oc_1", "p2p", "", media_paths=(str(image),),
+            media_types=("image/png",),
+        )
+    )
+    assert methods == ["PUT"]
+    assert SECRET not in reply
+    assert reply
 
 
 def test_appends_voice_media_directive_from_audio_response() -> None:

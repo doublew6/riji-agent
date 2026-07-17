@@ -7,6 +7,8 @@ from datetime import date as Date
 from enum import Enum
 from typing import Optional, Tuple
 
+from riji_agent.media.models import MediaAttachment
+
 
 class DraftStatus(str, Enum):
     AWAITING = "awaiting_confirmation"
@@ -32,6 +34,7 @@ class Draft:
     persona_id: str
     target_date: Date
     operations: Tuple[DraftOperation, ...]
+    attachments: Tuple[MediaAttachment, ...]
     token: str
     status: DraftStatus
     created_at: str
@@ -45,6 +48,7 @@ class DraftPreview:
     draft_id: str
     target_date: Date
     operations: Tuple[DraftOperation, ...]
+    attachments: Tuple[MediaAttachment, ...]
     token: str
     expires_at: str
     preview_text: str

@@ -31,6 +31,7 @@ from riji_agent.journal.embedding import embedder_from_settings
 from riji_agent.journal.index import JournalIndex
 from riji_agent.journal.scheduler import IndexScheduler
 from riji_agent.memory.store import MemoryStore
+from riji_agent.media.service import MediaService
 from riji_agent.models.registry import build_model_provider
 from riji_agent.models.types import LLMProvider
 from riji_agent.personas.registry import PersonaRegistry
@@ -136,6 +137,9 @@ def build_production_gateway(
     draft_service = DraftService(
         DraftStore(data_dir / "drafts.sqlite3"), settings.journal_root, journal_index
     )
+    media_service = MediaService(
+        data_dir / "media.sqlite3", data_dir / "media" / "staging"
+    )
 
     # Wang Yangming KB is a separate corpus; seed it once on first start.
     yangming = YangmingKB(data_dir / "yangming.sqlite3")
@@ -159,6 +163,7 @@ def build_production_gateway(
         events=EventLog(data_dir / "events.sqlite3"),
         responder=responder,
         draft_service=draft_service,
+        media_service=media_service,
         calendar_service=build_calendar_service(settings, journal_index=journal_index),
         evolution_service=EvolutionService(EvolutionProposalStore(data_dir / "evolution.sqlite3")),
         voice_reply_service=build_voice_reply_service(settings),
