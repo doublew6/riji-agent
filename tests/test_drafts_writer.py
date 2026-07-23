@@ -1,5 +1,6 @@
 from datetime import date
 from errno import EAGAIN
+import os
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,9 @@ def _vault(tmp_path: Path) -> Path:
 
 def test_creates_new_note_from_template(tmp_path: Path) -> None:
     root = _vault(tmp_path)
-    outcome = commit_operations(root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "评审通过")])
+    outcome = commit_operations(
+        root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "评审通过")]
+    )
 
     path = root / "daily" / "2026-06-25.md"
     assert outcome.new_file is True
@@ -52,7 +55,9 @@ def test_retries_transient_template_read_failure(tmp_path: Path, monkeypatch) ->
 
     assert outcome.source_id == "riji/daily/2026-06-25"
     assert calls["count"] == 1
-    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_persistent_transient_read_failure_still_raises_without_partial_file(
@@ -86,11 +91,43 @@ def test_appends_to_existing_note(tmp_path: Path) -> None:
     daily.parent.mkdir(parents=True)
     daily.write_text("# 2026-06-25\n\n## 🌆 Evening\n- 早先的事\n", encoding="utf-8")
 
-    outcome = commit_operations(root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "later")])
+    outcome = commit_operations(
+        root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "later")]
+    )
     assert outcome.new_file is False
     assert outcome.before_hash != ""
     text = daily.read_text(encoding="utf-8")
     assert "- 早先的事" in text and "- later" in text
+
+
+def test_ignored_atomic_replace_never_reports_write_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _vault(tmp_path)
+    daily = root / "daily" / "2026-06-25.md"
+    daily.parent.mkdir(parents=True)
+    original = "# 2026-06-25\n\n## 🌆 Evening\n- 原有内容\n\n## 🧠 Notes\n"
+    daily.write_text(original, encoding="utf-8")
+    original_replace = os.replace
+
+    def ignore_note_replace(source, destination):
+        if Path(destination).suffix == ".md":
+            Path(source).unlink()
+            return None
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", ignore_note_replace)
+    with pytest.raises(DraftError) as err:
+        commit_operations(
+            root,
+            date(2026, 6, 25),
+            [DraftOperation("🌆 Evening", "评审通过")],
+            retry_attempts=2,
+            retry_delay_seconds=0,
+        )
+
+    assert err.value.code is DraftErrorCode.WRITE_VERIFICATION_FAILED
+    assert daily.read_text(encoding="utf-8") == original
 
 
 def test_missing_section_does_not_write_a_partial_file(tmp_path: Path) -> None:

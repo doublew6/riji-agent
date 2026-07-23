@@ -1,5 +1,5 @@
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -31,7 +31,9 @@ def _vault(tmp_path: Path) -> Path:
 @pytest.fixture
 def setup(tmp_path: Path):
     root = _vault(tmp_path)
-    index = JournalIndex(database_path=tmp_path / "data" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "data" / "idx.sqlite3", journal_root=root
+    )
     store = DraftStore(tmp_path / "data" / "drafts.sqlite3")
     clock = Clock(datetime(2026, 6, 25, 8, 0, tzinfo=timezone.utc))
     service = DraftService(store, root, index, ttl_minutes=30, now=clock)
@@ -56,7 +58,9 @@ def test_create_then_commit_writes_and_indexes(setup) -> None:
     result = service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
 
     assert result.source_id == "riji/daily/2026-06-25"
-    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(
+        encoding="utf-8"
+    )
     assert index.get("riji/daily/2026-06-25") is not None  # incremental index ran
 
 
@@ -95,7 +99,9 @@ def test_commit_succeeds_when_post_write_index_update_fails(setup, monkeypatch) 
     result = service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
 
     assert result.source_id == "riji/daily/2026-06-25"
-    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(
+        encoding="utf-8"
+    )
     assert store.get(preview.draft_id).status is DraftStatus.COMMITTED
 
 
@@ -115,6 +121,20 @@ def test_transient_write_error_keeps_draft_awaiting(setup, monkeypatch) -> None:
 
     assert not (root / "daily" / "2026-06-25.md").exists()
     assert store.get(preview.draft_id).status is DraftStatus.AWAITING
+
+
+def test_latest_commit_verification_detects_later_file_loss(setup) -> None:
+    service, _store, _index, root, _clock = setup
+    preview = _create(service)
+    service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    verified = service.verify_latest_commit(user_id="u1", session_id="u1:gentle:c1")
+    assert verified is not None and verified.verified is True
+
+    note = root / "daily" / "2026-06-25.md"
+    note.write_text(TEMPLATE.replace("{{date}}", "2026-06-25"), encoding="utf-8")
+    missing = service.verify_latest_commit(user_id="u1", session_id="u1:gentle:c1")
+    assert missing is not None and missing.verified is False
 
 
 def test_unconfirmed_draft_never_writes(setup) -> None:
@@ -138,7 +158,9 @@ def test_other_user_cannot_confirm(setup) -> None:
     service, _store, _index, root, _clock = setup
     preview = _create(service)
     with pytest.raises(DraftError) as err:
-        service.commit_draft(preview.draft_id, user_id="someone_else", token=preview.token)
+        service.commit_draft(
+            preview.draft_id, user_id="someone_else", token=preview.token
+        )
     assert err.value.code is DraftErrorCode.WRONG_USER
     assert not (root / "daily" / "2026-06-25.md").exists()
 
@@ -165,7 +187,9 @@ def test_duplicate_confirmation_does_not_write_twice(setup) -> None:
 def test_missing_section_keeps_draft_awaiting(setup) -> None:
     service, store, _index, root, _clock = setup
     preview = service.create_draft(
-        user_id="u1", session_id="s", persona_id="gentle",
+        user_id="u1",
+        session_id="s",
+        persona_id="gentle",
         operations=[DraftOperation("不存在的区块", "x")],
     )
     with pytest.raises(DraftError) as err:
@@ -224,7 +248,9 @@ def test_concurrent_workers_commit_exactly_once(tmp_path) -> None:
         service = make_service(tag)
         barrier.wait()  # maximise overlap on the claim
         try:
-            result = service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+            result = service.commit_draft(
+                preview.draft_id, user_id="u1", token=preview.token
+            )
             with lock:
                 results.append(result)
         except DraftError as exc:

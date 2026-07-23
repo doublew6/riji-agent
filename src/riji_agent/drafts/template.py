@@ -62,3 +62,22 @@ def append_to_section(text: str, section: str, content: str) -> str:
 
     lines.insert(insert_at, f"- {content}")
     return "\n".join(lines)
+
+
+def section_contains_entry(text: str, section: str, content: str) -> bool:
+    """Return whether an exact appended entry exists inside its target section."""
+    lines = text.split("\n")
+    try:
+        heading_idx = _find_section(lines, section)
+    except DraftError:
+        return False
+    heading_level = _heading_level(lines[heading_idx])
+    end = len(lines)
+    for index in range(heading_idx + 1, len(lines)):
+        level = _heading_level(lines[index])
+        if level is not None and level <= heading_level:
+            end = index
+            break
+    section_text = "\n".join(lines[heading_idx + 1 : end])
+    entry = f"- {content}"
+    return f"\n{entry}\n" in f"\n{section_text}\n"

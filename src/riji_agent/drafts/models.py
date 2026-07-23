@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date as Date
 from enum import Enum
 from typing import Optional, Tuple
@@ -62,3 +62,11 @@ class CommitResult:
     sections: Tuple[str, ...]
     after_hash: str
     new_file: bool
+
+
+@dataclass(frozen=True)
+class CommitVerification:
+    draft_id: str
+    source_id: str
+    target_date: Date
+    verified: bool

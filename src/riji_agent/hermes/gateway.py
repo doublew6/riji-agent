@@ -113,12 +113,23 @@ _DAY_RE = re.compile(r"(?P<day>\d{1,2})\s*(?:日|号)")
 _NOT_X_BUT_Y_RE = re.compile(
     r"不是\s*(?P<old>.+?)\s*[，,、\s]*(?:而?是|应该是|改成)\s*(?P<new>[^。；;\n]+)"
 )
-_CHANGE_X_TO_Y_RE = re.compile(
-    r"把\s*(?P<old>.+?)\s*改成\s*(?P<new>[^。；;\n]+)"
+_CHANGE_X_TO_Y_RE = re.compile(r"把\s*(?P<old>.+?)\s*改成\s*(?P<new>[^。；;\n]+)")
+_MEDIA_PLACEHOLDER_RE = re.compile(r"(?m)^\s*\[(?:Image|Attachment)(?::[^\]]*)?\]\s*$")
+_WRITE_VERIFICATION_PHRASES = (
+    "有没有写入",
+    "是否写入",
+    "正确写入",
+    "写入成功",
+    "有没有保存",
+    "是否保存",
+    "保存成功",
+    "日记里面没有看到",
+    "日记里没有看到",
+    "日记里面没看到",
+    "日记里没看到",
+    "实际上我并没有看到",
 )
-_MEDIA_PLACEHOLDER_RE = re.compile(
-    r"(?m)^\s*\[(?:Image|Attachment)(?::[^\]]*)?\]\s*$"
-)
+_WRITE_SUCCESS_CLAIMS = ("已写入", "已经写入", "正确写入", "保存成功")
 
 
 @dataclass(frozen=True)
@@ -213,10 +224,16 @@ def is_draft_correction_request(text: str) -> bool:
     if _extract_text_replacements(stripped):
         return True
     lowered = stripped.lower()
-    has_correction = any(word in lowered for word in ("不对", "错", "不是", "纠正", "改成"))
+    has_correction = any(
+        word in lowered for word in ("不对", "错", "不是", "纠正", "改成")
+    )
     has_date_or_section = any(
         word in lowered for word in ("今天", "日期", "日记日期", "notes", "note")
-    ) or bool(_ISO_DATE_RE.search(stripped) or _MONTH_DAY_RE.search(stripped) or _DAY_RE.search(stripped))
+    ) or bool(
+        _ISO_DATE_RE.search(stripped)
+        or _MONTH_DAY_RE.search(stripped)
+        or _DAY_RE.search(stripped)
+    )
     return has_correction and has_date_or_section
 
 
@@ -224,7 +241,14 @@ def reply_requests_draft_confirmation(text: str) -> bool:
     return "草稿" in text and "确认保存" in text
 
 
-def parse_draft_preview_reply(text: str) -> Optional[tuple[Date, tuple[DraftOperation, ...]]]:
+def is_draft_verification_request(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    return any(phrase in compact for phrase in _WRITE_VERIFICATION_PHRASES)
+
+
+def parse_draft_preview_reply(
+    text: str,
+) -> Optional[tuple[Date, tuple[DraftOperation, ...]]]:
     """Recover a rendered preview before asking the user to confirm it."""
     match = _DRAFT_DATE_RE.search(text)
     if match is None:
@@ -241,7 +265,9 @@ def parse_draft_preview_reply(text: str) -> Optional[tuple[Date, tuple[DraftOper
         if not line:
             continue
         if line.startswith("[") and "]" in line:
-            current_section = line[1 : line.index("]")].strip() or _DEFAULT_DRAFT_SECTION
+            current_section = (
+                line[1 : line.index("]")].strip() or _DEFAULT_DRAFT_SECTION
+            )
             continue
         content = _bullet_content(line)
         if content:
@@ -281,12 +307,18 @@ def _clean_replacement_part(value: str) -> str:
 
 def _has_date_or_section_correction(text: str) -> bool:
     stripped = text.strip().lower()
-    return any(word in stripped for word in ("今天", "日期", "日记日期", "notes", "note")) or bool(
-        _ISO_DATE_RE.search(stripped) or _MONTH_DAY_RE.search(stripped) or _DAY_RE.search(stripped)
+    return any(
+        word in stripped for word in ("今天", "日期", "日记日期", "notes", "note")
+    ) or bool(
+        _ISO_DATE_RE.search(stripped)
+        or _MONTH_DAY_RE.search(stripped)
+        or _DAY_RE.search(stripped)
     )
 
 
-def _apply_text_replacements(content: str, replacements: Sequence[tuple[str, str]]) -> str:
+def _apply_text_replacements(
+    content: str, replacements: Sequence[tuple[str, str]]
+) -> str:
     corrected = content
     for old, new in replacements:
         corrected = corrected.replace(old, new)
@@ -319,7 +351,9 @@ def _extract_corrected_date(text: str, *, today: Optional[Date] = None) -> Date:
         if parsed is not None:
             return parsed
     if match := _DAY_RE.search(text):
-        parsed = _date_or_none(local_today.year, local_today.month, int(match.group("day")))
+        parsed = _date_or_none(
+            local_today.year, local_today.month, int(match.group("day"))
+        )
         if parsed is not None:
             return parsed
     return local_today
@@ -398,7 +432,9 @@ class HermesGateway:
             if _is_persona_help_request(message.text):
                 reply = self._persona_help(current)
                 self._events.record(message.event_id, current, reply)
-                return GatewayReply(uuid.uuid4().hex, current, reply, deduplicated=False)
+                return GatewayReply(
+                    uuid.uuid4().hex, current, reply, deduplicated=False
+                )
 
             if self._evolution_service is not None:
                 evolution = self._handle_evolution(message, current)
@@ -418,6 +454,11 @@ class HermesGateway:
                 if confirm is not None:
                     return self._confirm_draft(message, current, confirm.draft_id)
 
+                if is_draft_verification_request(message.text):
+                    verification = self._verify_latest_draft(message, current)
+                    if verification is not None:
+                        return verification
+
                 draft_content = parse_fast_draft_request(message.text)
                 if draft_content is not None:
                     return self._create_fast_draft(message, current, draft_content)
@@ -428,14 +469,20 @@ class HermesGateway:
                         return corrected
 
             try:
-                route = route_persona(message.text, registry=self._registry, current_persona=current)
+                route = route_persona(
+                    message.text, registry=self._registry, current_persona=current
+                )
             except UnknownPersonaError:
                 reply = self._persona_help(current, prefix="未识别的导师。")
                 self._events.record(message.event_id, current, reply)
-                return GatewayReply(uuid.uuid4().hex, current, reply, deduplicated=False)
+                return GatewayReply(
+                    uuid.uuid4().hex, current, reply, deduplicated=False
+                )
 
             if route.persist:
-                self._store.set_preference(user, _CURRENT_PERSONA_PREF, route.persona_id)
+                self._store.set_preference(
+                    user, _CURRENT_PERSONA_PREF, route.persona_id
+                )
                 if not route.text:
                     reply = self._persona_switch_reply(route.persona_id)
                     self._events.record(message.event_id, route.persona_id, reply)
@@ -463,7 +510,11 @@ class HermesGateway:
         user, chat = message.user_id, message.chat_id
         request_id = uuid.uuid4().hex
         assembled = build_context(
-            self._store, self._registry, user_id=user, persona_id=persona_id, chat_id=chat
+            self._store,
+            self._registry,
+            user_id=user,
+            persona_id=persona_id,
+            chat_id=chat,
         )
         context = ToolContext(
             request_id=request_id,
@@ -481,6 +532,7 @@ class HermesGateway:
             question,
             allowed_tools=assembled.persona.allowed_tools,
         )
+        reply = self._block_unverified_write_claim(message, persona_id, reply)
         reply = self._ensure_confirmable_draft_reply(message, persona_id, reply)
         _LOG.info(
             "gateway responder completed request_id=%s persona=%s elapsed_ms=%.1f",
@@ -497,7 +549,27 @@ class HermesGateway:
                 request_id,
                 voice=assembled.persona.voice_for(self._voice_provider_id()),
             )
-        return GatewayReply(request_id, persona_id, reply, deduplicated=False, audio=audio)
+        return GatewayReply(
+            request_id, persona_id, reply, deduplicated=False, audio=audio
+        )
+
+    def _block_unverified_write_claim(
+        self, message: IncomingChatMessage, persona_id: str, reply: str
+    ) -> str:
+        if not is_draft_verification_request(message.text):
+            return reply
+        if not any(claim in reply for claim in _WRITE_SUCCESS_CLAIMS):
+            return reply
+        if self._draft_service is None:
+            return "当前没有可用的本地草稿服务，因此不能声称已经写入。"
+        result = self._draft_service.verify_latest_commit(
+            user_id=message.user_id,
+            session_id=session_key(message.user_id, persona_id, message.chat_id),
+        )
+        if result is not None and result.verified:
+            return reply
+        _LOG.warning("blocked unverified journal write success claim")
+        return "没有找到可从目标日记文件核验的已提交草稿，因此不能声称已经写入。"
 
     def _ensure_confirmable_draft_reply(
         self, message: IncomingChatMessage, persona_id: str, reply: str
@@ -528,7 +600,9 @@ class HermesGateway:
         if previous is not None:
             self._draft_service.cancel_draft(previous.draft_id, user_id=user)
         self._bind_capture(message, persona_id, preview.draft_id, preview.attachments)
-        _LOG.info("materialized model-rendered draft preview draft_id=%s", preview.draft_id)
+        _LOG.info(
+            "materialized model-rendered draft preview draft_id=%s", preview.draft_id
+        )
         return preview.preview_text
 
     def _voice_provider_id(self) -> str:
@@ -548,7 +622,9 @@ class HermesGateway:
                 voice=voice,
             )
         except Exception:
-            _LOG.warning("voice reply generation failed request_id=%s", request_id, exc_info=True)
+            _LOG.warning(
+                "voice reply generation failed request_id=%s", request_id, exc_info=True
+            )
             return None
 
     def _handle_calendar(
@@ -629,7 +705,9 @@ class HermesGateway:
         first = stripped.split(maxsplit=1)[0] if stripped else ""
         if first in _CONFIRM_EVOLUTION_COMMANDS:
             try:
-                self._evolution_service.approve_latest(user_id=user, session_id=session_id)
+                self._evolution_service.approve_latest(
+                    user_id=user, session_id=session_id
+                )
                 reply = "已标记为已批准。具体代码、权限或自动化变更仍需单独实现和审查。"
             except EvolutionError:
                 reply = "没有待确认的改进提案。"
@@ -637,7 +715,9 @@ class HermesGateway:
             return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
         if first in _REJECT_EVOLUTION_COMMANDS:
             try:
-                self._evolution_service.reject_latest(user_id=user, session_id=session_id)
+                self._evolution_service.reject_latest(
+                    user_id=user, session_id=session_id
+                )
                 reply = "已拒绝这条改进提案。"
             except EvolutionError:
                 reply = "没有待确认的改进提案。"
@@ -768,7 +848,10 @@ class HermesGateway:
         return _extract_corrected_date(text)
 
     def _confirm_draft(
-        self, message: IncomingChatMessage, persona_id: str, draft_id: Optional[str] = None
+        self,
+        message: IncomingChatMessage,
+        persona_id: str,
+        draft_id: Optional[str] = None,
     ) -> GatewayReply:
         user, chat = message.user_id, message.chat_id
         if draft_id is not None:
@@ -779,7 +862,9 @@ class HermesGateway:
             if draft is None or draft.user_id != user:
                 reply = "未找到该草稿（可能已过期或不属于你）。"
                 self._events.record(message.event_id, persona_id, reply)
-                return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+                return GatewayReply(
+                    uuid.uuid4().hex, persona_id, reply, deduplicated=False
+                )
         else:
             draft = self._draft_service.get_latest_awaiting_for_session(
                 session_key(user, persona_id, chat)
@@ -787,13 +872,18 @@ class HermesGateway:
             if draft is None:
                 reply = "没有待确认的草稿。"
                 self._events.record(message.event_id, persona_id, reply)
-                return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+                return GatewayReply(
+                    uuid.uuid4().hex, persona_id, reply, deduplicated=False
+                )
 
         try:
             result = self._draft_service.commit_draft(
                 draft.draft_id, user_id=user, token=draft.token
             )
-            reply = f"已写入 [[{result.source_id}]]（{result.target_date.isoformat()}）。"
+            reply = (
+                f"已写入并重新读取校验 [[{result.source_id}]]"
+                f"（{result.target_date.isoformat()}）。"
+            )
             if self._media_service is not None:
                 self._media_service.finish_draft(draft.draft_id)
         except DraftError as exc:
@@ -804,17 +894,43 @@ class HermesGateway:
         self._events.record(message.event_id, persona_id, reply)
         return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
 
+    def _verify_latest_draft(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> Optional[GatewayReply]:
+        result = self._draft_service.verify_latest_commit(
+            user_id=message.user_id,
+            session_id=session_key(message.user_id, persona_id, message.chat_id),
+        )
+        if result is None:
+            return None
+        if result.verified:
+            reply = (
+                f"已从目标日记文件重新读取并校验，内容确实存在于 "
+                f"[[{result.source_id}]]（{result.target_date.isoformat()}）。"
+            )
+        else:
+            reply = (
+                "重新读取目标日记文件后，未找到这次草稿的完整内容。"
+                "因此不能确认写入成功，也不应以之前的成功回复为准。"
+            )
+        self._events.record(message.event_id, persona_id, reply)
+        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+
     def _handle_media_message(
         self, message: IncomingChatMessage, persona_id: str
     ) -> Optional[GatewayReply]:
         if message.message_type in _UNSUPPORTED_MEDIA_TYPES:
-            return self._simple_reply(message, persona_id, "目前只支持记录图片，不支持视频、文件或语音。")
+            return self._simple_reply(
+                message, persona_id, "目前只支持记录图片，不支持视频、文件或语音。"
+            )
         if not message.attachment_ids:
             return None
         if self._media_service is None or self._draft_service is None:
             return self._simple_reply(message, persona_id, "图片记录功能尚未启用。")
 
-        attachments = self._media_service.resolve(message.event_id, message.attachment_ids)
+        attachments = self._media_service.resolve(
+            message.event_id, message.attachment_ids
+        )
         session_id = session_key(message.user_id, persona_id, message.chat_id)
         capture = self._media_service.add_to_capture(
             session_id, message.user_id, attachments
@@ -824,7 +940,10 @@ class HermesGateway:
             return self._create_fast_draft(message, persona_id, content, capture)
 
         previous = self._draft_service.get_latest_awaiting_for_session(session_id)
-        if previous is not None and self._media_service.capture_draft_id(session_id) == previous.draft_id:
+        if (
+            previous is not None
+            and self._media_service.capture_draft_id(session_id) == previous.draft_id
+        ):
             preview = self._draft_service.create_draft(
                 user_id=message.user_id,
                 session_id=session_id,
@@ -835,7 +954,9 @@ class HermesGateway:
             )
             self._draft_service.cancel_draft(previous.draft_id, user_id=message.user_id)
             self._media_service.bind_capture(session_id, preview.draft_id)
-            return self._simple_reply(message, persona_id, "已把图片加入草稿：\n" + preview.preview_text)
+            return self._simple_reply(
+                message, persona_id, "已把图片加入草稿：\n" + preview.preview_text
+            )
 
         reply = f"已收到 {len(capture)} 张图片。请在 2 分钟内发送「帮我记录：...」合并成图文草稿。"
         return self._simple_reply(message, persona_id, reply)
@@ -846,13 +967,18 @@ class HermesGateway:
         session_id = session_key(message.user_id, persona_id, message.chat_id)
         draft = self._draft_service.get_latest_awaiting_for_session(session_id)
         cancelled = bool(
-            draft and self._draft_service.cancel_draft(draft.draft_id, user_id=message.user_id)
+            draft
+            and self._draft_service.cancel_draft(
+                draft.draft_id, user_id=message.user_id
+            )
         )
         if draft is not None and self._media_service is not None:
             self._media_service.discard_draft(draft.draft_id)
         elif self._media_service is not None:
             self._media_service.clear_capture(session_id, discard=True)
-        reply = "已取消这条记录草稿。" if cancelled or draft else "没有待取消的记录草稿。"
+        reply = (
+            "已取消这条记录草稿。" if cancelled or draft else "没有待取消的记录草稿。"
+        )
         return self._simple_reply(message, persona_id, reply)
 
     def _capture_attachments(
@@ -890,6 +1016,7 @@ class HermesGateway:
             "not_awaiting": "该草稿已处理过，未重复写入。",
             "section_not_found": "找不到对应的日记区块，已保留草稿，请调整后重试。",
             "template_not_found": "缺少日记模板，无法新建当天日记。",
+            "write_verification_failed": "写入后重新读取校验失败，未确认保存成功；草稿已保留。",
             "wrong_user": "只能由本人确认。",
         }
         return messages.get(exc.code.value, f"写入失败：{exc.message}")
@@ -903,9 +1030,13 @@ class HermesGateway:
         lines.append("")
         lines.append("可用导师：")
         for persona in self._registry.all():
-            lines.append(f"- {persona.name}（{persona.persona_id}）：{persona.description}")
+            lines.append(
+                f"- {persona.name}（{persona.persona_id}）：{persona.description}"
+            )
         lines.append("")
-        lines.append("切换默认导师：发送 `/导师 导师名`，例如 `/导师 王阳明` 或 `/导师 温柔回顾者`。")
+        lines.append(
+            "切换默认导师：发送 `/导师 导师名`，例如 `/导师 王阳明` 或 `/导师 温柔回顾者`。"
+        )
         lines.append(
             "只让下一条消息使用某位导师：发送 `@导师名 内容`，例如 `@直率教练 帮我复盘这件事`"
             " 或 `@未来的我 给我一个提醒`。"
@@ -921,7 +1052,9 @@ class HermesGateway:
         )
 
 
-def _normalize_message(message: Union[IncomingChatMessage, IncomingMessage]) -> IncomingChatMessage:
+def _normalize_message(
+    message: Union[IncomingChatMessage, IncomingMessage],
+) -> IncomingChatMessage:
     if isinstance(message, IncomingChatMessage):
         return message
     return message.to_chat_message()

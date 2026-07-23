@@ -20,7 +20,11 @@ from typing import Callable, Sequence, Tuple, TypeVar
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import DraftOperation
-from riji_agent.drafts.template import append_to_section, instantiate_daily
+from riji_agent.drafts.template import (
+    append_to_section,
+    instantiate_daily,
+    section_contains_entry,
+)
 from riji_agent.journal.parser import build_source_id
 from riji_agent.media.models import MediaAttachment
 
@@ -29,6 +33,11 @@ _TRANSIENT_IO_ERRNOS = {
     errno.EAGAIN,
     errno.EBUSY,
     getattr(errno, "EDEADLK", errno.EAGAIN),
+}
+_UNSUPPORTED_SYNC_ERRNOS = {
+    errno.EINVAL,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
 }
 
 
@@ -72,7 +81,9 @@ def commit_operations(
     else:
         template_path = journal_root / "templates" / "daily.md"
         if not template_path.is_file():
-            raise DraftError(DraftErrorCode.TEMPLATE_NOT_FOUND, "daily template is missing")
+            raise DraftError(
+                DraftErrorCode.TEMPLATE_NOT_FOUND, "daily template is missing"
+            )
         template = _retry_transient_io(
             lambda: template_path.read_text(encoding="utf-8"),
             attempts=retry_attempts,
@@ -85,7 +96,9 @@ def commit_operations(
     rendered_operations = _render_attachments(operations, attachments)
     sections = []
     for operation in rendered_operations:
-        text = append_to_section(text, operation.section, operation.content)  # may raise
+        text = append_to_section(
+            text, operation.section, operation.content
+        )  # may raise
         sections.append(operation.section)
 
     daily_dir.mkdir(parents=True, exist_ok=True)
@@ -97,12 +110,24 @@ def commit_operations(
             attempts=retry_attempts,
             delay_seconds=retry_delay_seconds,
         )
+        _sync_file(tmp)
         for asset_tmp, asset_path in staged_assets:
             os.replace(asset_tmp, asset_path)
+            _sync_file(asset_path)
+        if staged_assets:
+            _sync_directory(staged_assets[0][1].parent)
         _retry_transient_io(
             lambda: os.replace(tmp, path),
             attempts=retry_attempts,
             delay_seconds=retry_delay_seconds,
+        )
+        _sync_directory(path.parent)
+        _verify_written_text(
+            path,
+            text,
+            rendered_operations,
+            retry_attempts,
+            retry_delay_seconds,
         )
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -120,6 +145,72 @@ def commit_operations(
         sections=tuple(sections),
         new_file=new_file,
     )
+
+
+def verify_committed_operations(
+    path: Path,
+    operations: Sequence[DraftOperation],
+    *,
+    attachments: Sequence[MediaAttachment] = (),
+) -> bool:
+    """Re-read a note and verify every committed patch in its target section."""
+    rendered = _render_attachments(operations, attachments)
+    try:
+        text = _retry_transient_io(
+            lambda: path.read_text(encoding="utf-8"),
+            attempts=3,
+            delay_seconds=0.2,
+        )
+    except OSError:
+        return False
+    return all(
+        section_contains_entry(text, operation.section, operation.content)
+        for operation in rendered
+    )
+
+
+def _verify_written_text(
+    path: Path,
+    expected: str,
+    operations: Sequence[DraftOperation],
+    attempts: int,
+    delay_seconds: float,
+) -> None:
+    observed = _retry_transient_io(
+        lambda: path.read_text(encoding="utf-8"),
+        attempts=attempts,
+        delay_seconds=delay_seconds,
+    )
+    entries_present = all(
+        section_contains_entry(observed, operation.section, operation.content)
+        for operation in operations
+    )
+    if _sha256(observed) != _sha256(expected) or not entries_present:
+        raise DraftError(
+            DraftErrorCode.WRITE_VERIFICATION_FAILED,
+            "journal write did not pass read-back verification",
+        )
+
+
+def _sync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        _retry_transient_io(
+            lambda: os.fsync(handle.fileno()), attempts=3, delay_seconds=0.05
+        )
+
+
+def _sync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        if exc.errno not in _UNSUPPORTED_SYNC_ERRNOS:
+            raise
+    finally:
+        os.close(descriptor)
 
 
 def _render_attachments(

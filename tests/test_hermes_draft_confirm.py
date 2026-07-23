@@ -7,6 +7,7 @@ import riji_agent.hermes.gateway as gateway_module
 from riji_agent.calendar.models import CalendarEventResult
 from riji_agent.calendar.service import CalendarService
 from riji_agent.calendar.store import CalendarDraftStore
+from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import DraftOperation, DraftStatus
 from riji_agent.drafts.service import DraftService
 from riji_agent.drafts.store import DraftStore
@@ -15,6 +16,7 @@ from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.gateway import (
     HermesGateway,
     is_draft_correction_request,
+    is_draft_verification_request,
     parse_confirm_command,
     parse_draft_preview_reply,
     parse_fast_draft_request,
@@ -30,12 +32,16 @@ TEMPLATE = "# {{date}}\n\n## 🌆 Evening\n\n## 🧠 Notes\n"
 
 
 class FakeResponder:
-    def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
+    def respond(
+        self, context, system_prompt, history, question, allowed_tools=()
+    ) -> str:
         return "ok"
 
 
 class ExplodingResponder:
-    def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
+    def respond(
+        self, context, system_prompt, history, question, allowed_tools=()
+    ) -> str:
         raise AssertionError("fast draft path should not call the model")
 
 
@@ -43,7 +49,9 @@ class StaticResponder:
     def __init__(self, reply: str) -> None:
         self.reply = reply
 
-    def respond(self, context, system_prompt, history, question, allowed_tools=()) -> str:
+    def respond(
+        self, context, system_prompt, history, question, allowed_tools=()
+    ) -> str:
         return self.reply
 
 
@@ -64,7 +72,13 @@ class FakeCalendarProvider:
 
 
 def _msg(text: str, *, event_id: str = "e1", chat_type: str = "p2p") -> IncomingMessage:
-    return IncomingMessage(event_id=event_id, feishu_user_id="ou_1", chat_id="c1", chat_type=chat_type, text=text)
+    return IncomingMessage(
+        event_id=event_id,
+        feishu_user_id="ou_1",
+        chat_id="c1",
+        chat_type=chat_type,
+        text=text,
+    )
 
 
 @pytest.fixture
@@ -72,7 +86,9 @@ def setup(tmp_path: Path):
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
     draft_service = DraftService(
         DraftStore(tmp_path / "d" / "drafts.sqlite3"),
         root,
@@ -168,7 +184,9 @@ def test_fast_draft_request_creates_preview_without_model_call(tmp_path: Path) -
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
     draft_service = DraftService(
         DraftStore(tmp_path / "d" / "drafts.sqlite3"),
         root,
@@ -206,8 +224,12 @@ def test_fast_draft_request_preview_is_lightly_polished(tmp_path: Path) -> None:
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
-    draft_service = DraftService(DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index
+    )
     gateway = HermesGateway(
         hermes_secret=SECRET,
         allowed_user_ids={"ou_1"},
@@ -220,7 +242,9 @@ def test_fast_draft_request_preview_is_lightly_polished(tmp_path: Path) -> None:
 
     reply = gateway.handle(
         SECRET,
-        _msg("帮我记录一下，今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140"),
+        _msg(
+            "帮我记录一下，今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140"
+        ),
     )
 
     assert "今天我去三里屯理发了，今天的费用还是120，明天之后就会涨到140" in reply.text
@@ -228,11 +252,15 @@ def test_fast_draft_request_preview_is_lightly_polished(tmp_path: Path) -> None:
     index.close()
 
 
-def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: Path, monkeypatch) -> None:
+def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(
+    tmp_path: Path, monkeypatch
+) -> None:
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
     draft_service = DraftService(
         DraftStore(tmp_path / "d" / "drafts.sqlite3"),
         root,
@@ -250,7 +278,9 @@ def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: 
     )
     reply = gateway.handle(
         SECRET,
-        _msg("帮忙记录，目前一个匿名团队出现了两条变化：\n1. 一个人调整岗位；\n2. 其他成员离开。"),
+        _msg(
+            "帮忙记录，目前一个匿名团队出现了两条变化：\n1. 一个人调整岗位；\n2. 其他成员离开。"
+        ),
     )
 
     assert "草稿（2026-07-01）" in reply.text
@@ -267,11 +297,15 @@ def test_fast_draft_request_recognises_bangmang_and_confirms_to_notes(tmp_path: 
     index.close()
 
 
-def test_fast_draft_with_arrangement_word_is_not_routed_to_calendar(tmp_path: Path) -> None:
+def test_fast_draft_with_arrangement_word_is_not_routed_to_calendar(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
     draft_service = DraftService(
         DraftStore(tmp_path / "d" / "drafts.sqlite3"),
         root,
@@ -353,7 +387,10 @@ def test_correction_rewrites_latest_draft_to_today_notes(setup) -> None:
 
     revised = gateway.handle(
         SECRET,
-        _msg("这个时间是不对的。今天是29号，并且默认放在 Notes 这个框架下", event_id="fix"),
+        _msg(
+            "这个时间是不对的。今天是29号，并且默认放在 Notes 这个框架下",
+            event_id="fix",
+        ),
     )
     assert "已按你的纠正重新起草" in revised.text
     assert "[Notes]" in revised.text
@@ -389,7 +426,9 @@ def test_content_correction_supersedes_old_draft_before_plain_confirm(setup) -> 
     assert "地点甲" not in text
 
 
-def test_correction_after_wrong_date_commit_creates_confirmable_draft(setup, monkeypatch) -> None:
+def test_correction_after_wrong_date_commit_creates_confirmable_draft(
+    setup, monkeypatch
+) -> None:
     gateway, draft_service, root = setup
     monkeypatch.setattr(
         gateway_module,
@@ -427,11 +466,59 @@ def test_commit_filesystem_error_returns_safe_reply(setup, monkeypatch) -> None:
     assert "本地日记文件暂时不可读写" in reply.text
 
 
+def test_commit_readback_failure_never_returns_success(setup, monkeypatch) -> None:
+    gateway, draft_service, _root = setup
+    _seed_draft(draft_service)
+
+    def fail_commit(*_args, **_kwargs):
+        raise DraftError(
+            DraftErrorCode.WRITE_VERIFICATION_FAILED,
+            "read-back verification failed",
+        )
+
+    monkeypatch.setattr(draft_service, "commit_draft", fail_commit)
+    reply = gateway.handle(SECRET, _msg("确认保存"))
+
+    assert "已写入" not in reply.text
+    assert "重新读取校验失败" in reply.text
+
+
+def test_write_check_re_reads_file_instead_of_calling_model(setup) -> None:
+    gateway, draft_service, _root = setup
+    _seed_draft(draft_service)
+    gateway.handle(SECRET, _msg("确认保存", event_id="confirm"))
+
+    reply = gateway.handle(
+        SECRET,
+        _msg("检查一下有没有正确写入，我在日记里面没有看到这段文字", event_id="check"),
+    )
+
+    assert "已从目标日记文件重新读取并校验" in reply.text
+
+
+def test_write_check_reports_missing_content_without_model_claim(setup) -> None:
+    gateway, draft_service, root = setup
+    _seed_draft(draft_service)
+    gateway.handle(SECRET, _msg("确认保存", event_id="confirm"))
+    note = next((root / "daily").glob("*.md"))
+    note.write_text(TEMPLATE.replace("{{date}}", note.stem), encoding="utf-8")
+
+    reply = gateway.handle(
+        SECRET,
+        _msg("你再确认一下，实际上我并没有看到", event_id="check"),
+    )
+
+    assert "未找到这次草稿的完整内容" in reply.text
+    assert "不能确认写入成功" in reply.text
+
+
 def test_model_rendered_preview_replaces_stale_pending_draft(tmp_path: Path) -> None:
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
     draft_service = DraftService(
         DraftStore(tmp_path / "d" / "drafts.sqlite3"),
         root,
@@ -459,7 +546,9 @@ def test_model_rendered_preview_replaces_stale_pending_draft(tmp_path: Path) -> 
         draft_service=draft_service,
     )
 
-    reply = gateway.handle(SECRET, _msg("帮我重新记录刚才那条", event_id="model-preview"))
+    reply = gateway.handle(
+        SECRET, _msg("帮我重新记录刚才那条", event_id="model-preview")
+    )
 
     assert "刚刚发送的消息" in reply.text
     assert "之前的消息" not in reply.text
@@ -473,11 +562,15 @@ def test_model_rendered_preview_replaces_stale_pending_draft(tmp_path: Path) -> 
     index.close()
 
 
-def test_unparseable_confirmation_reply_without_pending_draft_is_blocked(tmp_path: Path) -> None:
+def test_unparseable_confirmation_reply_without_pending_draft_is_blocked(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "riji"
     (root / "templates").mkdir(parents=True)
     (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
-    index = JournalIndex(database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root)
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
     draft_service = DraftService(
         DraftStore(tmp_path / "d" / "drafts.sqlite3"),
         root,
@@ -498,9 +591,12 @@ def test_unparseable_confirmation_reply_without_pending_draft_is_blocked(tmp_pat
 
     assert "没有成功创建可确认草稿" in reply.text
     assert "确认保存" not in reply.text
-    assert draft_service.get_latest_awaiting_for_session(
-        session_key("ou_1", "gentle_reviewer", "c1")
-    ) is None
+    assert (
+        draft_service.get_latest_awaiting_for_session(
+            session_key("ou_1", "gentle_reviewer", "c1")
+        )
+        is None
+    )
     index.close()
 
 
@@ -513,7 +609,9 @@ def test_parse_model_rendered_draft_preview() -> None:
     assert parsed is not None
     target_date, operations = parsed
     assert target_date.isoformat() == "2026-07-08"
-    assert operations == (DraftOperation("Notes", "今天投简历前，先分析市场需求再修改简历。"),)
+    assert operations == (
+        DraftOperation("Notes", "今天投简历前，先分析市场需求再修改简历。"),
+    )
 
 
 def test_parse_confirm_command_recognises_optional_id() -> None:
@@ -527,10 +625,21 @@ def test_parse_confirm_command_recognises_optional_id() -> None:
 
 def test_parse_fast_draft_request_extracts_explicit_content() -> None:
     assert parse_fast_draft_request("记录一下今天：完成了发布") == "今天：完成了发布"
-    assert parse_fast_draft_request("帮我记录\n\n今天升级了示例服务") == "今天升级了示例服务"
+    assert (
+        parse_fast_draft_request("帮我记录\n\n今天升级了示例服务")
+        == "今天升级了示例服务"
+    )
     assert parse_fast_draft_request("确认一下我昨天写了什么") is None
 
 
 def test_is_draft_correction_request() -> None:
     assert is_draft_correction_request("这个时间是不对的。今天是29号，放 Notes")
     assert not is_draft_correction_request("今天写了什么？")
+
+
+def test_is_draft_verification_request() -> None:
+    assert is_draft_verification_request(
+        "检查一下有没有正确写入，我在日记里面没有看到这段文字"
+    )
+    assert is_draft_verification_request("你再确认一下，实际上我并没有看到")
+    assert not is_draft_verification_request("确认一下我昨天写了什么")

@@ -6,7 +6,7 @@ import json
 import sqlite3
 from datetime import date as Date
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from riji_agent.drafts.models import Draft, DraftOperation, DraftStatus
 from riji_agent.media.models import MediaAttachment
@@ -55,7 +55,10 @@ class DraftStore:
                 draft.session_id,
                 draft.persona_id,
                 draft.target_date.isoformat(),
-                json.dumps([[o.section, o.content] for o in draft.operations], ensure_ascii=False),
+                json.dumps(
+                    [[o.section, o.content] for o in draft.operations],
+                    ensure_ascii=False,
+                ),
                 json.dumps([_attachment_to_dict(item) for item in draft.attachments]),
                 draft.token,
                 draft.status.value,
@@ -97,6 +100,14 @@ class DraftStore:
         ).fetchone()
         return self._to_draft(row) if row else None
 
+    def get_latest_committed_for_session(self, session_id: str) -> Optional[Draft]:
+        row = self._conn.execute(
+            "SELECT * FROM drafts WHERE session_id = ? AND status = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (session_id, DraftStatus.COMMITTED.value),
+        ).fetchone()
+        return self._to_draft(row) if row else None
+
     def get_latest_for_session(self, session_id: str) -> Optional[Draft]:
         row = self._conn.execute(
             "SELECT * FROM drafts WHERE session_id = ? "
@@ -132,7 +143,8 @@ class DraftStore:
 
     def _ensure_attachments_column(self) -> None:
         columns = {
-            row["name"] for row in self._conn.execute("PRAGMA table_info(drafts)").fetchall()
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(drafts)").fetchall()
         }
         if "attachments" not in columns:
             self._conn.execute(
