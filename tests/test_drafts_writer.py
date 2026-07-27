@@ -242,6 +242,27 @@ def test_repeated_cloud_reversion_never_reports_success(
     assert daily.read_text(encoding="utf-8") == original
 
 
+def test_fsync_uses_a_writable_file_descriptor(tmp_path: Path, monkeypatch) -> None:
+    root = _vault(tmp_path)
+    real_open = Path.open
+    opened_modes = []
+
+    def record_open(path, mode="r", *args, **kwargs):
+        if ".tmp-" in path.name:
+            opened_modes.append(mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", record_open)
+    commit_operations(
+        root,
+        date(2026, 6, 25),
+        [DraftOperation("🌆 Evening", "评审通过")],
+        policy=WritePolicy(stability_checks=1, stability_delay_seconds=0),
+    )
+
+    assert "r+b" in opened_modes
+
+
 def test_missing_section_does_not_write_a_partial_file(tmp_path: Path) -> None:
     root = _vault(tmp_path)
     with pytest.raises(DraftError) as err:

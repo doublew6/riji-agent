@@ -239,7 +239,9 @@ def _read_verified_text(path: Path, policy: WritePolicy) -> str:
 
 
 def _sync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows maps fsync to the CRT commit call, which requires a writable
+    # descriptor even though syncing does not modify the file contents.
+    with path.open("r+b") as handle:
         _retry_transient_io(
             lambda: os.fsync(handle.fileno()), attempts=3, delay_seconds=0.05
         )
