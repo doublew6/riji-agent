@@ -6,7 +6,7 @@ import json
 import sqlite3
 from datetime import date as Date
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from riji_agent.drafts.models import Draft, DraftOperation, DraftStatus
 
@@ -52,7 +52,10 @@ class DraftStore:
                 draft.session_id,
                 draft.persona_id,
                 draft.target_date.isoformat(),
-                json.dumps([[o.section, o.content] for o in draft.operations], ensure_ascii=False),
+                json.dumps(
+                    [[o.section, o.content] for o in draft.operations],
+                    ensure_ascii=False,
+                ),
                 draft.token,
                 draft.status.value,
                 draft.created_at,
@@ -98,6 +101,14 @@ class DraftStore:
             "SELECT * FROM drafts WHERE session_id = ? "
             "ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (session_id,),
+        ).fetchone()
+        return self._to_draft(row) if row else None
+
+    def get_latest_committed_for_session(self, session_id: str) -> Optional[Draft]:
+        row = self._conn.execute(
+            "SELECT * FROM drafts WHERE session_id = ? AND status = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (session_id, DraftStatus.COMMITTED.value),
         ).fetchone()
         return self._to_draft(row) if row else None
 
