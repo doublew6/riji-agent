@@ -104,17 +104,8 @@ _VOICE_REPLY_NEGATIONS = (
 )
 _DEFAULT_DRAFT_SECTION = "Notes"
 _NOTES_SECTION = "Notes"
-_LOG = logging.getLogger("riji_agent.hermes.gateway")
 _DRAFT_DATE_RE = re.compile(r"草稿[（(](\d{4}-\d{2}-\d{2})[）)]")
 _INLINE_SECTION_RE = re.compile(r"将在\s+([^\s:：]+)\s+追加")
-_ISO_DATE_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
-_MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
-_DAY_RE = re.compile(r"(?P<day>\d{1,2})\s*(?:日|号)")
-_NOT_X_BUT_Y_RE = re.compile(
-    r"不是\s*(?P<old>.+?)\s*[，,、\s]*(?:而?是|应该是|改成)\s*(?P<new>[^。；;\n]+)"
-)
-_CHANGE_X_TO_Y_RE = re.compile(r"把\s*(?P<old>.+?)\s*改成\s*(?P<new>[^。；;\n]+)")
-_MEDIA_PLACEHOLDER_RE = re.compile(r"(?m)^\s*\[(?:Image|Attachment)(?::[^\]]*)?\]\s*$")
 _WRITE_VERIFICATION_PHRASES = (
     "有没有写入",
     "是否写入",
@@ -127,9 +118,27 @@ _WRITE_VERIFICATION_PHRASES = (
     "日记里没有看到",
     "日记里面没看到",
     "日记里没看到",
+    "文档里面没有看到",
+    "文档里没有看到",
+    "文档里面没看到",
+    "文档里没看到",
+    "存进去",
+    "写进去",
+    "有没有录入",
+    "是否录入",
+    "录入成功",
     "实际上我并没有看到",
 )
 _WRITE_SUCCESS_CLAIMS = ("已写入", "已经写入", "正确写入", "保存成功")
+_LOG = logging.getLogger("riji_agent.hermes.gateway")
+_ISO_DATE_RE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b")
+_MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)?")
+_DAY_RE = re.compile(r"(?P<day>\d{1,2})\s*(?:日|号)")
+_NOT_X_BUT_Y_RE = re.compile(
+    r"不是\s*(?P<old>.+?)\s*[，,、\s]*(?:而?是|应该是|改成)\s*(?P<new>[^。；;\n]+)"
+)
+_CHANGE_X_TO_Y_RE = re.compile(r"把\s*(?P<old>.+?)\s*改成\s*(?P<new>[^。；;\n]+)")
+_MEDIA_PLACEHOLDER_RE = re.compile(r"(?m)^\s*\[(?:Image|Attachment)(?::[^\]]*)?\]\s*$")
 
 
 @dataclass(frozen=True)
@@ -897,13 +906,27 @@ class HermesGateway:
     def _verify_latest_draft(
         self, message: IncomingChatMessage, persona_id: str
     ) -> Optional[GatewayReply]:
-        result = self._draft_service.verify_latest_commit(
-            user_id=message.user_id,
-            session_id=session_key(message.user_id, persona_id, message.chat_id),
-        )
+        try:
+            result = self._draft_service.ensure_latest_commit(
+                user_id=message.user_id,
+                session_id=session_key(message.user_id, persona_id, message.chat_id),
+            )
+        except (DraftError, OSError):
+            _LOG.warning("confirmed draft repair failed", exc_info=True)
+            reply = "检测到已确认内容缺失，但自动恢复没有通过连续校验；不会误报保存成功。"
+            self._events.record(message.event_id, persona_id, reply)
+            return GatewayReply(
+                uuid.uuid4().hex, persona_id, reply, deduplicated=False
+            )
         if result is None:
             return None
-        if result.verified:
+        if result.repaired:
+            reply = (
+                f"检测到同步回写覆盖，已自动恢复并连续校验 "
+                f"[[{result.source_id}]]（{result.target_date.isoformat()}），"
+                "无需再次确认保存。"
+            )
+        elif result.verified:
             reply = (
                 f"已从目标日记文件重新读取并校验，内容确实存在于 "
                 f"[[{result.source_id}]]（{result.target_date.isoformat()}）。"

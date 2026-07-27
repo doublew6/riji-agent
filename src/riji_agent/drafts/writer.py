@@ -51,6 +51,14 @@ class WriteOutcome:
     new_file: bool
 
 
+@dataclass(frozen=True)
+class WritePolicy:
+    io_attempts: int = 3
+    io_delay_seconds: float = 0.2
+    stability_checks: int = 3
+    stability_delay_seconds: float = 0.5
+
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -61,8 +69,7 @@ def commit_operations(
     operations: Sequence[DraftOperation],
     *,
     attachments: Sequence[MediaAttachment] = (),
-    retry_attempts: int = 3,
-    retry_delay_seconds: float = 0.2,
+    policy: WritePolicy = WritePolicy(),
 ) -> WriteOutcome:
     if not operations:
         raise DraftError(DraftErrorCode.NO_OPERATIONS, "draft has no operations")
@@ -73,8 +80,8 @@ def commit_operations(
     if path.exists():
         text = _retry_transient_io(
             lambda: path.read_text(encoding="utf-8"),
-            attempts=retry_attempts,
-            delay_seconds=retry_delay_seconds,
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
         )
         before_hash = _sha256(text)
         new_file = False
@@ -86,51 +93,27 @@ def commit_operations(
             )
         template = _retry_transient_io(
             lambda: template_path.read_text(encoding="utf-8"),
-            attempts=retry_attempts,
-            delay_seconds=retry_delay_seconds,
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
         )
         text = instantiate_daily(template, target_date)
         before_hash = ""
         new_file = True
 
     rendered_operations = _render_attachments(operations, attachments)
-    sections = []
-    for operation in rendered_operations:
-        text = append_to_section(
-            text, operation.section, operation.content
-        )  # may raise
-        sections.append(operation.section)
+    text = _apply_missing_operations(text, rendered_operations)
 
     daily_dir.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f"{path.name}.tmp-{uuid.uuid4().hex}"
     staged_assets, created_assets = _prepare_assets(journal_root, attachments)
     try:
-        _retry_transient_io(
-            lambda: tmp.write_text(text, encoding="utf-8"),
-            attempts=retry_attempts,
-            delay_seconds=retry_delay_seconds,
-        )
-        _sync_file(tmp)
-        for asset_tmp, asset_path in staged_assets:
-            os.replace(asset_tmp, asset_path)
-            _sync_file(asset_path)
-        if staged_assets:
-            _sync_directory(staged_assets[0][1].parent)
-        _retry_transient_io(
-            lambda: os.replace(tmp, path),
-            attempts=retry_attempts,
-            delay_seconds=retry_delay_seconds,
-        )
-        _sync_directory(path.parent)
-        _verify_written_text(
+        _commit_assets(staged_assets, policy)
+        persisted_text = _persist_and_verify(
             path,
             text,
-            rendered_operations,
-            retry_attempts,
-            retry_delay_seconds,
+            operations=rendered_operations,
+            policy=policy,
         )
     except Exception:
-        tmp.unlink(missing_ok=True)
         for asset_tmp, _asset_path in staged_assets:
             asset_tmp.unlink(missing_ok=True)
         for asset_path in created_assets:
@@ -141,8 +124,8 @@ def commit_operations(
         path=path,
         source_id=build_source_id(path, journal_root),
         before_hash=before_hash,
-        after_hash=_sha256(text),
-        sections=tuple(sections),
+        after_hash=_sha256(persisted_text),
+        sections=tuple(operation.section for operation in operations),
         new_file=new_file,
     )
 
@@ -152,14 +135,15 @@ def verify_committed_operations(
     operations: Sequence[DraftOperation],
     *,
     attachments: Sequence[MediaAttachment] = (),
+    policy: WritePolicy = WritePolicy(),
 ) -> bool:
     """Re-read a note and verify every committed patch in its target section."""
     rendered = _render_attachments(operations, attachments)
     try:
         text = _retry_transient_io(
             lambda: path.read_text(encoding="utf-8"),
-            attempts=3,
-            delay_seconds=0.2,
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
         )
     except OSError:
         return False
@@ -169,31 +153,109 @@ def verify_committed_operations(
     )
 
 
-def _verify_written_text(
+def _persist_and_verify(
     path: Path,
-    expected: str,
+    text: str,
+    *,
     operations: Sequence[DraftOperation],
-    attempts: int,
-    delay_seconds: float,
-) -> None:
-    observed = _retry_transient_io(
-        lambda: path.read_text(encoding="utf-8"),
-        attempts=attempts,
-        delay_seconds=delay_seconds,
+    policy: WritePolicy,
+) -> str:
+    candidate = text
+    remaining = max(1, policy.io_attempts)
+    while remaining:
+        _atomic_replace(path, candidate, policy)
+        observed = _read_verified_text(path, policy)
+        stable, observed = _observe_stability(
+            path,
+            observed,
+            operations,
+            policy,
+        )
+        if stable:
+            return observed
+        remaining -= 1
+        if remaining <= 0:
+            break
+        candidate = _apply_missing_operations(observed, operations)
+    raise DraftError(
+        DraftErrorCode.WRITE_VERIFICATION_FAILED,
+        "journal write did not remain stable during read-back verification",
     )
-    entries_present = all(
-        section_contains_entry(observed, operation.section, operation.content)
+
+
+def _observe_stability(
+    path: Path,
+    observed: str,
+    operations: Sequence[DraftOperation],
+    policy: WritePolicy,
+) -> tuple[bool, str]:
+    current = observed
+    checks = max(1, policy.stability_checks)
+    for check in range(checks):
+        if not _contains_operations(current, operations):
+            return False, current
+        if check + 1 >= checks:
+            return True, current
+        if policy.stability_delay_seconds > 0:
+            time.sleep(policy.stability_delay_seconds)
+        current = _read_verified_text(path, policy)
+    return True, current
+
+
+def _apply_missing_operations(
+    text: str, operations: Sequence[DraftOperation]
+) -> str:
+    updated = text
+    for operation in operations:
+        if section_contains_entry(updated, operation.section, operation.content):
+            continue
+        updated = append_to_section(updated, operation.section, operation.content)
+    return updated
+
+
+def _contains_operations(
+    text: str, operations: Sequence[DraftOperation]
+) -> bool:
+    return all(
+        section_contains_entry(text, operation.section, operation.content)
         for operation in operations
     )
-    if _sha256(observed) != _sha256(expected) or not entries_present:
-        raise DraftError(
-            DraftErrorCode.WRITE_VERIFICATION_FAILED,
-            "journal write did not pass read-back verification",
+
+
+def _atomic_replace(path: Path, text: str, policy: WritePolicy) -> None:
+    tmp = path.parent / f"{path.name}.tmp-{uuid.uuid4().hex}"
+    try:
+        _retry_transient_io(
+            lambda: tmp.write_text(text, encoding="utf-8"),
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
         )
+        _sync_file(tmp)
+        _retry_transient_io(
+            lambda: os.replace(tmp, path),
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
+        )
+        _sync_directory(path.parent)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _read_verified_text(path: Path, policy: WritePolicy) -> str:
+    return _retry_transient_io(
+        lambda: path.read_text(encoding="utf-8"),
+        attempts=policy.io_attempts,
+        delay_seconds=policy.io_delay_seconds,
+    )
 
 
 def _sync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows maps fsync to the CRT commit call, which requires a writable
+    # descriptor even though syncing does not modify the file contents.
+    with path.open("r+b") as handle:
         _retry_transient_io(
             lambda: os.fsync(handle.fileno()), attempts=3, delay_seconds=0.05
         )
@@ -225,6 +287,20 @@ def _render_attachments(
     return tuple(rendered)
 
 
+def _commit_assets(
+    staged_assets: Sequence[tuple[Path, Path]], policy: WritePolicy
+) -> None:
+    for temporary, target in staged_assets:
+        _retry_transient_io(
+            lambda temporary=temporary, target=target: os.replace(temporary, target),
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
+        )
+        _sync_file(target)
+    if staged_assets:
+        _sync_directory(staged_assets[0][1].parent)
+
+
 def _prepare_assets(
     journal_root: Path, attachments: Sequence[MediaAttachment]
 ) -> tuple[list[tuple[Path, Path]], list[Path]]:
@@ -234,14 +310,14 @@ def _prepare_assets(
     if attachments:
         assets_dir.mkdir(parents=True, exist_ok=True)
     for item in attachments:
-        source = Path(item.staged_path)
-        if _sha256_bytes(source.read_bytes()) != item.sha256:
-            raise OSError("staged image hash mismatch")
         target = assets_dir / f"{item.sha256}{item.extension}"
         if target.exists():
             if _sha256_bytes(target.read_bytes()) != item.sha256:
                 raise OSError("existing image hash mismatch")
             continue
+        source = Path(item.staged_path)
+        if _sha256_bytes(source.read_bytes()) != item.sha256:
+            raise OSError("staged image hash mismatch")
         temporary = assets_dir / f".{target.name}.tmp-{uuid.uuid4().hex}"
         shutil.copyfile(source, temporary)
         staged.append((temporary, target))

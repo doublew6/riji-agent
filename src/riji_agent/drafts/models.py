@@ -70,3 +70,4 @@ class CommitVerification:
     source_id: str
     target_date: Date
     verified: bool
+    repaired: bool = False

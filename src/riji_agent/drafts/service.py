@@ -114,12 +114,23 @@ class DraftService:
         """
         return self._store.get(draft_id)
 
+    def cancel_draft(self, draft_id: str, *, user_id: Optional[str] = None) -> bool:
+        draft = self._store.get(draft_id)
+        if draft is None:
+            return False
+        if user_id is not None and draft.user_id != user_id:
+            return False
+        if draft.status is not DraftStatus.AWAITING:
+            return False
+        self._store.save(dataclasses.replace(draft, status=DraftStatus.CANCELLED))
+        return True
+
     def verify_latest_commit(
         self, *, user_id: str, session_id: str
     ) -> Optional[CommitVerification]:
         """Verify the latest committed draft against the current journal file."""
-        draft = self._store.get_latest_committed_for_session(session_id)
-        if draft is None or draft.user_id != user_id or draft.source_id is None:
+        draft = self._latest_committed_draft(user_id, session_id)
+        if draft is None:
             return None
         path = self._journal_root / "daily" / f"{draft.target_date.isoformat()}.md"
         return CommitVerification(
@@ -133,16 +144,33 @@ class DraftService:
             ),
         )
 
-    def cancel_draft(self, draft_id: str, *, user_id: Optional[str] = None) -> bool:
-        draft = self._store.get(draft_id)
+    def ensure_latest_commit(
+        self, *, user_id: str, session_id: str
+    ) -> Optional[CommitVerification]:
+        """Verify a confirmed draft and safely restore it if sync removed it."""
+        draft = self._latest_committed_draft(user_id, session_id)
         if draft is None:
-            return False
-        if user_id is not None and draft.user_id != user_id:
-            return False
-        if draft.status is not DraftStatus.AWAITING:
-            return False
-        self._store.save(dataclasses.replace(draft, status=DraftStatus.CANCELLED))
-        return True
+            return None
+        path = self._journal_root / "daily" / f"{draft.target_date.isoformat()}.md"
+        if verify_committed_operations(
+            path,
+            draft.operations,
+            attachments=draft.attachments,
+        ):
+            return self._commit_verification(draft, repaired=False)
+
+        outcome = commit_operations(
+            self._journal_root,
+            draft.target_date,
+            draft.operations,
+            attachments=draft.attachments,
+        )
+        self._store.save(dataclasses.replace(draft, after_hash=outcome.after_hash))
+        try:
+            self._index.update_note(outcome.path)
+        except Exception:
+            _LOG.warning("post-repair incremental index update failed", exc_info=True)
+        return self._commit_verification(draft, repaired=True)
 
     def commit_draft(
         self, draft_id: str, *, user_id: str, token: Optional[str] = None
@@ -210,6 +238,27 @@ class DraftService:
             sections=outcome.sections,
             after_hash=outcome.after_hash,
             new_file=outcome.new_file,
+        )
+
+    def _latest_committed_draft(
+        self, user_id: str, session_id: str
+    ) -> Optional[Draft]:
+        draft = self._store.get_latest_committed_for_session(session_id)
+        if draft is None or draft.user_id != user_id or draft.source_id is None:
+            return None
+        return draft
+
+    @staticmethod
+    def _commit_verification(
+        draft: Draft, *, repaired: bool
+    ) -> CommitVerification:
+        assert draft.source_id is not None
+        return CommitVerification(
+            draft_id=draft.draft_id,
+            source_id=draft.source_id,
+            target_date=draft.target_date,
+            verified=True,
+            repaired=repaired,
         )
 
     @staticmethod

@@ -123,6 +123,25 @@ def test_transient_write_error_keeps_draft_awaiting(setup, monkeypatch) -> None:
     assert store.get(preview.draft_id).status is DraftStatus.AWAITING
 
 
+def test_readback_verification_failure_keeps_draft_awaiting(setup, monkeypatch) -> None:
+    service, store, _index, _root, _clock = setup
+    preview = _create(service)
+
+    def fail_verification(*_args, **_kwargs):
+        raise DraftError(
+            DraftErrorCode.WRITE_VERIFICATION_FAILED,
+            "read-back verification failed",
+        )
+
+    monkeypatch.setattr(
+        "riji_agent.drafts.service.commit_operations",
+        fail_verification,
+    )
+    with pytest.raises(DraftError) as err:
+        service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    assert err.value.code is DraftErrorCode.WRITE_VERIFICATION_FAILED
+    assert store.get(preview.draft_id).status is DraftStatus.AWAITING
 def test_latest_commit_verification_detects_later_file_loss(setup) -> None:
     service, _store, _index, root, _clock = setup
     preview = _create(service)
@@ -137,6 +156,20 @@ def test_latest_commit_verification_detects_later_file_loss(setup) -> None:
     assert missing is not None and missing.verified is False
 
 
+def test_ensure_latest_commit_repairs_later_file_loss(setup) -> None:
+    service, _store, _index, root, _clock = setup
+    preview = _create(service)
+    service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    note = root / "daily" / "2026-06-25.md"
+    note.write_text(TEMPLATE.replace("{{date}}", "2026-06-25"), encoding="utf-8")
+    repaired = service.ensure_latest_commit(
+        user_id="u1", session_id="u1:gentle:c1"
+    )
+
+    assert repaired is not None and repaired.verified is True
+    assert repaired.repaired is True
+    assert note.read_text(encoding="utf-8").count("- 评审通过") == 1
 def test_unconfirmed_draft_never_writes(setup) -> None:
     service, _store, _index, root, _clock = setup
     _create(service)  # no commit

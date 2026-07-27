@@ -100,19 +100,19 @@ class DraftStore:
         ).fetchone()
         return self._to_draft(row) if row else None
 
-    def get_latest_committed_for_session(self, session_id: str) -> Optional[Draft]:
-        row = self._conn.execute(
-            "SELECT * FROM drafts WHERE session_id = ? AND status = ? "
-            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (session_id, DraftStatus.COMMITTED.value),
-        ).fetchone()
-        return self._to_draft(row) if row else None
-
     def get_latest_for_session(self, session_id: str) -> Optional[Draft]:
         row = self._conn.execute(
             "SELECT * FROM drafts WHERE session_id = ? "
             "ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (session_id,),
+        ).fetchone()
+        return self._to_draft(row) if row else None
+
+    def get_latest_committed_for_session(self, session_id: str) -> Optional[Draft]:
+        row = self._conn.execute(
+            "SELECT * FROM drafts WHERE session_id = ? AND status = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (session_id, DraftStatus.COMMITTED.value),
         ).fetchone()
         return self._to_draft(row) if row else None
 
