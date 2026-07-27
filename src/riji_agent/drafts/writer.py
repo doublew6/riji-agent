@@ -19,7 +19,11 @@ from typing import Callable, Sequence, Tuple, TypeVar
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import DraftOperation
-from riji_agent.drafts.template import append_to_section, instantiate_daily
+from riji_agent.drafts.template import (
+    append_to_section,
+    instantiate_daily,
+    section_contains_entry,
+)
 from riji_agent.journal.parser import build_source_id
 
 _T = TypeVar("_T")
@@ -27,6 +31,11 @@ _TRANSIENT_IO_ERRNOS = {
     errno.EAGAIN,
     errno.EBUSY,
     getattr(errno, "EDEADLK", errno.EAGAIN),
+}
+_UNSUPPORTED_SYNC_ERRNOS = {
+    errno.EINVAL,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
 }
 
 
@@ -40,6 +49,14 @@ class WriteOutcome:
     new_file: bool
 
 
+@dataclass(frozen=True)
+class WritePolicy:
+    io_attempts: int = 3
+    io_delay_seconds: float = 0.2
+    stability_checks: int = 3
+    stability_delay_seconds: float = 0.5
+
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -49,8 +66,7 @@ def commit_operations(
     target_date: Date,
     operations: Sequence[DraftOperation],
     *,
-    retry_attempts: int = 3,
-    retry_delay_seconds: float = 0.2,
+    policy: WritePolicy = WritePolicy(),
 ) -> WriteOutcome:
     if not operations:
         raise DraftError(DraftErrorCode.NO_OPERATIONS, "draft has no operations")
@@ -61,50 +77,188 @@ def commit_operations(
     if path.exists():
         text = _retry_transient_io(
             lambda: path.read_text(encoding="utf-8"),
-            attempts=retry_attempts,
-            delay_seconds=retry_delay_seconds,
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
         )
         before_hash = _sha256(text)
         new_file = False
     else:
         template_path = journal_root / "templates" / "daily.md"
         if not template_path.is_file():
-            raise DraftError(DraftErrorCode.TEMPLATE_NOT_FOUND, "daily template is missing")
+            raise DraftError(
+                DraftErrorCode.TEMPLATE_NOT_FOUND, "daily template is missing"
+            )
         template = _retry_transient_io(
             lambda: template_path.read_text(encoding="utf-8"),
-            attempts=retry_attempts,
-            delay_seconds=retry_delay_seconds,
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
         )
         text = instantiate_daily(template, target_date)
         before_hash = ""
         new_file = True
 
-    sections = []
-    for operation in operations:
-        text = append_to_section(text, operation.section, operation.content)  # may raise
-        sections.append(operation.section)
+    text = _apply_missing_operations(text, operations)
 
     daily_dir.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f"{path.name}.tmp-{uuid.uuid4().hex}"
-    _retry_transient_io(
-        lambda: tmp.write_text(text, encoding="utf-8"),
-        attempts=retry_attempts,
-        delay_seconds=retry_delay_seconds,
+    persisted_text = _persist_and_verify(
+        path,
+        text,
+        operations=operations,
+        policy=policy,
     )
-    _retry_transient_io(
-        lambda: os.replace(tmp, path),
-        attempts=retry_attempts,
-        delay_seconds=retry_delay_seconds,
-    )  # atomic within the same directory
 
     return WriteOutcome(
         path=path,
         source_id=build_source_id(path, journal_root),
         before_hash=before_hash,
-        after_hash=_sha256(text),
-        sections=tuple(sections),
+        after_hash=_sha256(persisted_text),
+        sections=tuple(operation.section for operation in operations),
         new_file=new_file,
     )
+
+
+def verify_committed_operations(
+    path: Path,
+    operations: Sequence[DraftOperation],
+    *,
+    retry_attempts: int = 3,
+    retry_delay_seconds: float = 0.2,
+) -> bool:
+    """Re-read a note and verify every committed patch in its target section."""
+    try:
+        text = _retry_transient_io(
+            lambda: path.read_text(encoding="utf-8"),
+            attempts=retry_attempts,
+            delay_seconds=retry_delay_seconds,
+        )
+    except OSError:
+        return False
+    return all(
+        section_contains_entry(text, operation.section, operation.content)
+        for operation in operations
+    )
+
+
+def _persist_and_verify(
+    path: Path,
+    text: str,
+    *,
+    operations: Sequence[DraftOperation],
+    policy: WritePolicy,
+) -> str:
+    candidate = text
+    remaining = max(1, policy.io_attempts)
+    while remaining:
+        _atomic_replace(path, candidate, policy)
+        observed = _read_verified_text(path, policy)
+        stable, observed = _observe_stability(
+            path,
+            observed,
+            operations,
+            policy,
+        )
+        if stable:
+            return observed
+        remaining -= 1
+        if remaining <= 0:
+            break
+        candidate = _apply_missing_operations(observed, operations)
+    raise DraftError(
+        DraftErrorCode.WRITE_VERIFICATION_FAILED,
+        "journal write did not remain stable during read-back verification",
+    )
+
+
+def _observe_stability(
+    path: Path,
+    observed: str,
+    operations: Sequence[DraftOperation],
+    policy: WritePolicy,
+) -> tuple[bool, str]:
+    current = observed
+    checks = max(1, policy.stability_checks)
+    for check in range(checks):
+        if not _contains_operations(current, operations):
+            return False, current
+        if check + 1 >= checks:
+            return True, current
+        if policy.stability_delay_seconds > 0:
+            time.sleep(policy.stability_delay_seconds)
+        current = _read_verified_text(path, policy)
+    return True, current
+
+
+def _apply_missing_operations(
+    text: str, operations: Sequence[DraftOperation]
+) -> str:
+    updated = text
+    for operation in operations:
+        if section_contains_entry(updated, operation.section, operation.content):
+            continue
+        updated = append_to_section(updated, operation.section, operation.content)
+    return updated
+
+
+def _contains_operations(
+    text: str, operations: Sequence[DraftOperation]
+) -> bool:
+    return all(
+        section_contains_entry(text, operation.section, operation.content)
+        for operation in operations
+    )
+
+
+def _atomic_replace(path: Path, text: str, policy: WritePolicy) -> None:
+    tmp = path.parent / f"{path.name}.tmp-{uuid.uuid4().hex}"
+    try:
+        _retry_transient_io(
+            lambda: tmp.write_text(text, encoding="utf-8"),
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
+        )
+        _sync_file(tmp)
+        _retry_transient_io(
+            lambda: os.replace(tmp, path),
+            attempts=policy.io_attempts,
+            delay_seconds=policy.io_delay_seconds,
+        )
+        _sync_directory(path.parent)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _read_verified_text(path: Path, policy: WritePolicy) -> str:
+    return _retry_transient_io(
+        lambda: path.read_text(encoding="utf-8"),
+        attempts=policy.io_attempts,
+        delay_seconds=policy.io_delay_seconds,
+    )
+
+
+def _sync_file(path: Path) -> None:
+    # Windows maps fsync to the CRT commit call, which requires a writable
+    # descriptor even though syncing does not modify the file contents.
+    with path.open("r+b") as handle:
+        _retry_transient_io(
+            lambda: os.fsync(handle.fileno()), attempts=3, delay_seconds=0.05
+        )
+
+
+def _sync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        if exc.errno not in _UNSUPPORTED_SYNC_ERRNOS:
+            raise
+    finally:
+        os.close(descriptor)
 
 
 def _retry_transient_io(

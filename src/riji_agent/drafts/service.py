@@ -14,11 +14,12 @@ import uuid
 from datetime import date as Date
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import (
     CommitResult,
+    CommitVerification,
     Draft,
     DraftOperation,
     DraftPreview,
@@ -26,7 +27,7 @@ from riji_agent.drafts.models import (
 )
 from riji_agent.drafts.store import DraftStore
 from riji_agent.drafts.polish import polish_draft_content
-from riji_agent.drafts.writer import commit_operations
+from riji_agent.drafts.writer import commit_operations, verify_committed_operations
 from riji_agent.journal.index import JournalIndex
 from riji_agent.timezone import local_journal_timezone
 
@@ -64,8 +65,12 @@ class DraftService:
         target_date: Optional[Date] = None,
     ) -> DraftPreview:
         if not operations:
-            raise DraftError(DraftErrorCode.NO_OPERATIONS, "a draft needs at least one entry")
-        polished_operations = tuple(_polish_operation(operation) for operation in operations)
+            raise DraftError(
+                DraftErrorCode.NO_OPERATIONS, "a draft needs at least one entry"
+            )
+        polished_operations = tuple(
+            _polish_operation(operation) for operation in operations
+        )
         now = self._now()
         target = target_date or now.date()
         draft = Draft(
@@ -116,6 +121,42 @@ class DraftService:
         self._store.save(dataclasses.replace(draft, status=DraftStatus.CANCELLED))
         return True
 
+    def verify_latest_commit(
+        self, *, user_id: str, session_id: str
+    ) -> Optional[CommitVerification]:
+        """Verify the latest committed draft against the current journal file."""
+        draft = self._latest_committed_draft(user_id, session_id)
+        if draft is None:
+            return None
+        path = self._journal_root / "daily" / f"{draft.target_date.isoformat()}.md"
+        return CommitVerification(
+            draft_id=draft.draft_id,
+            source_id=draft.source_id,
+            target_date=draft.target_date,
+            verified=verify_committed_operations(path, draft.operations),
+        )
+
+    def ensure_latest_commit(
+        self, *, user_id: str, session_id: str
+    ) -> Optional[CommitVerification]:
+        """Verify a confirmed draft and safely restore it if sync removed it."""
+        draft = self._latest_committed_draft(user_id, session_id)
+        if draft is None:
+            return None
+        path = self._journal_root / "daily" / f"{draft.target_date.isoformat()}.md"
+        if verify_committed_operations(path, draft.operations):
+            return self._commit_verification(draft, repaired=False)
+
+        outcome = commit_operations(
+            self._journal_root, draft.target_date, draft.operations
+        )
+        self._store.save(dataclasses.replace(draft, after_hash=outcome.after_hash))
+        try:
+            self._index.update_note(outcome.path)
+        except Exception:
+            _LOG.warning("post-repair incremental index update failed", exc_info=True)
+        return self._commit_verification(draft, repaired=True)
+
     def commit_draft(
         self, draft_id: str, *, user_id: str, token: Optional[str] = None
     ) -> CommitResult:
@@ -123,14 +164,22 @@ class DraftService:
         if draft is None:
             raise DraftError(DraftErrorCode.DRAFT_NOT_FOUND, "no such draft")
         if draft.status is not DraftStatus.AWAITING:
-            raise DraftError(DraftErrorCode.NOT_AWAITING, "draft is no longer awaiting confirmation")
+            raise DraftError(
+                DraftErrorCode.NOT_AWAITING, "draft is no longer awaiting confirmation"
+            )
         if draft.user_id != user_id:
-            raise DraftError(DraftErrorCode.WRONG_USER, "confirmation must come from the same user")
+            raise DraftError(
+                DraftErrorCode.WRONG_USER, "confirmation must come from the same user"
+            )
         if self._now() > datetime.fromisoformat(draft.expires_at):
             self._store.save(dataclasses.replace(draft, status=DraftStatus.EXPIRED))
-            raise DraftError(DraftErrorCode.TOKEN_EXPIRED, "confirmation window has expired")
+            raise DraftError(
+                DraftErrorCode.TOKEN_EXPIRED, "confirmation window has expired"
+            )
         if token is not None and token != draft.token:
-            raise DraftError(DraftErrorCode.TOKEN_INVALID, "confirmation token does not match")
+            raise DraftError(
+                DraftErrorCode.TOKEN_INVALID, "confirmation token does not match"
+            )
 
         # DB-level claim closes the check-then-act race: with multiple workers
         # several confirmations may all read AWAITING above, but only one wins
@@ -142,10 +191,11 @@ class DraftService:
             )
 
         try:
-            # May raise SECTION_NOT_FOUND / TEMPLATE_NOT_FOUND before any file is
-            # touched (os.replace is atomic and the post-write code cannot raise),
-            # so a failure means nothing was written.
-            outcome = commit_operations(self._journal_root, draft.target_date, draft.operations)
+            # This returns only after the atomically replaced file has been
+            # synced, re-read and verified against the intended patch.
+            outcome = commit_operations(
+                self._journal_root, draft.target_date, draft.operations
+            )
         except Exception:
             # Release the claim so the user can fix the issue and retry.
             self._store.save(dataclasses.replace(draft, status=DraftStatus.AWAITING))
@@ -170,6 +220,27 @@ class DraftService:
             sections=outcome.sections,
             after_hash=outcome.after_hash,
             new_file=outcome.new_file,
+        )
+
+    def _latest_committed_draft(
+        self, user_id: str, session_id: str
+    ) -> Optional[Draft]:
+        draft = self._store.get_latest_committed_for_session(session_id)
+        if draft is None or draft.user_id != user_id or draft.source_id is None:
+            return None
+        return draft
+
+    @staticmethod
+    def _commit_verification(
+        draft: Draft, *, repaired: bool
+    ) -> CommitVerification:
+        assert draft.source_id is not None
+        return CommitVerification(
+            draft_id=draft.draft_id,
+            source_id=draft.source_id,
+            target_date=draft.target_date,
+            verified=True,
+            repaired=repaired,
         )
 
     @staticmethod

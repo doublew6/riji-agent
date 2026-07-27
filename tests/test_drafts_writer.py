@@ -1,12 +1,13 @@
 from datetime import date
 from errno import EAGAIN
+import os
 from pathlib import Path
 
 import pytest
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
 from riji_agent.drafts.models import DraftOperation
-from riji_agent.drafts.writer import commit_operations
+from riji_agent.drafts.writer import WritePolicy, commit_operations
 
 TEMPLATE = "# {{date}}\n\n## 🌆 Evening\n\n## 🧠 Notes\n"
 
@@ -20,7 +21,9 @@ def _vault(tmp_path: Path) -> Path:
 
 def test_creates_new_note_from_template(tmp_path: Path) -> None:
     root = _vault(tmp_path)
-    outcome = commit_operations(root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "评审通过")])
+    outcome = commit_operations(
+        root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "评审通过")]
+    )
 
     path = root / "daily" / "2026-06-25.md"
     assert outcome.new_file is True
@@ -46,12 +49,14 @@ def test_retries_transient_template_read_failure(tmp_path: Path, monkeypatch) ->
         root,
         date(2026, 6, 25),
         [DraftOperation("🌆 Evening", "评审通过")],
-        retry_delay_seconds=0,
+        policy=WritePolicy(io_delay_seconds=0),
     )
 
     assert outcome.source_id == "riji/daily/2026-06-25"
     assert calls["count"] == 1
-    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(encoding="utf-8")
+    assert "- 评审通过" in (root / "daily" / "2026-06-25.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_persistent_transient_read_failure_still_raises_without_partial_file(
@@ -72,8 +77,7 @@ def test_persistent_transient_read_failure_still_raises_without_partial_file(
             root,
             date(2026, 6, 25),
             [DraftOperation("🌆 Evening", "评审通过")],
-            retry_attempts=2,
-            retry_delay_seconds=0,
+            policy=WritePolicy(io_attempts=2, io_delay_seconds=0),
         )
 
     assert not (root / "daily" / "2026-06-25.md").exists()
@@ -85,11 +89,178 @@ def test_appends_to_existing_note(tmp_path: Path) -> None:
     daily.parent.mkdir(parents=True)
     daily.write_text("# 2026-06-25\n\n## 🌆 Evening\n- 早先的事\n", encoding="utf-8")
 
-    outcome = commit_operations(root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "later")])
+    outcome = commit_operations(
+        root, date(2026, 6, 25), [DraftOperation("🌆 Evening", "later")]
+    )
     assert outcome.new_file is False
     assert outcome.before_hash != ""
     text = daily.read_text(encoding="utf-8")
     assert "- 早先的事" in text and "- later" in text
+
+
+def test_ignored_atomic_replace_never_reports_write_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _vault(tmp_path)
+    daily = root / "daily" / "2026-06-25.md"
+    daily.parent.mkdir(parents=True)
+    original = "# 2026-06-25\n\n## 🌆 Evening\n- 原有内容\n\n## 🧠 Notes\n"
+    daily.write_text(original, encoding="utf-8")
+
+    def ignore_replace(source, _destination):
+        Path(source).unlink()
+
+    monkeypatch.setattr(os, "replace", ignore_replace)
+    with pytest.raises(DraftError) as err:
+        commit_operations(
+            root,
+            date(2026, 6, 25),
+            [DraftOperation("🌆 Evening", "评审通过")],
+            policy=WritePolicy(io_attempts=2, io_delay_seconds=0),
+        )
+
+    assert err.value.code is DraftErrorCode.WRITE_VERIFICATION_FAILED
+    assert daily.read_text(encoding="utf-8") == original
+
+
+def test_reapplies_patch_when_cloud_restores_previous_version(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _vault(tmp_path)
+    daily = root / "daily" / "2026-06-25.md"
+    daily.parent.mkdir(parents=True)
+    original = "# 2026-06-25\n\n## 🌆 Evening\n- 原有内容\n\n## 🧠 Notes\n"
+    daily.write_text(original, encoding="utf-8")
+
+    from riji_agent.drafts import writer
+
+    real_read = writer._read_verified_text
+    reads = {"count": 0}
+
+    def restore_old_version(path, policy):
+        reads["count"] += 1
+        if reads["count"] == 2:
+            path.write_text(original, encoding="utf-8")
+            return original
+        return real_read(path, policy)
+
+    monkeypatch.setattr(writer, "_read_verified_text", restore_old_version)
+    commit_operations(
+        root,
+        date(2026, 6, 25),
+        [DraftOperation("🌆 Evening", "评审通过")],
+        policy=WritePolicy(
+            io_delay_seconds=0,
+            stability_checks=2,
+            stability_delay_seconds=0,
+        ),
+    )
+
+    text = daily.read_text(encoding="utf-8")
+    assert "- 原有内容" in text
+    assert text.count("- 评审通过") == 1
+    assert reads["count"] >= 4
+
+
+def test_repair_merges_concurrent_edit_instead_of_overwriting_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _vault(tmp_path)
+    daily = root / "daily" / "2026-06-25.md"
+    daily.parent.mkdir(parents=True)
+    original = "# 2026-06-25\n\n## 🌆 Evening\n- 原有内容\n\n## 🧠 Notes\n"
+    concurrent = original.replace("- 原有内容", "- 原有内容\n- 人工同时编辑")
+    daily.write_text(original, encoding="utf-8")
+
+    from riji_agent.drafts import writer
+
+    real_read = writer._read_verified_text
+    reads = {"count": 0}
+
+    def expose_concurrent_edit(path, policy):
+        reads["count"] += 1
+        if reads["count"] == 2:
+            path.write_text(concurrent, encoding="utf-8")
+            return concurrent
+        return real_read(path, policy)
+
+    monkeypatch.setattr(writer, "_read_verified_text", expose_concurrent_edit)
+    commit_operations(
+        root,
+        date(2026, 6, 25),
+        [DraftOperation("🌆 Evening", "评审通过")],
+        policy=WritePolicy(
+            io_delay_seconds=0,
+            stability_checks=2,
+            stability_delay_seconds=0,
+        ),
+    )
+
+    text = daily.read_text(encoding="utf-8")
+    assert "- 人工同时编辑" in text
+    assert text.count("- 评审通过") == 1
+
+
+def test_repeated_cloud_reversion_never_reports_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _vault(tmp_path)
+    daily = root / "daily" / "2026-06-25.md"
+    daily.parent.mkdir(parents=True)
+    original = "# 2026-06-25\n\n## 🌆 Evening\n- 原有内容\n\n## 🧠 Notes\n"
+    daily.write_text(original, encoding="utf-8")
+
+    from riji_agent.drafts import writer
+
+    real_read = writer._read_verified_text
+    reads = {"count": 0}
+
+    def repeatedly_restore_old_version(path, policy):
+        reads["count"] += 1
+        if reads["count"] % 2 == 0:
+            path.write_text(original, encoding="utf-8")
+            return original
+        return real_read(path, policy)
+
+    monkeypatch.setattr(
+        writer, "_read_verified_text", repeatedly_restore_old_version
+    )
+    with pytest.raises(DraftError) as err:
+        commit_operations(
+            root,
+            date(2026, 6, 25),
+            [DraftOperation("🌆 Evening", "评审通过")],
+            policy=WritePolicy(
+                io_attempts=2,
+                io_delay_seconds=0,
+                stability_checks=2,
+                stability_delay_seconds=0,
+            ),
+        )
+
+    assert err.value.code is DraftErrorCode.WRITE_VERIFICATION_FAILED
+    assert daily.read_text(encoding="utf-8") == original
+
+
+def test_fsync_uses_a_writable_file_descriptor(tmp_path: Path, monkeypatch) -> None:
+    root = _vault(tmp_path)
+    real_open = Path.open
+    opened_modes = []
+
+    def record_open(path, mode="r", *args, **kwargs):
+        if ".tmp-" in path.name:
+            opened_modes.append(mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", record_open)
+    commit_operations(
+        root,
+        date(2026, 6, 25),
+        [DraftOperation("🌆 Evening", "评审通过")],
+        policy=WritePolicy(stability_checks=1, stability_delay_seconds=0),
+    )
+
+    assert "r+b" in opened_modes
 
 
 def test_missing_section_does_not_write_a_partial_file(tmp_path: Path) -> None:

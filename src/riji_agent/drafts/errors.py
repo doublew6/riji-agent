@@ -14,6 +14,7 @@ class DraftErrorCode(str, Enum):
     NO_OPERATIONS = "no_operations"
     SECTION_NOT_FOUND = "section_not_found"
     TEMPLATE_NOT_FOUND = "template_not_found"
+    WRITE_VERIFICATION_FAILED = "write_verification_failed"
 
 
 class DraftError(Exception):
