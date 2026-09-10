@@ -116,7 +116,6 @@ Agent 长期记忆，本地 FastEmbed 负责向量化，SQLite 保存会话、�
 
 以下命令使用当前 `main`，不安装上表中尚未发布的长期记忆与多 Agent 扩展。
 
-
 要求：Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
 
 先取得源码并安装依赖：

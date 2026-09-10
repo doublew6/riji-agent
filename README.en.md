@@ -135,7 +135,6 @@ them to protect data used with the current Quick Start.
 These commands use the current `main` and do not install the unreleased memory
 and multi-agent extensions described above.
 
-
 Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 Clone the repository and install dependencies:

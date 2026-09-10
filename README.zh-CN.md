@@ -4,3 +4,5 @@
 进展、隐私边界、快速开始及可选语音和日历配置。
 
 [阅读中文 README](README.md) · [English](README.en.md)
+
+配置机器人时请参照统一的 [飞书权限清单](docs/feishu-permissions.yaml)。
