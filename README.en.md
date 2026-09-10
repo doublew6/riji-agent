@@ -4,118 +4,146 @@
 
 [中文](README.md)
 
-`riji-agent` is a local-first journal agent gateway for Obsidian-style Markdown
-journals. It keeps the journal vault, local index, drafts, audit records, and
-write permissions on the user's machine, while exposing only bounded,
-auditable tools to an external agent or model runtime.
+**A local-first AI companion for reflection and personal growth, built around long-term memory and multiple mentor agents.**
 
-## Project Goal
+Keep your notes in Obsidian and talk in Feishu. `riji-agent` uses your recorded
+experiences to help you reflect on the past, work through concerns, notice change,
+and carry that understanding into your next conversation or action. You control
+your journal, memory, and permission to write.
 
-The goal is simple: make AI-assisted journaling useful for long-term personal
-growth without turning a private journal into cloud infrastructure.
+The project is growing from journal retrieval and confirmed writing into a
+personal companion with lasting context. This README distinguishes capabilities
+available on `main` from development work that has not been merged. Quick Start
+uses the current `main` branch.
 
-Daily notes, weekly reviews, monthly reviews, and thematic reflection work best
-when they become a steady practice: record what happened, notice what changed,
-turn the insight into the next small action. AI can help make that loop more
-structured and easier to keep: it can retrieve old notes, summarize a period,
-draft a review, extract action items, or prepare a journal entry from a chat
-message. The important boundary is that AI remains an assistant to reflection
-and action, not the owner of the journal.
+## From One Conversation to Ongoing Support
 
-`riji-agent` is the local gateway for that workflow. Template and skill
-repositories can define how to write, review, and summarize; this project
-decides what a model is allowed to see, which tools it may call, and when a
-Markdown file may actually be changed.
+Recording your life creates useful context, but finding old notes, explaining
+your background again, and preparing reviews still take effort.
 
-The batteries-included default stack is **Feishu + Hermes + DeepSeek**:
+| What you want to discuss | How a mentor can help |
+| --- | --- |
+| “I've been tired lately. Help me work through it.” | Listen to the current situation and connect it to past experiences when evidence is available. |
+| “Why did I stop following this plan?” | Use multi-step Agentic RAG and timeline retrieval to revisit the conditions and previous attempts. |
+| “How did I handle something like this before?” | Retrieve source-linked records and discuss which lessons still apply. |
+| “Save what we figured out today.” | Prepare a draft, show a preview, and append it to the journal after explicit confirmation. |
 
-- Feishu is the default IM entry point for private chat.
-- Hermes is the default agent runtime and message router.
-- DeepSeek is the default OpenAI-compatible reasoning model provider.
+Ongoing support depends on context and feedback you can check. AI supports your
+own reflection and action; you can question advice, correct memories, or simply
+talk without committing to a plan.
 
-That stack is the fastest supported path today, but the default stack is
-**not the only supported architecture**. The project is built around
-replaceable IM, agent, and model adapters over a local journal core: each is
-selected by config and resolved through a small registry, so adding an adapter
-means registering it, not editing the wiring. DeepSeek ships alongside a generic
-OpenAI-compatible model adapter (`RIJI_MODEL_PROVIDER=openai`) as a worked
-example. See [docs/architecture/modules.md](docs/architecture/modules.md) for
-the core/im/agent/models boundaries and how to add an adapter.
+## Availability and Development Progress
 
-riji-agent also has a first built-in journal capability pack,
-`personal-growth`. The pack is the product boundary for reusable journaling
-templates, skills, and future automations derived from
-`doublew6/whit-riji-skills` and the riji-related workflows in
-`doublew6/codex-automations`. Pack loading is capability metadata only: journal
-writes still require a draft preview or the controlled writer boundary, and
-pack automations must not upload the complete vault, raw Markdown files, SQLite
-databases, API keys, or webhook URLs. See
-[docs/architecture/packs.md](docs/architecture/packs.md).
+As of **2026-09-10**, implementation, publication on the default branch, and
+validation in real use are tracked separately.
 
-## Scope
+| Capability | Status |
+| --- | --- |
+| Obsidian / Markdown retrieval, Agentic RAG, timelines, and source references | Available on `main`. |
+| Mentor selection in one Feishu bot, separate conversations, and shared confirmed facts | Available on `main`. |
+| Drafts, explicit confirmation, template append, and audit | Available on `main`; voice and calendar features require optional configuration. |
+| Mem0 long-term memory, native chat capture, Memory Review, and `MEMORY.md` | Implemented in the local development version; not merged into `main`. Track [#39](https://github.com/doublew6/riji-agent/issues/39). |
+| Historical journal initialization, incremental maintenance, source lifecycle, and active organization | Implemented in the local development version; memory quality and full workflow validation remain in progress. Not merged into `main`; track [#40](https://github.com/doublew6/riji-agent/issues/40). |
+| Fixed mentor conversations and multi-agent comparison and debate | Local core workflow and LangGraph integration implemented; not merged into `main`. Private Feishu roundtables remain disabled and production acceptance is incomplete. |
+| Separate mentor and background memory model selection, including an optional Codex adapter | Implemented in the local development version; not merged into `main`. Quick Start still uses the default model stack. |
 
-`riji-agent` provides the local boundary for personal journal intelligence. It
-is responsible for:
+Completing a scan, extracting memories, and understanding them accurately are
+different outcomes. Automated tests and synthetic model examples do not replace
+semantic review of real memories or establish retention and companionship benefits.
 
-- reading an existing Markdown journal vault without copying it into the repo;
-- building a local SQLite index for search, timeline, and source lookup;
-- letting an agent call narrow tools such as `search_journal` and `read_note`;
-- blocking private notes and capping returned snippets before anything reaches a
-  cloud model;
-- creating journal write drafts that require explicit user confirmation before
-  any Markdown file is changed;
-- recording metadata for audit without storing full sensitive text in logs.
+## Long-Term Memory: Bring the Past into the Next Conversation
 
-It is not a prompt collection or a template registry. A journaling skill layer
-can decide *how* to produce a daily note, weekly review, monthly review, travel
-log, or reflection summary. `riji-agent` supplies the safer local execution
-boundary those skills need when they touch a real journal.
+The following mechanisms are part of the **development version** described above.
 
-## Journaling Workflow
+- **Build context from records:** extract experiences, preferences, and goals from authorized journals and native conversations; process new, edited, deleted, and subsequently added older notes.
+- **Preserve time and evidence:** relate new and existing memories while distinguishing duplicates, additions, state changes, and conflicts. A recently extracted old plan is still an old plan.
+- **Notice changes with evidence:** organize related experiences across batches, retain support, counter-evidence, and conditions, and label inferred patterns as observations to verify. Invalid sources stop supporting derived observations.
+- **Recall across conversations:** retrieve relevant shared facts and the current mentor's private observations to reduce repeated background explanations.
+- **Let users manage memory:** local Memory Review provides sources, progress, correction, review, archive, deletion, export, and recovery. `MEMORY.md` is a readable, read-only snapshot.
 
-A typical personal-growth loop looks like this:
-
-1. Capture a daily note or chat message.
-2. Let the agent retrieve only the minimum relevant journal snippets.
-3. Generate a draft entry, review, or answer with source links.
-4. Show the proposed change in chat.
-5. Write to Markdown only after explicit confirmation.
-
-Example:
-
-```text
-User: Record this in my journal: I finished the privacy review before launch.
-Mentor: Draft ready. Preview follows... Reply "confirm save" to write it.
-User: confirm save
-Mentor: Saved to [[riji/daily/2026-06-30]].
+```mermaid
+flowchart LR
+    A[Authorized journals and native conversations] --> B[Structured extraction and source validation]
+    B --> C[Local long-term memory]
+    C --> D[Relevant recall and mentor feedback]
+    C --> E[Memory Review]
+    E -->|Correct, archive, delete| C
+    D --> F[Journal draft and preview]
+    F -->|Save after user confirmation| A
 ```
 
-## Privacy Model
+Original Markdown remains the source for journal records. Self-hosted
+**Mem0 + PostgreSQL/pgvector** stores agent long-term memory, local FastEmbed
+creates embeddings, and SQLite stores conversations, queues, and audit data.
+Authorized memory capture can run in the background; changing the journal still
+requires explicit confirmation.
 
-This is **not a zero-egress system**. It is a local-control design with bounded
-cloud reasoning. See [docs/privacy.md](docs/privacy.md) and
-[SECURITY.md](SECURITY.md) before connecting real journal data.
+## Multiple Agents, Distinct Perspectives
 
-Never sent by riji-agent:
+The current `main` supports four AI mentors within one Feishu bot, each with its
+own conversation history:
 
-- the complete vault;
-- raw Markdown files as files;
-- local SQLite databases;
-- API keys, Feishu credentials, or the Hermes shared secret;
-- filesystem paths or the vault directory structure;
-- notes marked `private: true`.
+| Mentor | Approach |
+| --- | --- |
+| Gentle Reviewer | Listen, acknowledge emotions, and help you notice change and growth. |
+| Blunt Coach | Point out evidence-based patterns and blind spots, then discuss practical actions. |
+| Future Self | Revisit goals and choices from a longer time perspective. |
+| Wang Yangming Mentor | Use a philosophical framework to connect motives, understanding, and action; retrieve philosophical sources separately from journal records. |
 
-May leave the machine when the default stack is enabled:
+The **development version's multi-agent orchestration** adds fixed mentor
+conversations and discussions hosted by Riji with 2–4 mentors. They first form
+independent views, compare disagreements, question one another, and produce a
+synthesis that retains conditions and unresolved differences. Debate is bounded
+to two rounds; users can add context, stop, or request an early summary.
 
-- Feishu/Lark receives the user's bot messages and bot replies;
-- DeepSeek receives the system prompt, the user's question, and bounded journal
-  snippets returned by local tools;
-- Hermes receives routing metadata and the local gateway response, but should
-  not directly read the vault or SQLite files.
+Mentors share authorized user facts while keeping conversation histories and
+private observations separate. Roundtables use only memories permitted for all
+participants and material explicitly transferred by the user. Private chats are
+not automatically broadcast. The new discussion path does not yet connect raw
+journal tools or automatic memory capture; mentor outputs do not become user facts.
+
+A local API connects the core discussion workflow. **Private Feishu roundtables
+remain disabled** pending real integration checks for membership, history
+visibility, delivery, and other platform requirements. Ordinary groups have no
+journal access. Saving a discussion requires a verified private chat, a new draft
+preview, and explicit confirmation.
+
+These are AI roles and may use the same model. Agreement between roles is not
+independent verification, and a historical perspective is not a real person's speech.
+
+## Local Control and Privacy
+
+**Local-first means you control the data and permissions; authorized snippets may
+still be sent for cloud inference. This is not a zero-egress system.** Read
+[Privacy](docs/privacy.md) and [SECURITY.md](SECURITY.md) before connecting real data.
+
+- **Local storage:** the vault, index, drafts, and audit stay on user-controlled devices. The development version also keeps Mem0 memory and discussion records under user control.
+- **Bounded access:** Hermes does not directly read or write the vault. Models use registered tools and bounded journal snippets; answers distinguish facts, inference, and insufficient evidence.
+- **Confirmed writing:** draft → preview → explicit confirmation → atomic append, preserving existing entries. Groups cannot create or commit journal drafts.
+- **Limited disclosure:** no complete vault, raw Markdown files, or local SQLite databases are uploaded. API keys stay out of model context, and `private: true` content is excluded.
+- **Explicit recipients:** Feishu receives messages and replies; the configured model receives questions and authorized context. Development-version memory extraction and organization also send authorized content to the configured memory model.
+- **Synchronization and copies:** user-configured iCloud sync, backups, or other sync services can retain copies. Local deletion does not erase old backups, Feishu history, or provider retention.
+
+The development version adds `none / local / cloud` source permissions and
+separate authorization for historical initialization, incremental extraction,
+cloud organization, and mentor recall. Revoked sources restrict subsequent use
+of derived memory. These controls are not yet released on `main`; do not rely on
+them to protect data used with the current Quick Start.
 
 ## Quick Start
 
+These commands use the current `main` and do not install the unreleased memory
+and multi-agent extensions described above.
+
 Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/doublew6/riji-agent.git
+cd riji-agent
+uv sync --extra dev
+```
 
 Try the fictional demo vault first. It does not read `.env`, your real journal,
 or any real API key:
@@ -210,11 +238,10 @@ Available TTS providers:
 
 - `macos_say`: zero extra dependencies and fully local, but mechanical; useful
   as the fallback provider.
-- `melotts`: optional local open-source TTS that is usually more natural than
-  `macos_say`. Install MeloTTS into the same virtualenv before enabling it:
+- `melotts`: optional local open-source TTS; install it into the same virtualenv.
 - `voxcpm`: optional local open-source TTS based on VoxCPM2. It supports
   natural-language voice design per mentor without reference audio; it is
-  heavier than MeloTTS but should sound more natural.
+  a separate installation with substantial dependencies and model caches.
 
 ```bash
 uv pip install melotts
@@ -248,6 +275,23 @@ repository and outside the journal vault. Cloud TTS providers are intentionally
 not the default; future providers such as `edge_tts` or Azure Speech should be
 explicit opt-ins because reply text leaves the local machine.
 
+### Feishu Calendar
+
+Calendar writes are disabled by default. With the Feishu provider enabled, a
+private chat can prepare an event draft. The API is called only after explicit
+confirmation. Today's events can append a lightweight link to today's daily
+note; future events do not create future journal files early.
+
+```bash
+RIJI_CALENDAR_PROVIDER=feishu
+FEISHU_APP_ID=cli_replace_me
+FEISHU_APP_SECRET=replace-me
+# FEISHU_CALENDAR_ID=primary
+```
+
+Check [Feishu permissions](docs/feishu-permissions.yaml) before enabling optional
+voice or calendar features. Group chats remain denied private capabilities.
+
 ## Configuration And Safety
 
 - `.env`, SQLite files, audit logs, `data/`, and accidental local journal copies
@@ -264,6 +308,19 @@ explicit opt-ins because reply text leaves the local machine.
   group chats are denied by design.
 - The service binds to `127.0.0.1`. Use Feishu/Hermes or a private network proxy
   for remote access; do not expose this port directly to the public internet.
+
+## Architecture and Extensions
+
+The default stack is **Feishu + Hermes + DeepSeek**, but it is **not the only supported architecture**.
+IM, agent runtime, and model providers use separate adapters and registries.
+`main` also includes a generic OpenAI-compatible adapter. See
+[Module architecture](docs/architecture/modules.md).
+
+The `personal-growth` pack brings together templates, review skills, and
+automation definitions from `whit-riji-skills` and `codex-automations`. Pack loading
+is capability metadata only: it does not run automations or grant access. Writes
+still require a draft preview or controlled writer. See
+[Capability packs](docs/architecture/packs.md).
 
 ## Development
 
