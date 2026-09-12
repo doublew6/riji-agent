@@ -1,0 +1,4 @@
+FROM pgvector/pgvector:0.8.6-pg17-bookworm
+
+COPY init-db.sh /docker-entrypoint-initdb.d/init-db.sh
+RUN chmod 0555 /docker-entrypoint-initdb.d/init-db.sh

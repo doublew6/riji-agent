@@ -12,24 +12,28 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date as Date, datetime
-from typing import Optional, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 
 from riji_agent.calendar.parser import CalendarParseError, looks_like_calendar_request
 from riji_agent.calendar.service import CalendarError, CalendarService
 from riji_agent.drafts.errors import DraftError
-from riji_agent.drafts.models import DraftOperation
+from riji_agent.drafts.models import DraftOperation, DraftStatus
 from riji_agent.drafts.service import DraftService
+from riji_agent.drafts.confirmation import ConfirmationContext, PrivatePreviewScope, preview_hash
 from riji_agent.evolution.service import EvolutionError, EvolutionService
 from riji_agent.hermes.access import authorize_chat, verify_shared_secret
 from riji_agent.hermes.events import EventLog
 from riji_agent.hermes.models import GatewayReply, IncomingMessage
 from riji_agent.hermes.routing import route_persona
 from riji_agent.im.models import IncomingChatMessage
-from riji_agent.memory.models import SessionMessage, session_key
+from riji_agent.memory.models import HistoricalMessage, SessionMessage, session_key
+from riji_agent.memory.service import MemoryService
 from riji_agent.memory.store import MemoryStore
-from riji_agent.personas.context import build_context
+from riji_agent.memory.worker import MemoryWorker
+from riji_agent.models.types import LLMError
+from riji_agent.personas.context import AssembledContext, build_context
 from riji_agent.personas.models import UnknownPersonaError
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.models import ToolContext
@@ -161,6 +165,8 @@ def parse_fast_draft_request(text: str) -> Optional[str]:
     stripped = text.strip()
     if not stripped:
         return None
+    if stripped.startswith(("帮我记住", "帮忙记住")):
+        return None
     if not any(trigger in stripped for trigger in _FAST_DRAFT_TRIGGERS):
         return None
 
@@ -279,12 +285,40 @@ def _extract_corrected_date(text: str, *, today: Optional[Date] = None) -> Date:
 
 
 def reply_requests_draft_confirmation(text: str) -> bool:
-    return "草稿" in text and "确认保存" in text
+    return "草稿" in text and bool(re.search(
+        r"(?:^|[，,。；;！？\n])\s*(?:请(?:你)?|现在|直接|只需)?\s*"
+        r"(?:回复|发送|输入|点击|选择)\s*[「“\"'‘【]*\s*确认保存", text
+    ))
 
 
 def is_draft_verification_request(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
-    return any(phrase in compact for phrase in _WRITE_VERIFICATION_PHRASES)
+    # Status questions can contain a fast-write trigger (e.g. 记到日记).
+    # An explicit new-entry prefix still takes precedence over quoted content.
+    explicit_entry = compact.startswith(("帮我记", "帮忙记", "记录一下", "记一下"))
+    write_question = re.search(
+        r"(?:记录|记到|记下|写入|保存|录入|写到).{0,16}"
+        r"(?:了吗|了么|没有|没看到|找不到|成功|是否|有没有)", compact
+    )
+    has_question = any(term in compact for term in (
+        "吗", "么", "是否", "有没有", "没看到", "找不到", "？", "?",
+    ))
+    if write_question and has_question and not explicit_entry:
+        return True
+    if parse_fast_draft_request(text) is not None:
+        return False
+    if any(phrase in compact for phrase in _WRITE_VERIFICATION_PHRASES):
+        return True
+    has_write_status = any(
+        term in compact for term in ("写入", "保存", "录入", "存进去", "写进去")
+    )
+    has_missing_status = any(
+        term in compact for term in ("没有", "没", "未", "不在", "找不到")
+    )
+    has_verification_context = any(
+        term in compact for term in ("日记", "文档", "确认", "检查", "看下", "查看")
+    )
+    return has_write_status and has_missing_status and has_verification_context
 
 
 def parse_draft_preview_reply(
@@ -350,6 +384,19 @@ class Responder:
         raise NotImplementedError
 
 
+def _context_material(context: AssembledContext) -> tuple[Any, ...]:
+    """Freeze permission-relevant context while ignoring retrieval progress."""
+    memories = tuple(
+        tuple({key: value for key, value in asdict(item).items() if key != "score"}
+              for item in sorted(items, key=lambda item: str(item.id)))
+        for items in (context.shared_memories, context.persona_memories)
+    )
+    return (
+        context.persona.system_prompt, context.persona.answer_boundaries,
+        context.persona.allowed_tools, dict(context.preferences), memories,
+    )
+
+
 class HermesGateway:
     def __init__(
         self,
@@ -364,6 +411,8 @@ class HermesGateway:
         calendar_service: Optional[CalendarService] = None,
         evolution_service: Optional[EvolutionService] = None,
         voice_reply_service: Optional[VoiceReplyService] = None,
+        memory_service: Optional[MemoryService] = None,
+        memory_worker: Optional[MemoryWorker] = None,
         default_persona: str = "gentle_reviewer",
     ) -> None:
         self._secret = hermes_secret
@@ -376,6 +425,8 @@ class HermesGateway:
         self._calendar_service = calendar_service
         self._evolution_service = evolution_service
         self._voice_reply_service = voice_reply_service
+        self.memory_service = memory_service
+        self.memory_worker = memory_worker
         self._default_persona = default_persona
         self._lock = threading.Lock()
 
@@ -386,6 +437,10 @@ class HermesGateway:
         # Gate 1 + 2: caller identity and chat authorization.
         verify_shared_secret(shared_secret, self._secret)
         authorize_chat(message.user_id, message.chat_type, self._allowed)
+        from riji_agent.mentors.legacy_route import route_host_message
+        discussion_reply = route_host_message(getattr(self, "mentor_runtime", None), message)
+        if discussion_reply is not None:
+            return discussion_reply
 
         user = message.user_id
         with self._lock:
@@ -429,10 +484,9 @@ class HermesGateway:
                     if corrected is not None:
                         return corrected
 
-                if is_draft_verification_request(message.text):
-                    verification = self._verify_latest_draft(message, current)
-                    if verification is not None:
-                        return verification
+                if (is_draft_verification_request(message.text)
+                        or self._is_draft_status_followup(message, current)):
+                    return self._verify_latest_draft(message, current)
 
                 draft_content = parse_fast_draft_request(message.text)
                 if draft_content is not None:
@@ -464,6 +518,47 @@ class HermesGateway:
 
     # --------------------------------------------------------------- internals
 
+    def _is_draft_status_followup(
+        self, message: IncomingChatMessage, persona_id: str
+    ) -> bool:
+        compact = re.sub(r"\s+", "", message.text).strip("。？?！!")
+        if compact not in {"为什么没有创建", "为什么没创建", "为什么没有保存", "怎么回事"}:
+            return False
+        history = self._store.get_session_history(
+            message.user_id, persona_id, message.chat_id, limit=1,
+        )
+        return bool(history and history[-1].role == "assistant" and any(
+            term in history[-1].content
+            for term in ("可确认草稿", "待确认的草稿", "写入失败", "校验失败")
+        ))
+
+    def _record_draft_reply(
+        self, message: IncomingChatMessage, persona_id: str, reply: str
+    ) -> GatewayReply:
+        """Keep deterministic outcomes in the same scoped history as model turns."""
+        self._store.append_message(
+            message.user_id, persona_id, message.chat_id, "user", message.text,
+        )
+        self._store.append_message(
+            message.user_id, persona_id, message.chat_id, "assistant", reply,
+        )
+        self._events.record(message.event_id, persona_id, reply)
+        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+
+    @staticmethod
+    def _private_scope(message: IncomingChatMessage) -> PrivatePreviewScope:
+        return PrivatePreviewScope(
+            user_id=message.user_id,
+            conversation_id=message.conversation_id or f"legacy:{message.chat_id}",
+            platform=message.platform,
+            app_binding_id=message.app_binding_id,
+            chat_id=message.chat_id,
+            chat_type=message.chat_type,
+        )
+
+    def _bind_draft_preview(self, message: IncomingChatMessage, draft_id: str) -> None:
+        self._draft_service.bind_preview(draft_id, self._private_scope(message), message.event_id)
+
     def _respond(
         self, message: IncomingChatMessage, persona_id: str, question: str
     ) -> GatewayReply:
@@ -475,33 +570,50 @@ class HermesGateway:
             user_id=user,
             persona_id=persona_id,
             chat_id=chat,
+            memory_service=self.memory_service,
+            query=question,
         )
         context = ToolContext(
             request_id=request_id,
             session_id=session_key(user, persona_id, chat),
             feishu_user_id=user,
             persona_id=persona_id,
+            allowed_tools=assembled.persona.allowed_tools,
+            ai_discussion_history=any(item.content_type != "conversation" for item in assembled.history),
         )
 
-        self._store.append_message(user, persona_id, chat, "user", question)
+        source_message = self._store.append_message(user, persona_id, chat, "user", question)
         started = time.perf_counter()
-        reply = self._responder.respond(
-            context,
-            assembled.system_prompt,
-            assembled.history,
-            question,
-            allowed_tools=assembled.persona.allowed_tools,
-        )
+        expected_context = _context_material(assembled)
+
+        def check_context() -> None:
+            current = build_context(
+                self._store, self._registry, user_id=user, persona_id=persona_id,
+                chat_id=chat, memory_service=self.memory_service, query=question,
+            )
+            if _context_material(current) != expected_context:
+                raise LLMError("chat_context_changed")
+
+        guarded = getattr(self._responder, "respond_guarded", None)
+        respond = guarded or self._responder.respond
+        kwargs = {"before_send": check_context} if guarded is not None else {}
+        reply = respond(context, assembled.system_prompt, assembled.history, question,
+                        allowed_tools=assembled.persona.allowed_tools, **kwargs)
         reply = self._block_unverified_write_claim(message, persona_id, reply)
-        reply = self._ensure_confirmable_draft_reply(message, persona_id, reply)
+        reply = self._ensure_confirmable_draft_reply(message, persona_id, reply, context=context)
         _LOG.info(
             "gateway responder completed request_id=%s persona=%s elapsed_ms=%.1f",
             request_id,
             persona_id,
             (time.perf_counter() - started) * 1000,
         )
-        self._store.append_message(user, persona_id, chat, "assistant", reply)
+        ai_result = self._ai_result_context(context)
+        if ai_result:
+            reply = "【AI 讨论资料整理；不代表本人经历】\n" + reply
+        self._store.append_message(user, persona_id, chat, "assistant", reply,
+                                   content_type="ai_discussion_result" if ai_result else "conversation")
         self._events.record(message.event_id, persona_id, reply)
+        self._capture_source(source_message, request_id)
         audio = None
         if _requests_voice_reply(message.text):
             audio = self._synthesize_voice_reply(
@@ -510,6 +622,21 @@ class HermesGateway:
                 voice=assembled.persona.voice_for(self._voice_provider_id()),
             )
         return GatewayReply(request_id, persona_id, reply, deduplicated=False, audio=audio)
+
+    def _capture_source(self, source: HistoricalMessage, request_id: str) -> None:
+        if self.memory_service is None:
+            return
+        self.memory_service.enqueue_capture(
+            source_request_id=request_id,
+            user_id=source.user_id,
+            persona_id=source.persona_id,
+            session_id=source.session_id,
+            content=source.content,
+            source_message_id=source.id,
+            source_created_at=source.created_at,
+        )
+        if self.memory_worker is not None:
+            self.memory_worker.wake()
 
     def _voice_provider_id(self) -> str:
         if self._voice_reply_service is None:
@@ -641,15 +768,28 @@ class HermesGateway:
         _LOG.warning("blocked unverified journal write success claim")
         return "没有找到可从目标日记文件核验的已提交草稿，因此不能声称已经写入。"
 
+    def _ai_result_context(self, context: ToolContext) -> bool:
+        ai_evidence = getattr(self._responder, "has_ai_discussion_evidence", None)
+        return context.ai_discussion_history or bool(callable(ai_evidence) and ai_evidence(context.request_id))
+
     def _ensure_confirmable_draft_reply(
-        self, message: IncomingChatMessage, persona_id: str, reply: str
+        self, message: IncomingChatMessage, persona_id: str, reply: str, *, context: ToolContext | None = None
     ) -> str:
-        if self._draft_service is None or not reply_requests_draft_confirmation(reply):
+        if self._draft_service is None:
             return reply
 
         user, chat = message.user_id, message.chat_id
         session_id = session_key(user, persona_id, chat)
-        if self._draft_service.get_latest_awaiting_for_session(session_id) is not None:
+        existing = self._draft_service.get_latest_awaiting_for_session(session_id)
+        requests_confirmation = reply_requests_draft_confirmation(reply)
+        if requests_confirmation and context is not None and self._ai_result_context(context):
+            return "本轮参考了 AI 讨论资料，不能把整理结果保存为本人经历。请在对应讨论选择转交保存，私聊预览独立 AI 结果块后确认。"
+        if existing is not None and (requests_confirmation or not self._draft_service.has_preview_binding(existing.draft_id)):
+            self._bind_draft_preview(message, existing.draft_id)
+            canonical = self._draft_service.render_preview(existing)
+            return reply if canonical in reply else reply + "\n" + canonical
+
+        if not requests_confirmation:
             return reply
 
         parsed = parse_draft_preview_reply(reply)
@@ -668,6 +808,7 @@ class HermesGateway:
         _LOG.info(
             "materialized model-rendered draft preview draft_id=%s", preview.draft_id
         )
+        self._bind_draft_preview(message, preview.draft_id)
         return preview.preview_text
 
     def _create_fast_draft(
@@ -682,10 +823,12 @@ class HermesGateway:
             persona_id=persona_id,
             operations=[DraftOperation(_DEFAULT_DRAFT_SECTION, content)],
         )
+        self._bind_draft_preview(message, preview.draft_id)
         reply = preview.preview_text
-        self._store.append_message(user, persona_id, chat, "user", message.text)
+        source_message = self._store.append_message(user, persona_id, chat, "user", message.text)
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
+        self._capture_source(source_message, request_id)
         _LOG.info(
             "gateway fast draft completed request_id=%s persona=%s elapsed_ms=%.1f",
             request_id,
@@ -705,6 +848,9 @@ class HermesGateway:
             previous = self._draft_service.get_latest_for_session(session_id)
         if previous is None or not previous.operations:
             return None
+        if any(operation.provenance is not None for operation in previous.operations):
+            return self._record_draft_reply(message, persona_id,
+                "AI 讨论结果请在专用转交预览中使用 /修改转交 或 /转交日期，修改后重新确认，不能转成普通日记草稿。")
 
         request_id = uuid.uuid4().hex
         started = time.perf_counter()
@@ -733,10 +879,12 @@ class HermesGateway:
         )
         if previous_was_awaiting:
             self._draft_service.cancel_draft(previous.draft_id, user_id=user)
+        self._bind_draft_preview(message, preview.draft_id)
         reply = "已按你的纠正重新起草：\n" + preview.preview_text
-        self._store.append_message(user, persona_id, chat, "user", message.text)
+        source_message = self._store.append_message(user, persona_id, chat, "user", message.text)
         self._store.append_message(user, persona_id, chat, "assistant", reply)
         self._events.record(message.event_id, persona_id, reply)
+        self._capture_source(source_message, request_id)
         _LOG.info(
             "gateway corrected draft completed request_id=%s persona=%s elapsed_ms=%.1f",
             request_id,
@@ -763,57 +911,75 @@ class HermesGateway:
             draft = self._draft_service.get_draft(draft_id)
             if draft is None or draft.user_id != user:
                 reply = "未找到该草稿（可能已过期或不属于你）。"
-                self._events.record(message.event_id, persona_id, reply)
-                return GatewayReply(
-                    uuid.uuid4().hex, persona_id, reply, deduplicated=False
-                )
+                return self._record_draft_reply(message, persona_id, reply)
         else:
             draft = self._draft_service.get_latest_awaiting_for_session(
                 session_key(user, persona_id, chat)
             )
             if draft is None:
-                reply = "没有待确认的草稿。"
-                self._events.record(message.event_id, persona_id, reply)
-                return GatewayReply(
-                    uuid.uuid4().hex, persona_id, reply, deduplicated=False
+                latest = self._draft_service.get_latest_for_session(
+                    session_key(user, persona_id, chat)
                 )
+                if latest is not None and latest.status is DraftStatus.COMMITTED:
+                    return self._verify_latest_draft(message, persona_id)
+                reply = "没有待确认的草稿。"
+                return self._record_draft_reply(message, persona_id, reply)
 
         try:
+            if not self._draft_service.has_preview_binding(draft.draft_id):
+                if draft.session_id != session_key(user, draft.persona_id, chat):
+                    return self._record_draft_reply(message, persona_id, "请回到展示草稿的私聊重新预览和确认。")
+                self._bind_draft_preview(message, draft.draft_id)
+                return self._record_draft_reply(
+                    message, persona_id, "请核对这份重新展示的草稿，再回复「确认保存」：\n"
+                    + self._draft_service.render_preview(draft),
+                )
+            confirmation = ConfirmationContext(
+                scope=self._private_scope(message), draft_id=draft.draft_id,
+                preview_hash=preview_hash(draft), event_id=message.event_id, token=draft.token,
+            )
             result = self._draft_service.commit_draft(
-                draft.draft_id, user_id=user, token=draft.token
+                draft.draft_id, user_id=user, token=draft.token, confirmation=confirmation,
             )
             reply = (
                 f"已写入并重新读取校验 [[{result.source_id}]]"
-                f"（{result.target_date.isoformat()}）。"
+                f"（{result.target_date.isoformat()}，{'、'.join(result.sections)} 区块）。"
             )
         except DraftError as exc:
             reply = self._draft_error_reply(exc)
         except OSError:
             _LOG.warning("draft commit failed with filesystem error")
             reply = "写入失败：本地日记文件暂时不可读写，请稍后重试。"
-        self._events.record(message.event_id, persona_id, reply)
-        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+        return self._record_draft_reply(message, persona_id, reply)
 
     def _verify_latest_draft(
         self, message: IncomingChatMessage, persona_id: str
-    ) -> Optional[GatewayReply]:
+    ) -> GatewayReply:
+        latest = self._draft_service.get_latest_for_session(
+            session_key(message.user_id, persona_id, message.chat_id)
+        )
+        if latest is not None and latest.status is not DraftStatus.COMMITTED:
+            reply = "最近这份草稿尚未成功提交；之前的保存回执不代表这份也已保存。"
+            if latest.status is DraftStatus.AWAITING:
+                reply += "\n" + self._draft_service.render_preview(latest)
+            return self._record_draft_reply(message, persona_id, reply)
         try:
             result = self._draft_service.ensure_latest_commit(
                 user_id=message.user_id,
                 session_id=session_key(message.user_id, persona_id, message.chat_id),
             )
         except (DraftError, OSError):
-            _LOG.warning("confirmed draft repair failed", exc_info=True)
+            _LOG.warning("confirmed draft repair failed")
             reply = "检测到已确认内容缺失，但自动恢复没有通过连续校验；不会误报保存成功。"
-            self._events.record(message.event_id, persona_id, reply)
-            return GatewayReply(
-                uuid.uuid4().hex, persona_id, reply, deduplicated=False
-            )
+            return self._record_draft_reply(message, persona_id, reply)
         if result is None:
-            return None
-        if result.repaired:
             reply = (
-                f"检测到同步回写覆盖，已自动恢复并连续校验 "
+                "没有找到该会话可核验的已提交草稿；"
+                "为避免夹带旧日记内容，本次不会自动生成或补录新草稿。"
+            )
+        elif result.repaired:
+            reply = (
+                f"检测到已确认内容缺失，已自动恢复并连续校验 "
                 f"[[{result.source_id}]]（{result.target_date.isoformat()}），"
                 "无需再次确认保存。"
             )
@@ -827,8 +993,7 @@ class HermesGateway:
                 "重新读取目标日记文件后，未找到这次草稿的完整内容。"
                 "因此不能确认写入成功，也不应以之前的成功回复为准。"
             )
-        self._events.record(message.event_id, persona_id, reply)
-        return GatewayReply(uuid.uuid4().hex, persona_id, reply, deduplicated=False)
+        return self._record_draft_reply(message, persona_id, reply)
 
     @staticmethod
     def _draft_error_reply(exc: DraftError) -> str:

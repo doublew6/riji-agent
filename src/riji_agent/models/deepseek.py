@@ -1,8 +1,8 @@
 """DeepSeek chat completion provider: the default model adapter.
 
 DeepSeek speaks the OpenAI-compatible wire format, so this is a thin preset over
-:class:`OpenAICompatibleProvider` that only fixes the default base URL, model and
-the error label. The API key stays inside the object and is never logged.
+:class:`OpenAICompatibleProvider` that fixes the default base URL, model, error
+label and bounded SSE response mode. The API key is never logged.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from riji_agent.models.openai_compatible import OpenAICompatibleProvider
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
+    _stream = True
+
     def __init__(
         self,
         *,

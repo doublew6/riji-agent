@@ -88,6 +88,20 @@ def test_unknown_tool_is_not_executed(registry: ToolRegistry) -> None:
     assert result.sources == ()
 
 
+def test_registered_but_unadvertised_tool_is_denied_at_execution(registry: ToolRegistry) -> None:
+    provider = FakeProvider([_tool_turn("search_journal", {"query": "项目"}), AssistantTurn(content="Denied")])
+    result = AgentRunner(provider, registry, tool_specs=[]).run(_ctx(), "Question")
+    assert result.audit[0].error == "tool_not_allowed"
+    assert result.sources == ()
+
+
+def test_group_context_without_live_capability_cannot_use_registered_tools(registry: ToolRegistry) -> None:
+    from dataclasses import replace
+    context = replace(_ctx(), chat_type="group", purpose="roundtable", allowed_tools=("search_journal",))
+    result = registry.invoke(context, "search_journal", '{"query":"项目"}')
+    assert result.error == "tool_not_allowed"
+
+
 def test_tool_error_is_fed_back_to_model(registry: ToolRegistry) -> None:
     provider = FakeProvider([
         _tool_turn("read_note", {"source_id": "riji/daily/2026-06-24"}),

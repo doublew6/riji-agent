@@ -8,6 +8,7 @@ absent, the caller is expected to refuse the commit rather than guess.
 from __future__ import annotations
 
 from datetime import date as Date
+import re
 from typing import List, Optional
 
 from riji_agent.drafts.errors import DraftError, DraftErrorCode
@@ -43,7 +44,7 @@ def _find_section(lines: List[str], section: str) -> int:
     raise DraftError(DraftErrorCode.SECTION_NOT_FOUND, f"section not found: {section}")
 
 
-def append_to_section(text: str, section: str, content: str) -> str:
+def append_to_section(text: str, section: str, content: str, *, bullet: bool = True) -> str:
     """Insert ``- content`` at the end of ``section``'s block, leaving the rest intact."""
     lines = text.split("\n")
     heading_idx = _find_section(lines, section)
@@ -60,12 +61,12 @@ def append_to_section(text: str, section: str, content: str) -> str:
     while insert_at - 1 > heading_idx and lines[insert_at - 1].strip() == "":
         insert_at -= 1
 
-    lines.insert(insert_at, f"- {content}")
+    lines.insert(insert_at, f"- {content}" if bullet else "\n" + content + "\n")
     return "\n".join(lines)
 
 
 def section_contains_entry(text: str, section: str, content: str) -> bool:
-    """Return whether an exact appended entry exists inside its target section."""
+    """Match complete entry text, allowing only a changed Markdown list marker."""
     lines = text.split("\n")
     try:
         heading_idx = _find_section(lines, section)
@@ -78,6 +79,13 @@ def section_contains_entry(text: str, section: str, content: str) -> bool:
         if level is not None and level <= heading_level:
             end = index
             break
-    section_text = "\n".join(lines[heading_idx + 1 : end])
-    entry = f"- {content}"
-    return f"\n{entry}\n" in f"\n{section_text}\n"
+    section_lines = lines[heading_idx + 1 : end]
+    expected = content.split("\n")
+    for index, line in enumerate(section_lines):
+        first = re.sub(r"^[-*+]\s+", "", line.strip())
+        if first != expected[0].strip():
+            continue
+        tail = section_lines[index + 1 : index + len(expected)]
+        if tail == expected[1:]:
+            return True
+    return False

@@ -12,7 +12,7 @@ files under the configured data directory.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from riji_agent.agent.hermes import HermesAgentRuntime
 from riji_agent.agent.tools import ToolRegistry
@@ -31,7 +31,23 @@ from riji_agent.journal.embedding import embedder_from_settings
 from riji_agent.journal.index import JournalIndex
 from riji_agent.journal.scheduler import IndexScheduler
 from riji_agent.memory.store import MemoryStore
-from riji_agent.models.registry import build_model_provider
+from riji_agent.memory.backend import LongTermMemoryBackend
+from riji_agent.memory.capture import DeepSeekMemoryExtractor
+from riji_agent.memory.mem0 import Mem0Client
+from riji_agent.memory.operations import MemoryOperationsStore
+from riji_agent.memory.service import CaptureProcessor, MemoryService
+from riji_agent.memory.organization import MemoryOrganizer
+from riji_agent.memory.snapshot import MemorySnapshotWriter
+from riji_agent.memory.worker import MemoryWorker
+from riji_agent.memory.journal_backend import JournalEvidenceBackend
+from riji_agent.memory.journal_engine import JournalMemoryEngine
+from riji_agent.memory.journal_store import JournalMemoryStore
+from riji_agent.memory.journal_types import JournalMemoryPolicy
+from riji_agent.models.registry import (
+    build_memory_model_provider,
+    build_model_provider,
+    model_processing_target,
+)
 from riji_agent.models.types import LLMProvider
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.retrieval.service import RetrievalService
@@ -113,11 +129,107 @@ def build_calendar_service(
     )
 
 
+def build_memory_runtime(
+    settings: Settings,
+    *,
+    personas: Optional[PersonaRegistry] = None,
+    backend: Optional[LongTermMemoryBackend] = None,
+    extractor_provider: Optional[LLMProvider] = None,
+) -> Tuple[Optional[MemoryService], Optional[MemoryWorker]]:
+    if settings.memory_provider != "mem0":
+        return None, None
+    registry = personas or PersonaRegistry()
+    memory_backend = backend or Mem0Client(
+        settings.mem0_base_url,
+        settings.mem0_api_key.get_secret_value(),  # type: ignore[union-attr]
+    )
+    operations_path = settings.data_dir / "memory-operations.sqlite3"
+    extractor_model = extractor_provider or build_memory_model_provider(settings)
+    journal = build_journal_memory(settings, memory_backend, extractor_model, personas=registry)
+    if journal is not None:
+        memory_backend = JournalEvidenceBackend(memory_backend, journal)
+    snapshot = _build_memory_snapshot(settings, memory_backend, registry)
+    service = MemoryService(
+        memory_backend,
+        MemoryOperationsStore(operations_path),
+        snapshot,
+        context_max_chars=settings.memory_context_max_chars,
+        auto_capture=settings.memory_auto_capture,
+    )
+    processor = CaptureProcessor(
+        memory_backend,
+        MemoryOperationsStore(operations_path),
+        DeepSeekMemoryExtractor(extractor_model),
+        snapshot,
+    )
+    organizer = MemoryOrganizer(memory_backend, service.operations.organization, extractor_model)
+    service.journal = journal
+    if journal is not None:
+        journal.on_change = lambda: _journal_changed(service, journal.policy.user_id)
+    return service, MemoryWorker(processor, organizer=organizer, journal=journal)
+
+
+def build_journal_memory(settings: Settings, backend: LongTermMemoryBackend,
+                         provider: LLMProvider, *,
+                         personas: Optional[PersonaRegistry] = None) -> Optional[JournalMemoryEngine]:
+    path = settings.data_dir / "journal-memory.sqlite3"
+    if not settings.journal_memory_enabled and not path.is_file():
+        return None
+    store = JournalMemoryStore(path)
+    owner = settings.journal_memory_user_id or store.get_control("user_id")
+    extraction = model_processing_target(settings, "memory")
+    recall = model_processing_target(settings, "chat")
+    policy = JournalMemoryPolicy(
+        settings.journal_root, owner,
+        tuple(value.strip() for value in settings.journal_memory_sections.split(",") if value.strip()),
+        date_from=settings.journal_memory_date_from, date_to=settings.journal_memory_date_to,
+        segment_chars=settings.journal_memory_segment_chars, source_chars=settings.journal_memory_source_chars,
+        daily_chars=settings.journal_memory_daily_chars, scan_seconds=settings.journal_memory_scan_seconds,
+        initialization_unlimited=settings.journal_memory_initialization_unlimited,
+        read_timeout=settings.index_file_timeout_seconds or 2.0,
+        enabled=settings.journal_memory_enabled,
+        extraction_destination=extraction.destination,
+        extraction_provider=extraction.provider,
+        extraction_model=extraction.model,
+        recall_destination=recall.destination,
+        recall_provider=recall.provider,
+        recall_model=recall.model,
+        mentors=(personas or PersonaRegistry()).ids(),
+    )
+    return JournalMemoryEngine(policy, store, backend, provider)
+
+
+def _journal_changed(service: MemoryService, user_id: str) -> None:
+    service.request_snapshot()
+    service.operations.organization.request(user_id)
+    if service.journal and (service.journal.initialization_status()["active"]
+            or service.journal.store.get_control("organization_budget_recheck_requested") == "1"):
+        service.operations.organization.wake_daily_budget(user_id)
+        service.journal.store.set_control("organization_budget_recheck_requested", "0")
+
+
+def _build_memory_snapshot(
+    settings: Settings,
+    backend: LongTermMemoryBackend,
+    personas: PersonaRegistry,
+) -> Optional[MemorySnapshotWriter]:
+    if not settings.memory_snapshot_enabled:
+        return None
+    return MemorySnapshotWriter(
+        backend,
+        settings.memory_snapshot_path,  # type: ignore[arg-type]
+        user_ids=settings.allowed_feishu_user_ids,
+        persona_names={item.persona_id: item.name for item in personas.all()},
+    )
+
+
 def build_production_gateway(
     settings: Settings,
     *,
     provider: Optional[LLMProvider] = None,
     index: Optional[JournalIndex] = None,
+    memory_backend: Optional[LongTermMemoryBackend] = None,
+    memory_extractor_provider: Optional[LLMProvider] = None,
 ) -> HermesAgentRuntime:
     """Construct the fully wired gateway for ``settings``.
 
@@ -142,26 +254,44 @@ def build_production_gateway(
     if yangming.count() == 0:
         load_seed(yangming)
 
-    registry = ToolRegistry(retrieval, draft_service=draft_service, yangming_kb=yangming)
+    memory_store = MemoryStore(data_dir / "memory.sqlite3")
+    registry = ToolRegistry(
+        retrieval, draft_service=draft_service, yangming_kb=yangming, memory_store=memory_store
+    )
 
     # Dispatch on settings.model_provider via the registry; DeepSeek is the
     # default, but no provider is hardcoded here.
     model = provider or build_model_provider(settings)
 
     audit = AuditStore(data_dir / "audit.sqlite3")
-    responder = AgentResponder(model, registry, audit_store=audit)
+    responder = AgentResponder(
+        model,
+        registry,
+        audit_store=audit,
+        runtime_trace_policy_path=settings.runtime_trace_policy_path,
+    )
+
+    personas = PersonaRegistry()
+    memory_service, memory_worker = build_memory_runtime(
+        settings,
+        personas=personas,
+        backend=memory_backend,
+        extractor_provider=memory_extractor_provider,
+    )
 
     gateway = HermesAgentRuntime(
         hermes_secret=settings.hermes_shared_secret.get_secret_value(),
         allowed_user_ids=settings.allowed_feishu_user_ids,
-        registry=PersonaRegistry(),
-        store=MemoryStore(data_dir / "memory.sqlite3"),
+        registry=personas,
+        store=memory_store,
         events=EventLog(data_dir / "events.sqlite3"),
         responder=responder,
         draft_service=draft_service,
         calendar_service=build_calendar_service(settings, journal_index=journal_index),
         evolution_service=EvolutionService(EvolutionProposalStore(data_dir / "evolution.sqlite3")),
         voice_reply_service=build_voice_reply_service(settings),
+        memory_service=memory_service,
+        memory_worker=memory_worker,
     )
     # Carry the scheduler so the app can prewarm/refresh and report status.
     gateway.index_scheduler = IndexScheduler(
@@ -169,4 +299,8 @@ def build_production_gateway(
         interval_seconds=settings.index_interval_seconds,
         enabled=settings.index_schedule_enabled,
     )
+    if settings.mentors_enabled:
+        from riji_agent.mentors.runtime import build_runtime
+        gateway.mentor_runtime = build_runtime(settings, model=model, memory_service=memory_service,
+                                               drafts=draft_service)
     return gateway

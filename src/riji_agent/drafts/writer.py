@@ -55,6 +55,7 @@ class WritePolicy:
     io_delay_seconds: float = 0.2
     stability_checks: int = 3
     stability_delay_seconds: float = 0.5
+    before_replace: Callable[[], None] | None = None
 
 
 def _sha256(text: str) -> str:
@@ -134,7 +135,7 @@ def verify_committed_operations(
     except OSError:
         return False
     return all(
-        section_contains_entry(text, operation.section, operation.content)
+        section_contains_entry(text, operation.section, operation.journal_text)
         for operation in operations
     )
 
@@ -193,9 +194,10 @@ def _apply_missing_operations(
 ) -> str:
     updated = text
     for operation in operations:
-        if section_contains_entry(updated, operation.section, operation.content):
+        if section_contains_entry(updated, operation.section, operation.journal_text):
             continue
-        updated = append_to_section(updated, operation.section, operation.content)
+        updated = append_to_section(updated, operation.section, operation.journal_text,
+                                    bullet=operation.content_type == "personal_journal")
     return updated
 
 
@@ -203,7 +205,7 @@ def _contains_operations(
     text: str, operations: Sequence[DraftOperation]
 ) -> bool:
     return all(
-        section_contains_entry(text, operation.section, operation.content)
+        section_contains_entry(text, operation.section, operation.journal_text)
         for operation in operations
     )
 
@@ -217,8 +219,12 @@ def _atomic_replace(path: Path, text: str, policy: WritePolicy) -> None:
             delay_seconds=policy.io_delay_seconds,
         )
         _sync_file(tmp)
+        def replace_current() -> None:
+            if policy.before_replace is not None:
+                policy.before_replace()
+            os.replace(tmp, path)
         _retry_transient_io(
-            lambda: os.replace(tmp, path),
+            replace_current,
             attempts=policy.io_attempts,
             delay_seconds=policy.io_delay_seconds,
         )

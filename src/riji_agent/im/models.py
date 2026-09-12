@@ -17,3 +17,5 @@ class IncomingChatMessage:
     chat_type: str
     text: str
     platform: str
+    app_binding_id: str = "legacy"
+    conversation_id: str = ""

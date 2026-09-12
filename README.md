@@ -153,6 +153,15 @@ uv run riji-agent
 配置的模型 provider，不依赖飞书或 Hermes。建议先用它确认本地链路可用，
 再接 IM。
 
+如需查看每次真实 Agent 回答中的 LLM 与工具调用层级，可按
+[私有运行时可观测性](docs/runtime-observability.md) 配置仓库外的 EvalMesh
+policy，并将脱敏后的 Trace 发送到本机 Opik。
+
+Agent 长期记忆可选接入 Mem0 Self-Hosted：共享用户事实、导师私有观察、
+后台捕获队列和只读 `MEMORY.md` 快照全部由本机控制；原始日记仍严格执行
+草稿预览与确认写入。部署、迁移和 Memory Review 使用方法见
+[长期记忆与 MEMORY.md](docs/long-term-memory.md)。
+
 安装为后台用户服务：
 
 ```bash

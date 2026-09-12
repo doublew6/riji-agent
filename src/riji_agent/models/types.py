@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Protocol, Sequence, Tuple
 
 
@@ -21,6 +21,8 @@ class AssistantTurn:
 
     content: Optional[str]
     tool_calls: Tuple[ToolCall, ...] = ()
+    # Provider continuation metadata, never an answer or durable personal fact.
+    reasoning_content: Optional[str] = field(default=None, repr=False)
 
 
 class LLMError(Exception):

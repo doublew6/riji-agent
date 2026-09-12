@@ -7,6 +7,8 @@ from datetime import date as Date
 from enum import Enum
 from typing import Optional, Tuple
 
+from riji_agent.journal.content import ContentSpan
+
 
 class NoteKind(str, Enum):
     """The journal period a note belongs to, derived from its vault folder."""
@@ -46,3 +48,4 @@ class ParsedNote:
     body: str
     private: bool
     content_hash: str
+    content_spans: Tuple[ContentSpan, ...] = ()

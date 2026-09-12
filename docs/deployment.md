@@ -1,5 +1,7 @@
 # 本地部署、备份与故障恢复
 
+> #40 日记长期记忆的开发实现见 [操作说明](journal-memory.md) 和 [验收记录](journal-memory-acceptance.md)。生产目标仍只有 Air。启用前需按 AGENTS.md 的 Air 备份、同步、测试和服务顺序更新 Mem0 API 镜像；开发机不得启动生产 Compose 或迁移真实日记。不要使用下面的通用安装示例覆盖 Air 已有 runtime、凭据或服务配置。
+
 riji-agent 是本地隐私边界，固定监听 `127.0.0.1`。远程访问由 Hermes/飞书或受控的私有网络（如 Tailscale）处理，不要把端口暴露到公网。
 
 ## 依赖与部署
@@ -13,6 +15,10 @@ uv sync --extra dev
 uv run riji-agent index    # 首次部署：先预热索引（见下）
 uv run riji-agent          # 监听 http://127.0.0.1:8765
 ```
+
+真实 Agent Trace 默认关闭。需要在本机 Opik 中查看根 Input/Output、LLM
+span 和 tool span 时，按[私有运行时可观测性](runtime-observability.md)安装
+兼容的 EvalMesh，并配置仓库外的 mode-`0600` policy。
 
 **首次部署建议先预热索引**：真实 Obsidian/iCloud 目录冷启动需扫描全部 Markdown，iCloud 还可能逐个下载阻塞。先跑一次 `uv run riji-agent index` 把索引建好，再启动服务接入 Hermes，可避免首启动卡顿。
 
@@ -134,6 +140,7 @@ uv run riji-agent hermes-bridge status
 - 日记 vault（`RIJI_JOURNAL_ROOT`）：源数据，**只读**，绝不被写入索引或运行目录。
 - 运行目录（`RIJI_DATA_DIR`，默认 `~/.local/share/riji-agent`，权限 `0700`）：存放本地 SQLite。
 - SQLite（默认在运行目录）：日记索引（`riji-agent.sqlite3`）、记忆/会话（`memory.sqlite3`）、草稿（`drafts.sqlite3`）、幂等事件（`events.sqlite3`）、审计（`audit.sqlite3`）、王阳明知识库（`yangming.sqlite3`）。
+- 启用 Mem0 后，`memory-operations.sqlite3` 保存捕获队列与变更日志，`memory/MEMORY.md` 是 mode-`0600` 的只读快照；长期记忆正文的权威副本位于本机 Mem0 PostgreSQL。
 
 ## 备份
 
@@ -141,6 +148,7 @@ uv run riji-agent hermes-bridge status
 
 - `*.sqlite3`：索引、记忆、草稿、事件、审计。
 - `.env`：凭据（建议单独离线保管，不随仓库备份）。
+- Mem0 PostgreSQL：按 [长期记忆文档](long-term-memory.md) 和 `infra/mem0/README.md` 使用 `pg_dumpall` 备份；仅备份 SQLite 不足以恢复长期记忆。
 
 日记 vault 由用户自己的 Obsidian/iCloud 等机制备份；riji-agent 不复制它。
 
@@ -153,6 +161,8 @@ uv run riji-agent hermes-bridge status
 | 草稿/事件库损坏 | 删除对应 SQLite 重建；未确认草稿丢失，重新发起即可。 |
 | 配置无效启动即退出 | 进程以不含路径/密钥的安全错误退出；检查 `.env` 必填项与路径存在性。 |
 | DeepSeek 超时/失败 | 返回简短失败说明，不自动写入、不重试提交（见架构 §7）。 |
+| Mem0 检索失败 | 本次不注入长期记忆，聊天和日记工具继续工作；自动捕获进入后台重试。 |
+| `MEMORY.md` 刷新失败 | Mem0 变更不回滚，后台 worker 重试生成快照。 |
 
 ## 升级
 

@@ -19,6 +19,7 @@ STANDARD_TOOLS: Tuple[str, ...] = (
     "list_periods",
     "timeline",
     "find_before_after",
+    "session_search",
     "draft_daily_entry",
 )
 
@@ -27,6 +28,9 @@ SHARED_BOUNDARIES = (
     "始终区分三类信息：日记事实（附 [[riji/...]] 来源）、你的推断（标明是推断）、"
     "以及证据不足之处。不编造日记中不存在的内容；不做心理或医疗诊断；"
     "绝不返回任何被标记为 private 的内容。"
+    "用户询问以前聊过的事情且最近上下文不足时，调用 session_search，"
+    "用简短关键词检索同一导师同一聊天的历史用户原话；引用 [[conversation/消息ID]]。"
+    "聊天陈述和长期记忆不等于已经保存的日记，不把旧计划当作当前状态。"
     "涉及医疗、心理治疗、法律或投资等高风险领域时，明确说明你不能替代专业意见，"
     "并建议咨询相应专业人士。"
 )

@@ -86,7 +86,8 @@ def test_release_privacy_and_security_docs_exist() -> None:
     for phrase in (
         "not a zero-egress system",
         "Feishu/Lark",
-        "DeepSeek/default model provider",
+        "configured mentor provider",
+        "configured memory provider",
         "complete vault",
         "SQLite",
         "API keys",

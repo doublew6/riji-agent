@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "issue": 46,
+  "revision": "grounded-comparison-v1",
+  "authorship": "assistant-authored",
+  "review_status": "pending",
+  "independent_holdout": false,
+  "delivery": "review-only-never-target-input",
+  "required_repetitions": 3,
+  "grading_boundary": "Exact quotes establish attribution only. Semantic incompatibility and usefulness require separate content assessment.",
+  "dimensions": [
+    "双方引文是否准确归属到不同导师，且保留影响关系的条件、否定和备选范围。",
+    "双方是否对同一决策、同一成立条件作出真正不能同时成立的主张；未提及不能视为反对。",
+    "正文、claims、relationship和debate_needed是否一致；信息缺口不得伪装成真实冲突或已经一致。",
+    "共同假设、反例及少数观点是否保留到质询和综合；不能因少数或为了结束而消除真实反对。"
+  ],
+  "cases": {
+    "m-315d20ee406a": {
+      "purpose": "Original complementary-advice attribution regression",
+      "anchors": [
+        "若双方都建议先绑定晚间习惯，只有一方补充持续失败后可改早上，另一方没有反对，不得归因为是否允许早上的实质分歧。",
+        "若本次模型实际生成了不同立场，以实际双方原话评判，不能为了符合原样例强制false。",
+        "保留用户计划尚未开始的事实类别，后续只由主持人回应，不能借比较修复重启整桌。"
+      ],
+      "reviewer_scores": null,
+      "verdict": null
+    },
+    "m-3a4cae34bb6a": {
+      "purpose": "No-disagreement control",
+      "anchors": [
+        "首轮独立，未看到同伴前不自行判断是否辩论。",
+        "实际没有相斥主张时可在检查共同假设和反例后直接综合；不得制造分歧来填满两个位置。",
+        "如果实际输出确有关键取舍冲突，必须根据引文评审，不把案例名称当作标准答案。"
+      ],
+      "reviewer_scores": null,
+      "verdict": null
+    }
+  },
+  "semantic_controls": [
+    {
+      "id": "conditional-complement",
+      "question": "虚构情境：晚上记录日记常忘记。",
+      "opinions": [
+        "先尝试刷牙后写一行。如果固定晚间流程这个假设不成立，建议需要调整。",
+        "先尝试刷牙后写三行；如果晚上持续失败，恢复期可改到早上。"
+      ],
+      "expected": "compatible-or-complementary-no-invented-opposition"
+    },
+    {
+      "id": "genuine-opposition",
+      "question": "虚构情境：合同规定今日只可二选一，不能延期、分期或组合。",
+      "opinions": [
+        "在只能二选一且不能延期的约束下，我明确建议只选A，不选B。",
+        "在相同约束下，我明确建议只选B，不选A。"
+      ],
+      "expected": "conflict-with-two-exact-positions"
+    },
+    {
+      "id": "minority-opposition",
+      "question": "虚构情境：今日只可二选一，不能延期、分期或组合。",
+      "opinions": [
+        "只选A，不选B。",
+        "只选A，不选B。",
+        "只选A，不选B。",
+        "只选B，不选A；我反对按多数票代替证据判断。"
+      ],
+      "expected": "preserve-real-minority-conflict-no-majority-verdict"
+    },
+    {
+      "id": "conditional-priority",
+      "question": "虚构情境：本次只能先满足一个目标，安全底线已经满足，时间优先还是成本优先？",
+      "opinions": [
+        "在安全底线满足且本次只能先满足一个目标时，应先保时间，接受更高成本。",
+        "在相同条件下，应先保成本，接受更长时间；若安全底线未满足则本建议不适用。"
+      ],
+      "expected": "retain-conditional-priority-conflict-and-safety-counterexample"
+    }
+  ],
+  "review_record_fields": [
+    "batch_id", "run_id", "case_id", "attempt", "reviewer", "actual_artifact_ids",
+    "quotes_checked", "condition_assessment", "relationship_assessment", "text_consistency",
+    "minority_and_counterexample_assessment", "verdict", "rationale"
+  ]
+}

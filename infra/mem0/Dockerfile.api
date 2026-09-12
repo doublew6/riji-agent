@@ -1,0 +1,29 @@
+FROM python:3.12.11-slim-bookworm
+
+ARG MEM0_COMMIT
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --filter=blob:none https://github.com/mem0ai/mem0.git /opt/mem0 \
+    && cd /opt/mem0 \
+    && git checkout --detach "${MEM0_COMMIT}"
+
+WORKDIR /opt/mem0
+COPY patch_server.py /tmp/riji-mem0-patch-server.py
+COPY riji_routes.py /opt/mem0/server/riji_routes.py
+RUN python /tmp/riji-mem0-patch-server.py \
+    && grep -v '^mem0ai' server/requirements.txt > /tmp/server-requirements.txt \
+    && pip install --no-cache-dir "mem0ai==2.0.20" "fastembed==0.8.0" "psycopg[binary]==3.2.10" \
+    && pip install --no-cache-dir -r /tmp/server-requirements.txt
+
+COPY seed_fastembed.py /tmp/riji-seed-fastembed.py
+RUN python /tmp/riji-seed-fastembed.py
+
+COPY start-api.sh /usr/local/bin/riji-mem0-start
+RUN chmod 0555 /usr/local/bin/riji-mem0-start
+
+WORKDIR /opt/mem0/server
+EXPOSE 8000
+CMD ["/usr/local/bin/riji-mem0-start"]

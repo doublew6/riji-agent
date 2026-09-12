@@ -1,0 +1,93 @@
+name: riji-mem0
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    restart: unless-stopped
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/mem0/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d ${POSTGRES_DB:-postgres} -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [memory]
+
+  mem0:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        MEM0_COMMIT: 9a7924befd7026e41e445ba809370009e5e985a6
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_COLLECTION_NAME: riji_memories
+      APP_DB_NAME: mem0_app
+      HISTORY_DB_PATH: /data/history/history.db
+      FASTEMBED_CACHE_PATH: /models
+      HF_HUB_OFFLINE: "1"
+      DASHBOARD_URL: http://127.0.0.1:38880
+      AUTH_DISABLED: "false"
+      MEM0_TELEMETRY: "false"
+      MEM0_DEFAULT_LLM_MODEL: deepseek-chat
+      MEM0_DEFAULT_EMBEDDER_MODEL: BAAI/bge-small-zh-v1.5
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/mem0/.env}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in infra/mem0/.env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in infra/mem0/.env}
+      DEEPSEEK_API_BASE: ${DEEPSEEK_API_BASE:-https://api.deepseek.com}
+    ports:
+      - "127.0.0.1:38881:8000"
+    volumes:
+      - mem0_history:/data/history
+      - fastembed_models:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [memory]
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:38881
+      API_INTERNAL_URL: http://mem0:8000
+      NEXT_PUBLIC_INSTANCE_NAME: Riji Memory
+    ports:
+      - "127.0.0.1:38880:3000"
+    depends_on:
+      mem0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [memory]
+
+volumes:
+  postgres_data:
+  mem0_history:
+  fastembed_models:
+
+networks:
+  memory:
+    driver: bridge

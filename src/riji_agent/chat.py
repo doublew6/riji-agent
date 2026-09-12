@@ -58,7 +58,11 @@ def run_local_chat(
         registry = ToolRegistry(retrieval, yangming_kb=yangming)
 
         model = provider or build_model_provider(settings)
-        runner = AgentRunner(model, registry)
+        runner = AgentRunner(
+            model,
+            registry,
+            runtime_trace_policy_path=settings.runtime_trace_policy_path,
+        )
         context = ToolContext(
             request_id=uuid4().hex,
             session_id=_LOCAL_SESSION_ID,

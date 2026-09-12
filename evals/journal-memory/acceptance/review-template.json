@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "corpus": "synthetic-acceptance-draft-v1",
+  "corpus_sha256": null,
+  "report_sha256": null,
+  "reviewer": null,
+  "review_status": "unreviewed",
+  "rubric_version": null,
+  "thresholds_frozen_before_holdout": false,
+  "labels": [],
+  "label_template": {
+    "case_id": null,
+    "source_supported": null,
+    "material_omissions": null,
+    "false_merge": null,
+    "time_state_correct": null,
+    "relationship_correct": null,
+    "verdict": null,
+    "notes": null
+  },
+  "coverage": {
+    "real_mem0_retrieval": "not_run",
+    "four_pipeline_comparison": "not_run",
+    "end_to_end_answer_quality": "not_run"
+  }
+}
