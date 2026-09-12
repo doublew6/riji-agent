@@ -1,0 +1,42 @@
+{
+  "structural": {
+    "defaultFirstScreen": "B01",
+    "ordinaryScreensWithAir": [],
+    "screens": 102,
+    "idsUnique": true,
+    "missingTargets": [],
+    "pageOverflow": false
+  },
+  "mobile": {
+    "pageOverflow": false,
+    "overflowing": [],
+    "columns": "362px"
+  },
+  "narrow": {
+    "pageOverflow": false,
+    "overflowing": []
+  },
+  "routinePaths": [
+    "one-page-text",
+    "one-page-voice",
+    "first-recording",
+    "optional-ai-sheet",
+    "account-on-demand",
+    "daily-collision",
+    "diary-directory",
+    "weekly",
+    "monthly"
+  ],
+  "errors": [],
+  "remoteRequests": [],
+  "anchorNavigation": true,
+  "feedbackPersists": true,
+  "feedbackExport": true,
+  "finalReviewRecheck": {
+    "first": "B01",
+    "normalTextRecovery": true,
+    "savedTextPlaceholder": true,
+    "wideOverflow": false,
+    "mobileOverflow": false
+  }
+}

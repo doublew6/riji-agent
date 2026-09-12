@@ -20,12 +20,23 @@ dependencies = [
 dev = [
   "pytest>=8.0,<9.0",
 ]
+mentors = [
+  "langgraph==1.2.11",
+  "langgraph-checkpoint-sqlite==3.1.1",
+  "lark-oapi==1.7.3",
+]
+runtime-tracing = [
+  "evalmesh[opik] @ git+ssh://git@github.com/doublew6/evalmesh.git@2bccd9b5243ed03de5519b8e79580465a28a9bea",
+]
 
 [project.scripts]
 riji-agent = "riji_agent.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riji_agent"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

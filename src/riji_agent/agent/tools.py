@@ -8,14 +8,19 @@ never reach the filesystem, the source vault or unregistered behaviour.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date as Date, datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from riji_agent.drafts.errors import DraftError
+from riji_agent.agent.evidence import with_evidence_scope
 from riji_agent.drafts.models import DraftOperation
 from riji_agent.drafts.service import DraftService
 from riji_agent.journal.models import NoteKind
+from riji_agent.observability import runtime_span
+from riji_agent.memory.recall import SESSION_SEARCH_DEF, search_conversation
+from riji_agent.memory.store import MemoryStore
+from riji_agent.models.types import LLMError
 from riji_agent.retrieval.errors import RetrievalError
 from riji_agent.retrieval.models import Granularity, ToolContext
 from riji_agent.retrieval.schemas import TOOL_DEFINITIONS
@@ -99,6 +104,7 @@ class ToolInvocation:
     source_ids: Tuple[str, ...] = ()
     ok: bool = True
     error: Optional[str] = None
+    before_send: Optional[Callable[[], None]] = field(default=None, repr=False, compare=False)
 
 
 def _date(value: Optional[str]) -> Optional[Date]:
@@ -107,8 +113,25 @@ def _date(value: Optional[str]) -> Optional[Date]:
     return Date.fromisoformat(value)
 
 
+def _content_metadata(item) -> Dict[str, Any]:
+    spans = getattr(item, "content_spans", ())
+    if not spans:
+        return {}
+    return {"content_type": item.content_type,
+            "content_spans": [asdict(span) for span in spans]}
+
+
 def _local_today() -> Date:
     return datetime.now(local_journal_timezone()).date()
+
+
+def _trace_tool_input(arguments_json: str) -> Any:
+    """Preserve structured arguments so EvalMesh can redact recursively."""
+    try:
+        value = json.loads(arguments_json or "{}")
+    except json.JSONDecodeError:
+        return {"raw_arguments": arguments_json}
+    return value
 
 
 def _operations_mention_today(operations: Sequence[DraftOperation]) -> bool:
@@ -129,10 +152,12 @@ class ToolRegistry:
         *,
         draft_service: Optional[DraftService] = None,
         yangming_kb: "Optional[YangmingKB]" = None,
+        memory_store: Optional[MemoryStore] = None,
     ) -> None:
         self._service = service
         self._draft_service = draft_service
         self._yangming = yangming_kb
+        self._memory_store = memory_store
         self._handlers: Dict[str, Callable[[ToolContext, Dict[str, Any]], ToolInvocation]] = {
             "search_journal": self._search_journal,
             "read_note": self._read_note,
@@ -144,9 +169,14 @@ class ToolRegistry:
             self._handlers["draft_daily_entry"] = self._draft_daily_entry
         if yangming_kb is not None:
             self._handlers["search_yangming"] = self._search_yangming
+        if memory_store is not None:
+            self._handlers["session_search"] = self._session_search
 
     def names(self) -> set:
         return set(self._handlers)
+
+    def has_ai_discussion_evidence(self, request_id: str) -> bool:
+        return self._service is not None and self._service.has_ai_discussion_evidence(request_id)
 
     def tool_specs(self, allowed: "Optional[Iterable[str]]" = None) -> List[Dict[str, Any]]:
         """OpenAI/DeepSeek specs for the registry's tools, optionally filtered.
@@ -154,13 +184,52 @@ class ToolRegistry:
         ``allowed`` restricts to a persona's allowed tool names (e.g. only the
         Wang Yangming persona may use ``search_yangming``).
         """
-        catalog = list(TOOL_DEFINITIONS) + [DRAFT_DAILY_ENTRY_DEF, SEARCH_YANGMING_DEF]
+        catalog = list(TOOL_DEFINITIONS) + [
+            DRAFT_DAILY_ENTRY_DEF, SEARCH_YANGMING_DEF, SESSION_SEARCH_DEF
+        ]
         names = set(self._handlers)
         if allowed is not None:
             names &= set(allowed)
         return [_tool_spec(tool) for tool in catalog if tool["name"] in names]
 
     def invoke(self, context: ToolContext, name: str, arguments_json: str) -> ToolInvocation:
+        with runtime_span(
+            f"tool.{name}",
+            span_type="tool",
+            input_value=_trace_tool_input(arguments_json),
+            metadata={"request_id": context.request_id},
+        ) as span:
+            invocation = self._invoke(context, name, arguments_json)
+            invocation = replace(
+                invocation,
+                before_send=self._egress_guard(context, name, arguments_json, invocation),
+            )
+            span.set_output(invocation.payload)
+            span.set_outcome(ok=invocation.ok, error=invocation.error)
+            return invocation
+
+    def _egress_guard(
+        self, context: ToolContext, name: str, arguments: str, expected: ToolInvocation
+    ) -> Optional[Callable[[], None]]:
+        """Keep queued read results bound to their permitted source versions."""
+        journal_tools = {item["name"] for item in TOOL_DEFINITIONS}
+        if not expected.ok or name not in journal_tools | {"session_search"}:
+            return None
+        versions = self._service.source_versions(expected.source_ids) if name in journal_tools else {}
+
+        def check() -> None:
+            if versions and (
+                None in versions.values()
+                or self._service.source_versions(expected.source_ids) != versions
+            ):
+                raise LLMError("chat_context_changed")
+            current = self._invoke(context, name, arguments)
+            if not current.ok or current.payload != expected.payload:
+                raise LLMError("chat_context_changed")
+
+        return check
+
+    def _invoke(self, context: ToolContext, name: str, arguments_json: str) -> ToolInvocation:
         handler = self._handlers.get(name)
         if handler is None:
             return ToolInvocation(
@@ -168,6 +237,8 @@ class ToolRegistry:
                 ok=False,
                 error="unknown_tool",
             )
+        if not self._authorized(context, name):
+            return ToolInvocation({"error": "tool_not_allowed"}, ok=False, error="tool_not_allowed")
         try:
             args = json.loads(arguments_json or "{}")
         except json.JSONDecodeError:
@@ -183,7 +254,8 @@ class ToolRegistry:
                 error="invalid_arguments",
             )
         try:
-            return handler(context, args)
+            result = handler(context, args)
+            return replace(result, payload=with_evidence_scope(name, result.payload)) if result.ok else result
         except (RetrievalError, DraftError) as exc:
             return ToolInvocation(exc.to_dict(), ok=False, error=exc.code.value)
         except (KeyError, ValueError) as exc:
@@ -193,7 +265,24 @@ class ToolRegistry:
                 error="invalid_arguments",
             )
 
+    @staticmethod
+    def _authorized(context: ToolContext, name: str) -> bool:
+        if context.execution_guard is not None:
+            context.execution_guard()
+        if context.allowed_tools is not None and name not in context.allowed_tools:
+            return False
+        if context.chat_type != "p2p" or context.purpose == "roundtable":
+            if context.allowed_tools is None or context.execution_guard is None:
+                return False
+            return name in {"search_journal", "read_note", "list_periods", "timeline", "find_before_after", "search_yangming"}
+        return True
+
     # ------------------------------------------------------------- handlers
+
+    def _session_search(self, context: ToolContext, args: Dict[str, Any]) -> ToolInvocation:
+        assert self._memory_store is not None
+        payload = search_conversation(self._memory_store, context, args)
+        return ToolInvocation(payload, source_ids=tuple(item["source_id"] for item in payload["items"]))
 
     def _search_journal(self, context: ToolContext, args: Dict[str, Any]) -> ToolInvocation:
         response = self._service.search_journal(
@@ -210,6 +299,7 @@ class ToolRegistry:
                 "title": item.title,
                 "date": item.note_date.isoformat() if item.note_date else None,
                 "snippet": item.snippet,
+                **_content_metadata(item),
             }
             for item in response.items
         ]
@@ -226,6 +316,7 @@ class ToolRegistry:
             "date": response.note_date.isoformat() if response.note_date else None,
             "body": response.body,
             "truncated": response.truncated,
+            **_content_metadata(response),
         }
         return ToolInvocation(payload, source_ids=(response.source_id,))
 
@@ -267,10 +358,17 @@ class ToolRegistry:
                         "date": entry.note_date.isoformat() if entry.note_date else None,
                         "title": entry.title,
                         "snippet": entry.snippet,
+                        **_content_metadata(entry),
                     }
                 )
             buckets.append({"period": bucket.period, "entries": entries})
         payload = {
+            "query_window": {
+                "date_from": response.date_from.isoformat(),
+                "date_to": response.date_to.isoformat(),
+                "granularity": response.granularity.value,
+                "grouping_basis": "journal_note_metadata",
+            },
             "buckets": buckets,
             "empty_periods": list(response.empty_periods),
             "notes_found": response.notes_found,
@@ -293,6 +391,7 @@ class ToolRegistry:
                         "date": entry.note_date.isoformat() if entry.note_date else None,
                         "title": entry.title,
                         "snippet": entry.snippet,
+                        **_content_metadata(entry),
                     }
                 )
             return rendered
@@ -301,6 +400,13 @@ class ToolRegistry:
             e.source_id for e in (*response.before, *response.on, *response.after)
         )
         payload = {
+            "query_anchor": {
+                "date": response.pivot.isoformat(),
+                "kind": "retrieval_window_center",
+                "days_each_side": response.days,
+                "grouping_basis": "note_date_compared_with_query_anchor",
+                "event_date": "not_established_by_query",
+            },
             "before": render(response.before),
             "on": render(response.on),
             "after": render(response.after),
@@ -312,6 +418,11 @@ class ToolRegistry:
 
     def _draft_daily_entry(self, context: ToolContext, args: Dict[str, Any]) -> ToolInvocation:
         assert self._draft_service is not None  # registered only when present
+        if (context.include_ai_discussions or context.ai_discussion_history
+                or self.has_ai_discussion_evidence(context.request_id)):
+            return ToolInvocation({"error": "ai_discussion_requires_handoff",
+                "message": "本次引用了 AI 讨论资料。请在原讨论中选择保存 AI 导师讨论结果，再到日记导师私聊预览确认。"},
+                error="ai_discussion_requires_handoff")
         operations = [
             DraftOperation(section=op["section"], content=op["content"])
             for op in args["operations"]

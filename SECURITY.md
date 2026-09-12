@@ -19,6 +19,31 @@ riji-agent errors and diagnostics should stay safe by default:
 - audit records should store metadata and source IDs, not full note bodies;
 - sample data must remain fictional.
 
+## Publication guards
+
+Run `python scripts/privacy_scan.py --staged` before a commit. It reads the actual
+Git index, so an unstaged correction cannot hide a private value still staged
+for publication. `--tracked` checks tracked working files; `--event-file PATH`
+checks GitHub issue, PR, comment and review text as data without executing it.
+Reports show categories and locations, never matched private values.
+
+The reusable personal `privacy-publish-guard` skill and hooks add pre-commit,
+commit-msg, pre-push and Codex PreToolUse checks. Installation and limits are
+described in [publication-privacy.md](docs/publication-privacy.md). Personal
+identifiers belong in a local private configuration, never in this repository's
+scanner, fixtures or CI configuration. Previously committed sensitive material
+requires a separate history review; editing the current file does not erase it.
+
+The publication privacy workflow checks public Issue/PR text after GitHub
+receives it. It is a secondary detection layer, not a pre-publication gate.
+It executes only scanner code from the default branch, never an untrusted PR
+head. New workflow code becomes active only after reaching the required branch.
+
+Privacy-sensitive code changes must apply content permissions to metadata and
+cached tool results as well as body text. Clients for local memory services must
+explicitly bypass environment and operating-system proxies. Cover both with
+synthetic regression tests; do not use real journals as test fixtures.
+
 ## Release Checklist
 
 Run these checks before making the repository public or tagging a release:

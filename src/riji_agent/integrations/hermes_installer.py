@@ -17,6 +17,11 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from riji_agent.integrations.hermes_group_hook import (
+    GROUP_BEGIN_MARKER, GROUP_END_MARKER, group_bridge_block, remove_group_block,
+)
+from riji_agent.integrations import hermes_lifecycle_installer as lifecycle
+
 DEFAULT_GATEWAY_RUN_PATH = Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run.py"
 
 BEGIN_MARKER = "        # BEGIN riji-agent Hermes Feishu bridge"
@@ -33,6 +38,8 @@ class HermesBridgeInstallError(RuntimeError):
 class HermesBridgeStatus:
     gateway_run: Path
     state: str
+    group_installed: bool = False
+    lifecycle_installed: bool = False
 
     @property
     def installed(self) -> bool:
@@ -46,7 +53,8 @@ def status(gateway_run: Path = DEFAULT_GATEWAY_RUN_PATH) -> HermesBridgeStatus:
         return HermesBridgeStatus(path, "missing_file")
     text = path.read_text(encoding="utf-8")
     if BEGIN_MARKER in text and END_MARKER in text:
-        return HermesBridgeStatus(path, "installed")
+        return HermesBridgeStatus(path, "installed", GROUP_BEGIN_MARKER in text and GROUP_END_MARKER in text,
+                                  lifecycle.installed(path))
     if LEGACY_START in text:
         return HermesBridgeStatus(path, "legacy_patch")
     return HermesBridgeStatus(path, "not_installed")
@@ -57,24 +65,28 @@ def install(gateway_run: Path = DEFAULT_GATEWAY_RUN_PATH, *, backup: bool = True
     path = Path(gateway_run).expanduser()
     text = _read_gateway(path)
     updated = _install_text(text)
-    if updated == text:
-        return HermesBridgeStatus(path, "installed")
-    if backup:
-        _backup(path)
-    path.write_text(updated, encoding="utf-8")
-    return HermesBridgeStatus(path, "installed")
+    adapter = lifecycle.prepare(path)
+    if updated != text:
+        if backup:
+            _backup(path)
+        path.write_text(updated, encoding="utf-8")
+    lifecycle.apply(adapter, backup=backup)
+    return status(path)
 
 
 def uninstall(gateway_run: Path = DEFAULT_GATEWAY_RUN_PATH, *, backup: bool = True) -> HermesBridgeStatus:
     """Remove the managed hook. Legacy manual patches are left untouched."""
     path = Path(gateway_run).expanduser()
     text = _read_gateway(path)
+    adapter = lifecycle.prepare(path, remove=True)
     if BEGIN_MARKER not in text and END_MARKER not in text:
+        lifecycle.apply(adapter, backup=backup)
         return status(path)
-    updated = _remove_marked_block(text)
+    updated = remove_group_block(_remove_marked_block(text))
     if backup:
         _backup(path)
     path.write_text(updated, encoding="utf-8")
+    lifecycle.apply(adapter, backup=backup)
     return status(path)
 
 
@@ -87,9 +99,14 @@ def _read_gateway(path: Path) -> str:
 
 
 def _install_text(text: str) -> str:
+    text = remove_group_block(text)
     block = _bridge_block()
     if BEGIN_MARKER in text or END_MARKER in text:
-        return _replace_marked_block(text, block)
+        # The live private hook may contain installed image/reply extensions.
+        # Validate its boundaries without replacing those existing behaviors.
+        _replace_marked_block(text, "")
+        index = text.index(BEGIN_MARKER)
+        return text[:index] + group_bridge_block() + "\n" + text[index:]
 
     anchor_idx = text.find(ANCHOR)
     if anchor_idx < 0:
@@ -103,7 +120,7 @@ def _install_text(text: str) -> str:
         text = text[:legacy_idx] + text[anchor_idx:]
         anchor_idx = text.find(ANCHOR)
 
-    return text[:anchor_idx] + block + "\n" + text[anchor_idx:]
+    return text[:anchor_idx] + group_bridge_block() + "\n" + block + "\n" + text[anchor_idx:]
 
 
 def _replace_marked_block(text: str, block: str) -> str:

@@ -11,6 +11,8 @@ class DraftErrorCode(str, Enum):
     WRONG_USER = "wrong_user"
     TOKEN_INVALID = "token_invalid"
     TOKEN_EXPIRED = "token_expired"
+    PREVIEW_REQUIRED = "preview_required"
+    WRONG_SCOPE = "wrong_scope"
     NO_OPERATIONS = "no_operations"
     SECTION_NOT_FOUND = "section_not_found"
     TEMPLATE_NOT_FOUND = "template_not_found"

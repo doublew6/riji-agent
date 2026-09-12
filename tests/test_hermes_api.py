@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Optional
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -159,3 +160,61 @@ def test_duplicate_event_returns_dedup_flag(client: TestClient) -> None:
     client.post("/hermes/messages", json=_body("一次", event_id="dup"), headers=headers)
     resp = client.post("/hermes/messages", json=_body("一次", event_id="dup"), headers=headers)
     assert resp.json()["deduplicated"] is True
+
+
+@pytest.fixture
+def discussion_client(tmp_path):
+    received = []
+    def receive(application_id, envelope):
+        received.append((application_id, envelope))
+        return {"text": "Synthetic discussion receipt", "status": "queued"}
+    gateway = HermesGateway(hermes_secret=SECRET, allowed_user_ids={"ou_1"}, registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "memory.sqlite3"), events=EventLog(tmp_path / "events.sqlite3"),
+        responder=FakeResponder())
+    gateway.mentor_runtime = SimpleNamespace(legacy_host=SimpleNamespace(id="existing-riji"),
+        ingress=SimpleNamespace(receive=receive))
+    app = FastAPI()
+    app.include_router(build_hermes_router(gateway))
+    return TestClient(app), received, gateway
+
+
+def test_existing_receiver_routes_only_explicit_discussion_commands(discussion_client):
+    client, received, gateway = discussion_client
+    headers = {"X-Hermes-Secret": SECRET}
+    response = client.post("/hermes/messages", json=_body("/讨论帮助"), headers=headers)
+    assert response.json()["reply"] == "Synthetic discussion receipt"
+    app, envelope = received[0]
+    assert app == "existing-riji" and envelope.external_user_id == "ou_1"
+    assert envelope.external_chat_id == "c1" and envelope.message_id == "e1"
+    assert gateway._events.get("e1") is None
+    for index, text in enumerate(["普通问题", "/切换", "/导师", "确认保存", "未知命令"]):
+        result = client.post("/hermes/messages", json=_body(text, str(index)), headers=headers)
+        assert result.status_code == 200 and result.json()["persona_id"] != "host"
+    assert len(received) == 1
+
+
+@pytest.mark.parametrize("headers,change,status", [({}, {}, 401),
+    ({"X-Hermes-Secret": SECRET}, {"chat_type": "group"}, 403),
+    ({"X-Hermes-Secret": SECRET}, {"user": "other-app-open-id"}, 403)])
+def test_discussion_route_never_bypasses_existing_authorization(discussion_client, headers, change, status):
+    client, received, _ = discussion_client
+    response = client.post("/hermes/messages", json=_body("/接收转交 synthetic", **change), headers=headers)
+    assert response.status_code == status and not received
+
+
+def test_unconfigured_pairing_does_not_fall_through_to_model_or_history(client):
+    response = client.post("/hermes/messages", json=_body("/绑定 synthetic-placeholder"),
+                           headers={"X-Hermes-Secret": SECRET})
+    assert response.status_code == 200 and response.json()["persona_id"] == "host"
+    assert "synthetic-placeholder" not in response.json()["reply"]
+
+
+def test_discussion_failure_returns_safe_reply_without_legacy_fallback(discussion_client):
+    client, received, gateway = discussion_client
+    def fail(*args):
+        raise RuntimeError("Synthetic private response")
+    gateway.mentor_runtime.ingress.receive = fail
+    result = client.post("/hermes/messages", json=_body("/确认转交 synthetic"),
+                         headers={"X-Hermes-Secret": SECRET})
+    assert result.status_code == 200 and "Synthetic private" not in result.text
+    assert gateway._events.get("e1") is None

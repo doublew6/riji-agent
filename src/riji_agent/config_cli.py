@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import stat
+import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+
+import httpx
 
 from riji_agent.config import Settings
 from riji_agent.integrations.hermes_installer import status as hermes_bridge_status
 from riji_agent.paths import default_data_dir
+from riji_agent.memory.mem0 import Mem0Client
+from riji_agent.memory.backend import MemoryBackendError
+from riji_agent.memory.operations import MemoryOperationsStore
 from riji_agent.service import ServiceStatus, get_default_service_status
 
 DEFAULT_PRESET = "feishu-hermes-deepseek"
@@ -71,7 +79,6 @@ def run_doctor(
 ) -> DoctorResult:
     messages = []
     ok = True
-
     if not env_file.exists():
         return DoctorResult(False, ("env: missing", "configuration: invalid"))
     messages.append("env: found")
@@ -108,8 +115,178 @@ def run_doctor(
     except Exception:
         messages.append("service: unknown")
 
-    messages.append(f"model_provider: {settings.model_provider}")
+    model_ok, model_messages = _model_checks(settings)
+    ok = ok and model_ok
+    messages.extend(model_messages)
+    memory_ok, memory_messages = _memory_checks(settings)
+    ok = ok and memory_ok
+    messages.extend(memory_messages)
     return DoctorResult(ok, tuple(messages))
+
+
+def _model_checks(settings: Settings) -> tuple[bool, Sequence[str]]:
+    messages = [f"model_provider: {settings.model_provider}"]
+    memory_active = settings.memory_provider == "mem0"
+    memory_label = settings.memory_model_provider if memory_active else "inactive (sqlite)"
+    messages.append(f"memory_model_provider: {memory_label}")
+    uses_codex = settings.model_provider == "codex" or (
+        memory_active and settings.memory_model_provider == "codex"
+    )
+    if not uses_codex:
+        return True, tuple(messages)
+    proxy_url = settings.codex_proxy_url.get_secret_value() if settings.codex_proxy_url else None
+    status = _codex_auth_status(
+        settings.codex_bin, settings.codex_home or settings.data_dir / "codex", proxy_url,
+    )
+    messages.append(f"codex_auth: {status}")
+    proxy_status = "configured (Codex child only)" if proxy_url else "not configured (inherited child environment)"
+    messages.append(f"codex_proxy: {proxy_status}; connectivity not checked")
+    messages.append("codex_billing: ChatGPT subscription; no automatic API fallback")
+    return status == "chatgpt", tuple(messages)
+
+
+def _codex_auth_status(binary: str, home: Path, proxy_url: Optional[str] = None) -> str:
+    """Inspect official login status without login, token access or raw output."""
+    from riji_agent.models.codex_runtime import child_environment
+
+    environment = child_environment(home, proxy_url=proxy_url)
+    try:
+        result = subprocess.run(
+            [binary, "login", "status"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    output = (result.stdout + "\n" + result.stderr).lower()
+    if result.returncode == 0 and "logged in using chatgpt" in output:
+        return "chatgpt"
+    if "api" in output and "key" in output:
+        return "api_key_rejected (ChatGPT login required)"
+    return "login_required (one-time official login in configured RIJI_CODEX_HOME)"
+
+
+def _memory_checks(settings: Settings) -> tuple[bool, Sequence[str]]:
+    if settings.memory_provider != "mem0":
+        return True, ("memory_provider: sqlite",)
+    key = settings.mem0_api_key.get_secret_value()  # type: ignore[union-attr]
+    client = Mem0Client(settings.mem0_base_url, key, timeout=3.0)
+    messages = ["memory_provider: mem0"]
+    api_ok = client.health()
+    messages.append(f"mem0_api: {'ok' if api_ok else 'unavailable'}")
+    provider_ok = _mem0_provider_config_ok(client) if api_ok else False
+    messages.append(
+        "mem0_server_config: deepseek-chat (not used by explicit writes) + "
+        "BAAI/bge-small-zh-v1.5 (local embedding) "
+        + ("ok" if provider_ok else "misconfigured")
+    )
+    dashboard_ok = _dashboard_available(settings.mem0_dashboard_url)
+    messages.append(f"mem0_dashboard: {'ok' if dashboard_ok else 'unavailable'}")
+    operations = MemoryOperationsStore(settings.data_dir / "memory-operations.sqlite3")
+    try:
+        counts = operations.queue_counts()
+        snapshot_state = operations.snapshot_state()
+        messages.append(
+            "memory_queue: pending={} retry={} dead_letter={}".format(
+                counts.get("pending", 0),
+                counts.get("retry", 0),
+                counts.get("dead_letter", 0),
+            )
+        )
+    finally:
+        operations.close()
+    if settings.memory_snapshot_enabled:
+        permissions_ok = _snapshot_permissions_ok(settings.memory_snapshot_path)
+        snapshot_status = str(snapshot_state.get("status", "missing"))
+        if snapshot_status == "current":
+            snapshot_ok = permissions_ok and _snapshot_consistency_ok(
+                settings.memory_snapshot_path, snapshot_state
+            )
+            label = "ok" if snapshot_ok else "stale or invalid permissions"
+        elif snapshot_status == "pending":
+            snapshot_ok = permissions_ok
+            label = "pending initial generation"
+        else:
+            snapshot_ok = False
+            label = "generation failed"
+        messages.append(f"memory_snapshot: {label}")
+    else:
+        snapshot_ok = True
+        messages.append("memory_snapshot: disabled")
+    return api_ok and provider_ok and dashboard_ok and snapshot_ok, tuple(messages)
+
+
+def _mem0_provider_config_ok(client: Mem0Client) -> bool:
+    try:
+        config = client.configuration()
+    except MemoryBackendError:
+        return False
+    llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+    embedder = (
+        config.get("embedder") if isinstance(config.get("embedder"), dict) else {}
+    )
+    llm_config = llm.get("config") if isinstance(llm.get("config"), dict) else {}
+    embedder_config = (
+        embedder.get("config") if isinstance(embedder.get("config"), dict) else {}
+    )
+    return (
+        llm.get("provider") == "deepseek"
+        and llm_config.get("model") == "deepseek-chat"
+        and embedder.get("provider") == "fastembed"
+        and embedder_config.get("model") == "BAAI/bge-small-zh-v1.5"
+    )
+
+
+def _dashboard_available(base_url: str) -> bool:
+    try:
+        response = httpx.get(base_url.rstrip("/") + "/api/health", timeout=3.0)
+        return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _snapshot_permissions_ok(path: Optional[Path]) -> bool:
+    if path is None or not path.exists():
+        return True
+    try:
+        return stat.S_IMODE(path.stat().st_mode) == 0o600
+    except OSError:
+        return False
+
+
+def _snapshot_consistency_ok(
+    path: Optional[Path], state: dict[str, object]
+) -> bool:
+    if path is None or not path.is_file() or state.get("status") != "current":
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    count = sum(1 for line in text.splitlines() if line.startswith("- ["))
+    state_updated = state.get("updated_at")
+    if isinstance(state_updated, str):
+        try:
+            state_timestamp = datetime.fromisoformat(state_updated).timestamp()
+        except ValueError:
+            return False
+        try:
+            modified_at = path.stat().st_mtime
+        except OSError:
+            return False
+        if modified_at > state_timestamp + 1.0:
+            return False
+    return (
+        "source: mem0" in text
+        and "read_only: true" in text
+        and count == state.get("memory_count")
+    )
 
 
 def _sqlite_fts5_available() -> bool:

@@ -7,6 +7,8 @@ from datetime import date as Date
 from enum import Enum
 from typing import Optional, Tuple
 
+from riji_agent.journal.content import AI_RESULT, PERSONAL, DiscussionProvenance, render_ai_result
+
 
 class DraftStatus(str, Enum):
     AWAITING = "awaiting_confirmation"
@@ -22,6 +24,20 @@ class DraftOperation:
 
     section: str
     content: str
+    content_type: str = PERSONAL
+    provenance: Optional[DiscussionProvenance] = None
+
+    def __post_init__(self) -> None:
+        if self.content_type not in {PERSONAL, AI_RESULT}:
+            raise ValueError("draft_content_type_invalid")
+        if (self.content_type == AI_RESULT) != (self.provenance is not None):
+            raise ValueError("draft_content_provenance_invalid")
+
+    @property
+    def journal_text(self) -> str:
+        if self.provenance is not None:
+            return render_ai_result(self.content, self.provenance)
+        return self.content
 
 
 @dataclass(frozen=True)

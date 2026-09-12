@@ -1,0 +1,220 @@
+{
+  "generated_at": "2026-09-09T05:41:19.904724+00:00",
+  "requested_model": "deepseek-chat",
+  "corpus": "synthetic-v1",
+  "scope": "extraction and supplied-neighbor relation judgement; not semantic retrieval or production acceptance",
+  "results": [
+    {
+      "id": "conditional_preference",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "做项目评审时，希望回答先说结论，再讲依据；日常闲聊不用强求这种格式。",
+          "kind": "preference",
+          "certainty": "explicit",
+          "valid_from": null,
+          "quotes": [
+            "做项目评审时，我希望回答先说结论，再讲依据；日常闲聊不用强求这种格式。"
+          ]
+        }
+      ],
+      "decisions": [],
+      "latency_seconds": 2.75,
+      "request_chars": 789,
+      "review_required": "Keep the project-review condition and the casual-chat exception; do not turn this into an unconditional preference."
+    },
+    {
+      "id": "state_change",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "决定暂缓转岗，先完成当前项目。",
+          "kind": "goal",
+          "certainty": "explicit",
+          "valid_from": "2026-09-02",
+          "quotes": [
+            "我决定暂缓转岗，先完成当前项目"
+          ]
+        }
+      ],
+      "decisions": [
+        {
+          "index": 0,
+          "action": "state_change",
+          "target_id": "old-goal",
+          "reason": "新记忆明确改变了原转岗计划的时间状态，从准备转岗变为暂缓执行，属于同一目标事项的明确时间演变。"
+        }
+      ],
+      "latency_seconds": 2.44,
+      "request_chars": 1584,
+      "review_required": "Link the same career goal as state_change; the new effective date is September 2, not the recording date."
+    },
+    {
+      "id": "unknown_date",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "我几年前参加过一次社区志愿活动。",
+          "kind": "event",
+          "certainty": "explicit",
+          "valid_from": null,
+          "quotes": [
+            "几年前我参加过一次社区志愿活动"
+          ]
+        }
+      ],
+      "decisions": [],
+      "latency_seconds": 1.05,
+      "request_chars": 773,
+      "review_required": "Retain the event without inventing its effective date."
+    },
+    {
+      "id": "hypothesis",
+      "status": "valid_contract",
+      "candidates": [],
+      "decisions": [],
+      "latency_seconds": 1.85,
+      "request_chars": 795,
+      "review_required": "An uncertain idea may be retained with its condition; it must not become a completed venture or a committed goal."
+    },
+    {
+      "id": "no_durable_memory",
+      "status": "valid_contract",
+      "candidates": [],
+      "decisions": [],
+      "latency_seconds": 1.31,
+      "request_chars": 786,
+      "review_required": "Return an empty candidate list."
+    },
+    {
+      "id": "semantic_duplicate",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "回答先说结论更适合我。",
+          "kind": "preference",
+          "certainty": "explicit",
+          "valid_from": null,
+          "quotes": [
+            "回答先说结论更适合我。"
+          ]
+        }
+      ],
+      "decisions": [
+        {
+          "index": 0,
+          "action": "duplicate",
+          "target_id": "old-preference",
+          "reason": "候选与旧记忆均为对同一沟通偏好的表述，核心事实相同，仅措辞略有差异。"
+        }
+      ],
+      "latency_seconds": 2.36,
+      "request_chars": 1556,
+      "review_required": "Identify duplicate despite different wording; retain one logical fact with another source."
+    },
+    {
+      "id": "enrichment",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "计划每周学三次Python，每次半小时。",
+          "kind": "goal",
+          "certainty": "explicit",
+          "valid_from": null,
+          "quotes": [
+            "接下来计划每周学三次，每次半小时。"
+          ]
+        }
+      ],
+      "decisions": [
+        {
+          "index": 0,
+          "action": "enrich",
+          "target_id": "old-learning",
+          "reason": "旧记忆表明用户在学习Python，新内容补充了具体的学习计划频率和时长，属于同一主语的细节增量信息。"
+        }
+      ],
+      "latency_seconds": 3.21,
+      "request_chars": 1582,
+      "review_required": "Retain newly stated frequency and duration, and distinguish duplicate material from enrichment."
+    },
+    {
+      "id": "unresolved_conflict",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "目前居住在杭州",
+          "kind": "fact",
+          "certainty": "explicit",
+          "valid_from": null,
+          "quotes": [
+            "目前我居住在杭州。"
+          ]
+        }
+      ],
+      "decisions": [
+        {
+          "index": 0,
+          "action": "conflict",
+          "target_id": "old-city",
+          "reason": "候选称现居杭州，旧记忆称现居上海；居住地变更需时间证据，但当前无明确日期，无法判定为演变，按矛盾处理。"
+        }
+      ],
+      "latency_seconds": 2.42,
+      "request_chars": 1539,
+      "review_required": "Same-time incompatible claims are conflict, not a silently resolved state change."
+    },
+    {
+      "id": "related_distinct_events",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "参加了乙公司的产品岗位面试，沟通感觉顺利。",
+          "kind": "event",
+          "certainty": "explicit",
+          "valid_from": "2026-09-09",
+          "quotes": [
+            "今天我参加了乙公司的产品岗位面试，感觉沟通比较顺利。"
+          ]
+        }
+      ],
+      "decisions": [
+        {
+          "index": 0,
+          "action": "related",
+          "target_id": "earlier-interview",
+          "reason": "两次面试主体和事件不同，但同属求职面试经历，保留关联。"
+        }
+      ],
+      "latency_seconds": 3.02,
+      "request_chars": 1620,
+      "review_required": "Different interview events are related, not duplicate or replacements."
+    },
+    {
+      "id": "old_detail_is_not_new_evidence",
+      "status": "valid_contract",
+      "candidates": [
+        {
+          "content": "学习安排从2026-09-09起改为每周两次。",
+          "kind": "fact",
+          "certainty": "explicit",
+          "valid_from": "2026-09-09",
+          "quotes": [
+            "学习安排有变化：从今天起改为每周两次。"
+          ]
+        }
+      ],
+      "decisions": [
+        {
+          "index": 0,
+          "action": "state_change",
+          "target_id": "old-schedule",
+          "reason": "旧记忆明确每周三次，新记忆从具体日期起改为每周两次，是对原有学习安排同一事项的明确时间演变。"
+        }
+      ],
+      "latency_seconds": 2.74,
+      "request_chars": 1600,
+      "review_required": "The new candidate must not claim this snippet reaffirms Python or the half-hour duration; old details are relationship context only."
+    }
+  ]
+}

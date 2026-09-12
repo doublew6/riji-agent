@@ -145,6 +145,12 @@ uv run riji-agent          # serve http://127.0.0.1:8765
 model provider against your vault over loopback — no Feishu or Hermes required —
 so you can confirm the whole local path works before standing up the IM bridge.
 
+Agent long-term memory can optionally use Mem0 Self-Hosted for shared user facts
+and persona-private observations. It adds a durable capture queue, local Memory
+Review UI, and generated read-only `MEMORY.md` while leaving journal writes
+behind the existing explicit confirmation boundary. See
+[Long-term memory and MEMORY.md](docs/long-term-memory.md).
+
 Install riji-agent as a background user service so it restarts after login or an
 accidental exit. The commands are the same on macOS (launchd), Linux (systemd
 --user), and Windows (Task Scheduler); `--target` defaults to `auto` and picks

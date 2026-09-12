@@ -9,6 +9,7 @@ from riji_agent.hermes.gateway import HermesGateway
 from riji_agent.hermes.models import IncomingMessage
 from riji_agent.im.models import IncomingChatMessage
 from riji_agent.memory.store import MemoryStore
+from riji_agent.memory.service import RetrievedMemoryContext
 from riji_agent.personas.registry import PersonaRegistry
 from riji_agent.voice.models import VoiceAttachment
 
@@ -43,6 +44,26 @@ class FakeVoxCPMVoiceReplyService(FakeVoiceReplyService):
     provider_id = "voxcpm"
 
 
+class RecordingMemoryService:
+    def __init__(self) -> None:
+        self.captures: List[Dict[str, Any]] = []
+
+    def retrieve(self, query: str, *, user_id: str, persona_id: str):
+        return RetrievedMemoryContext((), ())
+
+    def enqueue_capture(self, **payload):
+        self.captures.append(payload)
+        return len(self.captures)
+
+
+class RecordingMemoryWorker:
+    def __init__(self) -> None:
+        self.wakes = 0
+
+    def wake(self) -> None:
+        self.wakes += 1
+
+
 def _msg(text: str, *, event_id: str = "e1", user: str = "ou_1", chat: str = "c1", chat_type: str = "p2p") -> IncomingMessage:
     return IncomingMessage(event_id=event_id, feishu_user_id=user, chat_id=chat, chat_type=chat_type, text=text)
 
@@ -71,6 +92,39 @@ def test_authorized_private_chat_gets_reply(setup) -> None:
     assert reply.persona_id == "gentle_reviewer"  # default
     assert reply.deduplicated is False
     assert len(responder.calls) == 1
+
+
+def test_successful_reply_enqueues_only_user_message_for_memory_capture(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite3")
+    events = EventLog(tmp_path / "events.sqlite3")
+    memory = RecordingMemoryService()
+    worker = RecordingMemoryWorker()
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=store,
+        events=events,
+        responder=FakeResponder(),
+        memory_service=memory,
+        memory_worker=worker,
+    )
+
+    reply = gateway.handle(SECRET, _msg("我长期偏好直接回答", event_id="memory-1"))
+    duplicate = gateway.handle(SECRET, _msg("我长期偏好直接回答", event_id="memory-1"))
+
+    assert reply.deduplicated is False
+    assert duplicate.deduplicated is True
+    assert len(memory.captures) == 1
+    assert memory.captures[0]["content"] == "我长期偏好直接回答"
+    assert memory.captures[0]["source_request_id"] == reply.request_id
+    assert memory.captures[0]["source_message_id"] == 1
+    assert memory.captures[0]["source_created_at"]
+    assert worker.wakes == 1
+    store.close()
+    events.close()
 
 
 def test_gateway_accepts_neutral_im_message(setup) -> None:

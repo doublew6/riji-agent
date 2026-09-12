@@ -16,6 +16,8 @@ from typing import Callable, Iterator, List, Optional, Tuple
 import yaml
 
 from riji_agent.journal.models import NoteKind, ParsedNote
+from riji_agent.journal.content import content_spans
+from riji_agent.journal.privacy import source_permission, cloud_body
 
 # Only notes living directly under these vault folders are indexed.
 _KIND_FOLDERS = {kind.value: kind for kind in NoteKind}
@@ -159,7 +161,7 @@ def _resolve_title(frontmatter: dict, body: str, path: Path) -> str:
 
 
 def _is_private(frontmatter: dict) -> bool:
-    return frontmatter.get("private") is True
+    return source_permission(frontmatter) != "cloud"
 
 
 def parse_note(
@@ -179,8 +181,10 @@ def parse_note(
     # Normalize CRLF/CR to LF before parsing: Windows/Obsidian vaults often use
     # CRLF, and the frontmatter regex expects LF. Without this, frontmatter
     # (including `private: true`) is silently dropped and private notes leak.
-    text = raw_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    text = raw_bytes.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
     frontmatter, body = _split_frontmatter(text)
+    # A heading used as metadata must obey the same local exclusions as its body.
+    body = cloud_body(body)
 
     return ParsedNote(
         source_id=build_source_id(path, journal_root),
@@ -192,4 +196,8 @@ def parse_note(
         body=body.strip(),
         private=_is_private(frontmatter),
         content_hash=content_hash,
+        content_spans=content_spans(body.strip(), default_type=(
+            "ai_discussion_result" if frontmatter.get("content_type") == "ai_discussion_result"
+            else "unknown_ai" if frontmatter.get("content_type") not in (None, "personal_journal")
+            else "personal_journal")),
     )

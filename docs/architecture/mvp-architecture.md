@@ -4,6 +4,8 @@
 **对应**：[MVP-00](https://github.com/doublew6/riji-agent/issues/11)  
 **范围**：阶段 1 MVP。Feishu、Hermes、DeepSeek 是默认选项，而不是架构上唯一支持的实现。
 
+**导师增量（2026-09-10）**：[导师沟通与多导师辩论技术设计](mentor-dialogue-and-debate.md)对应 [PRD v0.2](../product/mentor-dialogue-and-debate.md)。通用身份、讨论编排和本地渠道已实现并部署到 Air；飞书多应用与私人群仍待真实接入验收。本文的单 Bot 与私聊限定继续作为旧入口运行基线；新设计不允许把群请求伪装成私聊，群内日记草稿与提交仍禁止。
+
 ## 1. 已确认决策
 
 | 决策 | 结论 |
@@ -11,7 +13,7 @@
 | IM 入口 | 默认使用一个 Feishu `Riji` Bot；用户在同一 Bot 内通过命令或按钮切换导师。 |
 | 推理与编排 | 默认由 Hermes 使用 DeepSeek 执行多轮 agent 推理、工具调用、Feishu 会话路由与定时任务。 |
 | 数据边界 | riji-agent 是唯一可读写日记、记忆、草稿和审计库的本地服务；Hermes 不直接拥有 vault 权限。 |
-| 记忆 | 日记与已确认长期记忆共享；导师会话历史和未确认工作记忆隔离。 |
+| 记忆 | 日记与共享长期事实跨导师可用；导师观察和会话历史隔离。Agent 长期记忆可自动捕获，日记写入仍必须确认。 |
 | 内容排除 | `private: true` 日记不得出现在检索结果或 `read_note` 出云内容中。系统坚持最小片段出云，不上传完整 vault。 |
 | 日记写入 | 结构化 patch → 飞书预览 → 用户确认 → 按日记模板的目标区块追加；绝不覆写已有内容。 |
 
@@ -23,7 +25,9 @@ flowchart LR
   F <--> H["Hermes\n默认 agent runtime"]
   H <--> D["DeepSeek API\n默认 model provider"]
   H <--> R["riji-agent\n受限工具与权限内核"]
-  R <--> S["SQLite\n索引、记忆、草稿、审计"]
+  R <--> S["SQLite\n索引、会话、队列、草稿、审计"]
+  R <--> M["Mem0 + PostgreSQL/pgvector\nAgent 长期记忆"]
+  R --> K["MEMORY.md\n只读投影"]
   R -->|"只读"| V["Obsidian riji vault"]
   R --> Y["王阳明资料库"]
 ```
@@ -33,7 +37,9 @@ flowchart LR
 | Feishu / Riji Bot | 接收私聊、展示导师选择和草稿预览；默认 IM adapter | 存放日记、持有模型密钥 |
 | Hermes | 默认 agent runtime：内置 Feishu 接入、路由、会话、DeepSeek 多轮调用、cron/skills | 直接读写 vault、保存权威长期事实 |
 | riji-agent | 工具实现、权限、本地索引、草稿状态机、原子写入、审计 | Feishu 协议、任意终端或任意文件读取 |
-| SQLite | 索引元数据、会话映射、草稿、已确认记忆、审计事件 | 原始 vault 的替代副本 |
+| SQLite | 索引元数据、会话映射、运行偏好、捕获队列、草稿、审计事件 | Agent 长期记忆权威库、原始 vault 的替代副本 |
+| Mem0 + PostgreSQL/pgvector | 共享用户事实和导师私有观察 | 日记原文、会话历史、API 密钥 |
+| `MEMORY.md` | Mem0 当前有效记忆的人类可读投影 | 权威数据源、反向导入入口 |
 | DeepSeek | 默认 model provider：规划检索、调用已注册工具、基于证据回答 | 访问完整 vault、任意路径、未注册工具 |
 
 Hermes 与 riji-agent 默认在同一台主机上通信。riji-agent 默认只监听 localhost，且以 `RIJI_JOURNAL_ROOT` 配置的 vault 路径只读打开日记源。Feishu + Hermes + DeepSeek 是 default stack, not the only supported architecture；后续 adapter 可以替换 IM、agent runtime 或 model provider。
@@ -57,12 +63,18 @@ MVP 只注册一个飞书 Bot：`Riji`。用户通过 `/导师 王阳明`、`/�
 | 数据 | 范围 | 其他导师可见 |
 | --- | --- | --- |
 | 日记、周记、月报 | 共享事实 | 是 |
-| 已确认长期记忆、稳定偏好 | 共享事实 | 是 |
+| Mem0 用户事实、稳定偏好 | 共享事实 | 是 |
 | 聊天历史 | 导师私有 | 否 |
-| 临时观察、记忆候选 | 导师私有 | 否，确认前不可共享 |
+| 导师长期观察 | 导师私有 | 否 |
 | 王阳明思想资料 | 独立知识库 | 仅王阳明导师默认使用 |
 
-建议最小数据表：`users`、`personas`、`sessions`、`confirmed_memories`、`memory_candidates`、`drafts`、`audit_events`、`documents`、`chunks`。
+Agent 长期记忆的权威存储为本地 Mem0 Self-Hosted（PostgreSQL/pgvector）；SQLite 保留会话、运行偏好、捕获队列和追加式变更日志。`MEMORY.md` 仅是自动生成的只读快照，不参与双向同步。
+
+`memory_organization_runs` 保存主动整理请求、输入 ID/版本清单和带证据报告。
+捕获及人工变更后入队，worker 空闲时执行有界、按用户与导师隔离的模型归纳。
+报告的内容版本决定展示有效性；分类和语义比较不改变 Mem0 正文。已标注为
+阶段性且 90 天未复核的有效记忆在候选内排序后移，仍可召回。用户复核更新
+`reviewed_at` 并记录 `RECONFIRM`，归档和恢复继续走原有审计接口。
 
 ## 4. 工具契约
 
@@ -76,6 +88,8 @@ Hermes 向 DeepSeek 注册工具；工具实现只存在于 riji-agent。每个�
 - `timeline(topic, date_from, date_to, granularity)`
 - `find_before_after(date, days, topic?)`
 - `search_yangming(query, top_k?)`（仅王阳明导师默认可用）
+- `session_search(query, top_k?)`（同一用户、导师和聊天中的历史用户原话；
+  每段最多 400 字符、合计 1500 字符，使用 `conversation/<id>` 来源）
 
 写入工具：
 
@@ -146,6 +160,37 @@ riji-agent 校验 patch、生成 diff、显示预览并负责执行；不信任�
 4. 审计记录调用元数据、来源 ID、摘要哈希、出云片段计数和结果；不复制完整敏感文本。
 5. 飞书仅允许白名单用户私聊；以事件 ID / `request_id` 去重。
 
+### 6.1 检索证据范围（Issue #48）
+
+AgentRunner 在默认与自定义人设系统提示后都追加同一证据边界；生产
+AgentResponder 的自定义提示路径也适用。五个日记读取工具的成功观测保留原字段，
+额外提供 `evidence_scope`：包含选择范围、`journal_completeness=not_established`
+及解释。关键词/主题/日期/标签过滤、可见性、结果数量和片段限制都可能留下缺口。
+`empty_periods` 仅指该主题没有返回证据的时间桶；`truncated=false` 不证明结果穷尽。
+单条命中不证明唯一事件，空结果不证明当天没有日记或事件。正文读取仅支持对该来源
+实际可见内容的判断，元数据列表不能替代事件正文。
+
+五个工具成功返回的 `date_basis` 明确 `date=journal_note_metadata`：日期取自日记
+元数据（frontmatter 优先、文件名回退），不是提取出的事件日期。
+`event_dates_and_relations=require_returned_content_evidence` 表示事件日期和前后关系
+应依据返回正文；元数据没有确定事件日期，不等于正文中的明确事件日期不可使用。
+
+`find_before_after.query_anchor` 从已解析并由检索服务返回的 `pivot/days` 构造，含
+规范 ISO 日期、窗口半径、`kind=retrieval_window_center` 和记录日期比较方式。
+`before/on/after` 比较的是记录日期与此检索中心；`event_date=not_established_by_query`
+明确查询没有证实中心日期为事件日期。`timeline.query_window` 同样使用服务返回的
+日期范围和粒度，按记录日期分桶；周/月桶不是事件日。模型额外传入的同名参数不能
+覆盖这些字段，错误或未授权调用不产生这些成功元数据。
+
+回答应逐条保留记录日期和所述经历，再比较变化。同主题的多条记录可能是不同次事件，
+不能仅由分组推成同一次事件的前、中、后。正文明确的另一事件日期仍可单独引用；
+优先使用有依据的绝对日期，相对天数须核算日历差。原 `date`、片段、正文及来源性质
+字段保持不变，不增加事件日期提取器，也不伪造未知日期。
+
+这项约束不增加扫描、来源读取或权限，也不按关键词改写最终回答。新增观测仍参与
+既有发送前重验。离线测试只验证请求、工具观测、来源和权限契约；模型是否持续遵守
+表述边界须用原合成检索题的新批次重复调用并独立复核内容，不能用工具成功率代替。
+
 ## 7. 故障策略
 
 | 情况 | 处理 |
@@ -215,3 +260,94 @@ The default runtime adapter is `agent/hermes.py`, which exposes Hermes as `Herme
 5. 增加 `init` / `doctor` / demo quickstart，让默认栈开箱即用。
 
 实施按 #1 → #2/#3/#4 → #5 → #6 → #7/#8/#9 → #10 推进；所有 Issue 以本文档为共同基线。
+
+## 9. Journal-derived memory extension (#40)
+
+The approved journal-memory increment adds source discovery, durable fragment jobs,
+structured extraction, relation validation and evidence-gated retrieval on top of
+the existing Mem0 backend. `journal-memory.sqlite3` owns provenance, relationships,
+budgets, suppression and recovery state; Mem0 remains authoritative for memory text.
+The local wrapper validates source permissions and versions on read and before/after
+write. The pinned Mem0 API extension supplies idempotent explicit writes, operation
+lookup, complete export and targeted history erasure. No diary path is mounted into
+Mem0 or exposed to Hermes. See [the detailed design](journal-memory.md) and
+[the operating guide](../journal-memory.md). Air deployment is a separate acceptance
+step; the current development checkout is not the production runtime.
+
+## 10. Codex provider extension (2026-09-09)
+
+The optional Codex adapter sits behind the existing `LLMProvider` contract.
+`RIJI_MODEL_PROVIDER` selects the foreground mentor provider independently from
+`RIJI_MEMORY_MODEL_PROVIDER`, which selects extraction, reconciliation, native
+chat capture and organization. Defaults remain DeepSeek. Mem0, local embeddings,
+source lifecycle and journal draft semantics do not depend on either selection.
+
+```mermaid
+flowchart LR
+  H["Hermes / Feishu"] <--> R["riji-agent\nidentity, personas, bounded tools"]
+  J["Local journal memory jobs\nsource permissions and budgets"] --> E["Memory provider selection"]
+  R <--> P["Mentor provider selection"]
+  P <--> C["Codex adapter\nofficial runtime, managed ChatGPT auth"]
+  E <--> C
+  P <--> D["DeepSeek / OpenAI-compatible"]
+  E <--> DS["DeepSeek"]
+  C <--> O["OpenAI Codex / ChatGPT\nbounded cloud inference"]
+  J <--> M["Local Mem0 and provenance SQLite"]
+```
+
+The official `codex exec` runtime owns authentication and refresh. A dedicated
+persistent `RIJI_CODEX_HOME` (default `RIJI_DATA_DIR/codex`) requires its own first
+official login and is shared by mentor and memory calls. Personal Codex config,
+credentials and global AGENTS are not copied or linked into that directory.
+The adapter
+requires ChatGPT-managed authentication and never extracts tokens, implements a
+private ChatGPT HTTP client, or falls back to an API key. Each model call uses an
+`--ephemeral` context; application-owned history is selected by user, mentor and chat
+before transmission. Existing personal Codex threads are never resumed.
+
+An optional `RIJI_CODEX_PROXY_URL` secret configures an existing local proxy for
+Codex child processes when SSH or LaunchAgent does not inherit macOS system proxy
+settings. Validation accepts only HTTP(S), a loopback host and an explicit port,
+without userinfo, application paths, query or fragment. Unset preserves the
+existing allowed proxy-environment inheritance; an explicit value overrides only
+the child environment and restricts its `NO_PROXY` to local addresses. The parent
+process, system proxy, Feishu and Mem0 settings are untouched. This changes the
+transport route to the same OpenAI destination, not model tool permissions or
+journal consent scope. Diagnostics must not expose the secret proxy URL.
+
+Codex has no general shell, file, browsing, connector or coding-tool capability.
+The adapter passes only application-approved context and receives structured
+answer/tool-intent output. Tool execution stays in the local gateway, with the
+existing identity, allowlist, retrieval, budget and draft-confirmation checks.
+Unexpected server requests or unsupported isolation settings fail closed; an
+empty working directory or read-only sandbox alone is not the isolation boundary.
+Only the verified CLI versions `0.153.4` and `0.153.0-alpha.5` are accepted by this
+release. Unknown versions fail closed until their actual tool and instruction
+isolation is revalidated; neither client nor model selection upgrades implicitly.
+
+A shared in-process call scheduler gives waiting mentor calls priority over
+waiting background work without interrupting an active call. Bounded execution
+and classified errors retain local job recovery; quota/authentication failures
+never silently select another paid provider. This does not reserve account quota
+against the user's other Codex clients.
+
+Before each actual send, including after queue wait and runtime startup, the
+foreground loop revalidates selected memory context and every retained read-tool
+result. Source checks re-read current permission and full content hashes rather
+than trusting the index. Local memory/observation material, persona constraints
+and preferences must still match; coverage counters and retrieval scores alone
+do not invalidate an otherwise permitted context. These guards and the provider
+request deadline are scoped to a single mentor request across all model rounds.
+
+Extraction and recall destinations and model IDs are part of the journal consent
+binding and visible Review state. A provider/model change invalidates the old
+binding. Native messages and Feishu transport remain separate disclosed data
+flows. Ephemeral contexts do not imply zero cloud retention, and ChatGPT data
+controls must not be represented as API data controls.
+
+The release gate includes protocol/output validation, forbidden-tool requests,
+auth/quota/timeouts, mentor isolation, strict write confirmation, consent changes
+and Air synthetic-model checks before real historical initialization. Runtime
+versions, test results and actual coverage belong in the deployment record; the
+approved design is not evidence that these checks have passed. See
+[Codex operations](../codex-provider.md) and [PRD acceptance](../PRD.md#164-新增验收).

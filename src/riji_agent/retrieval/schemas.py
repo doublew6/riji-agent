@@ -66,7 +66,7 @@ FIND_BEFORE_AFTER_SCHEMA: Dict = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "date": _DATE,
+        "date": {**_DATE, "description": "Query anchor for comparing journal record dates, not an asserted event date."},
         "days": {"type": "integer", "minimum": 1, "description": "Half-window in days"},
         "topic": {"type": "string"},
     },
@@ -78,35 +78,40 @@ TOOL_DEFINITIONS: List[Dict] = [
         "name": "search_journal",
         "description": (
             "Search the local journal. Returns minimal snippets with stable "
-            "source ids; never returns private notes."
+            "source ids; never returns private notes. Only bounded query matches: "
+            "a miss does not establish missing entries or absent events. See evidence_scope."
         ),
         "parameters": SEARCH_JOURNAL_SCHEMA,
     },
     {
         "name": "read_note",
         "description": (
-            "Read a note previously surfaced by search_journal, by its source id."
+            "Read a note previously surfaced by search_journal, by its source id. "
+            "Only its permitted bounded body is returned, not an exhaustive record of events."
         ),
         "parameters": READ_NOTE_SCHEMA,
     },
     {
         "name": "list_periods",
-        "description": "List available journal entries (metadata only) by kind and date range.",
+        "description": "List bounded visible journal metadata by kind and date range; omissions do not prove absent entries.",
         "parameters": LIST_PERIODS_SCHEMA,
     },
     {
         "name": "timeline",
         "description": (
-            "Group journal evidence about a topic into day/week/month buckets "
-            "over a date range; returns evidence and coverage gaps only."
+            "Group journal evidence about a topic by journal record date into day/week/month buckets. "
+            "query_window describes the requested record-date range; event dates require content evidence. "
+            "empty_periods are gaps in returned topic matches, not missing entries or absent events."
         ),
         "parameters": TIMELINE_SCHEMA,
     },
     {
         "name": "find_before_after",
         "description": (
-            "Find journal entries within a +/- days window around a date, "
-            "split into before/on/after; optionally filtered by topic."
+            "Find journal entries within a +/- days window around a query anchor, "
+            "split into before/on/after by journal record date; optionally filtered by topic. "
+            "query_anchor is not an asserted event date; event order requires content evidence. Results are bounded; "
+            "empty groups do not prove missing entries or absent events."
         ),
         "parameters": FIND_BEFORE_AFTER_SCHEMA,
     },

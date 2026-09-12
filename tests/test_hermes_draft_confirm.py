@@ -45,6 +45,35 @@ class ExplodingResponder:
         raise AssertionError("fast draft path should not call the model")
 
 
+def test_memory_request_is_not_mistaken_for_journal_write() -> None:
+    assert parse_fast_draft_request("帮我记住我喜欢简短回答") is None
+
+
+def test_fast_draft_captures_user_facts_without_committing_journal(setup, tmp_path) -> None:
+    from riji_agent.memory.service import CaptureProcessor
+    from test_mem0_long_term_memory import FakeBackend, FakeExtractor, _service
+
+    gateway, drafts, root = setup
+    backend = FakeBackend()
+    service, operations, snapshot = _service(tmp_path, backend)
+    gateway.memory_service = service
+    message = _msg("帮我记录：我决定长期坚持每天读书", event_id="memory-draft")
+    reply = gateway.handle(SECRET, message)
+    duplicate = gateway.handle(SECRET, message)
+    assert "确认保存" in reply.text
+    assert duplicate.deduplicated
+    assert len(operations.list_jobs()) == 1
+    job = operations.list_jobs()[0]
+    assert job.content == message.text and job.source_message_id is not None
+    assert job.source_created_at
+    assert not list(root.glob("daily/*.md"))
+    processor = CaptureProcessor(backend, operations, FakeExtractor(), snapshot)
+    assert processor.process_next()
+    assert len(backend.records) == 2
+    assert not list(root.glob("daily/*.md"))
+    operations.close()
+
+
 class FakeCalendarProvider:
     provider_id = "fake"
 
@@ -109,14 +138,50 @@ def setup(tmp_path: Path):
 
 
 def _seed_draft(draft_service, persona: str = "gentle_reviewer") -> str:
-    # Simulate the model having proposed a draft in the given persona's session.
+    # Simulate a draft whose canonical preview was displayed in this private chat.
     preview = draft_service.create_draft(
         user_id="ou_1",
         session_id=session_key("ou_1", persona, "c1"),
         persona_id=persona,
         operations=[DraftOperation("🌆 Evening", "评审通过")],
     )
+    from riji_agent.drafts.confirmation import PrivatePreviewScope
+    draft_service.bind_preview(
+        preview.draft_id, PrivatePreviewScope("ou_1", "legacy:c1", "feishu", "legacy", "c1"), "preview-event",
+    )
     return preview.draft_id
+
+
+def test_old_unbound_draft_requires_a_new_private_preview(setup) -> None:
+    gateway, service, root = setup
+    preview = service.create_draft(user_id="ou_1", session_id=session_key("ou_1", "gentle_reviewer", "c1"),
+        persona_id="gentle_reviewer", operations=[DraftOperation("🌆 Evening", "Synthetic old draft")])
+    first = gateway.handle(SECRET, _msg("确认保存", event_id="old-preview"))
+    assert "重新展示" in first.text
+    assert not list((root / "daily").glob("*.md"))
+    second = gateway.handle(SECRET, _msg("确认保存", event_id="new-confirm"))
+    assert "已写入" in second.text
+
+
+def test_bound_draft_cannot_be_confirmed_from_another_chat(setup) -> None:
+    gateway, service, root = setup
+    identifier = _seed_draft(service)
+    message = IncomingMessage(event_id="cross-chat", feishu_user_id="ou_1", chat_id="different-chat",
+                              chat_type="p2p", text=f"确认保存 {identifier}")
+    reply = gateway.handle(SECRET, message)
+    assert "已写入" not in reply.text
+    assert "评审通过" not in reply.text
+    assert not list((root / "daily").glob("*.md"))
+
+
+def test_bound_draft_requires_confirmation_context_even_with_stolen_token(setup) -> None:
+    from riji_agent.drafts.errors import DraftError
+    gateway, service, root = setup
+    identifier = _seed_draft(service)
+    draft = service.get_draft(identifier)
+    with pytest.raises(DraftError):
+        service.commit_draft(identifier, user_id="ou_1", token=draft.token)
+    assert not list((root / "daily").glob("*.md"))
 
 
 def test_confirm_commits_the_pending_draft(setup) -> None:
@@ -138,9 +203,9 @@ def test_duplicate_confirmation_does_not_write_twice(setup) -> None:
     gateway, draft_service, root = setup
     _seed_draft(draft_service)
     gateway.handle(SECRET, _msg("确认保存", event_id="e1"))
-    # a second confirmation finds no awaiting draft and never re-writes
+    # A second confirmation verifies the existing commit and never re-writes.
     second = gateway.handle(SECRET, _msg("确认保存", event_id="e2"))
-    assert "没有待确认的草稿" in second.text
+    assert "已从目标日记文件重新读取并校验" in second.text
     text = next((root / "daily").glob("*.md")).read_text(encoding="utf-8")
     assert text.count("- 评审通过") == 1
 
@@ -486,10 +551,69 @@ def test_write_check_automatically_repairs_missing_content(setup) -> None:
         _msg("存进去了么，为什么我在文档里没有看到？", event_id="check"),
     )
 
-    assert "检测到同步回写覆盖" in reply.text
+    assert "检测到已确认内容缺失" in reply.text
     assert "无需再次确认保存" in reply.text
     text = note.read_text(encoding="utf-8")
     assert text.count("- 评审通过") == 1
+
+
+def test_observed_write_check_wording_repairs_only_confirmed_content(setup) -> None:
+    gateway, draft_service, root = setup
+    _seed_draft(draft_service)
+    gateway.handle(SECRET, _msg("确认保存", event_id="confirm"))
+    note = next((root / "daily").glob("*.md"))
+    note.write_text(TEMPLATE.replace("{{date}}", note.stem), encoding="utf-8")
+
+    reply = gateway.handle(
+        SECRET,
+        _msg("我看下日记还没有写入啊", event_id="observed-check"),
+    )
+
+    assert "检测到已确认内容缺失" in reply.text
+    text = note.read_text(encoding="utf-8")
+    assert text.count("- 评审通过") == 1
+    assert "高山滑雪中心" not in text
+    assert "明天去星巴克试试" not in text
+
+
+def test_verification_without_committed_draft_never_materializes_model_preview(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "riji"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "daily.md").write_text(TEMPLATE, encoding="utf-8")
+    index = JournalIndex(
+        database_path=tmp_path / "d" / "idx.sqlite3", journal_root=root
+    )
+    draft_service = DraftService(
+        DraftStore(tmp_path / "d" / "drafts.sqlite3"), root, index
+    )
+    gateway = HermesGateway(
+        hermes_secret=SECRET,
+        allowed_user_ids={"ou_1"},
+        registry=PersonaRegistry(),
+        store=MemoryStore(tmp_path / "d" / "mem.sqlite3"),
+        events=EventLog(tmp_path / "d" / "events.sqlite3"),
+        responder=StaticResponder(
+            "草稿（2026-08-07）将追加：\n"
+            "[Notes]\n"
+            "- ✅ 8 月 2 日旧内容已写入（见 [[riji/daily/2026-08-02]]）\n"
+            "- ❌ 8 月 7 日的记录尚未写入\n"
+            "- 今天真正想记录的内容\n"
+            "回复「确认保存」写入。"
+        ),
+        draft_service=draft_service,
+    )
+
+    reply = gateway.handle(SECRET, _msg("我看下日记还没有写入啊"))
+
+    assert "没有找到该会话可核验的已提交草稿" in reply.text
+    assert "确认保存" not in reply.text
+    assert draft_service.get_latest_awaiting_for_session(
+        session_key("ou_1", "gentle_reviewer", "c1")
+    ) is None
+    assert not (root / "daily").exists()
+    index.close()
 
 
 def test_unverified_model_write_claim_is_blocked(tmp_path: Path) -> None:
@@ -517,7 +641,8 @@ def test_unverified_model_write_claim_is_blocked(tmp_path: Path) -> None:
         _msg("检查一下有没有正确写入，我在日记里面没有看到", event_id="check"),
     )
 
-    assert "不能声称已经写入" in reply.text
+    assert "没有找到该会话可核验的已提交草稿" in reply.text
+    assert "已经写入" not in reply.text
     index.close()
 
 
@@ -548,7 +673,7 @@ def test_model_rendered_draft_preview_is_materialized_before_confirmation(
         draft_service=draft_service,
     )
 
-    reply = gateway.handle(SECRET, _msg("为什么我没有看到，确认下是否保存"))
+    reply = gateway.handle(SECRET, _msg("请把下面这件事整理成一份日记草稿"))
 
     assert "草稿（2026-07-04）将追加" in reply.text
     assert "[Notes]" in reply.text
@@ -637,4 +762,5 @@ def test_is_draft_verification_request() -> None:
     )
     assert is_draft_verification_request("你再确认一下，实际上我并没有看到")
     assert is_draft_verification_request("存进去了么，为什么我在文档里没有看到？")
+    assert is_draft_verification_request("我看下日记还没有写入啊")
     assert not is_draft_verification_request("确认一下我昨天写了什么")

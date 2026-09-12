@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import time
@@ -20,6 +21,12 @@ from riji_agent.config import ConfigurationError, Settings, load_settings
 from riji_agent.config_cli import DEFAULT_PRESET, run_doctor, write_init_env
 from riji_agent.demo import copy_sample_vault, run_demo_chat
 from riji_agent.models.types import LLMError
+from riji_agent.memory.review import build_memory_review_router
+from riji_agent.memory.migration import MemoryMigrator
+from riji_agent.memory.backfill import MemoryBackfill
+from riji_agent.memory.service import MemoryService
+from riji_agent.memory.journal_cli import register_journal_command, run_journal_command
+from riji_agent.memory.store import MemoryStore
 from riji_agent.service import (
     ServiceError,
     ServiceStatus,
@@ -34,7 +41,7 @@ from riji_agent.integrations.hermes_installer import (
     uninstall as uninstall_hermes_bridge,
 )
 from riji_agent.journal.index import JournalIndex
-from riji_agent.wiring import build_journal_index, build_production_gateway
+from riji_agent.wiring import build_journal_index, build_memory_runtime, build_production_gateway
 
 
 def create_app(
@@ -65,6 +72,16 @@ def create_app(
 
     if gateway is not None:
         app.include_router(build_hermes_runtime_router(gateway))
+        mentors = getattr(gateway, "mentor_runtime", None)
+        if mentors is not None:
+            from riji_agent.mentors.api import build_router
+            from riji_agent.mentors.ui import build_review_router
+            app.include_router(build_router(mentors))
+            app.include_router(build_review_router())
+        if runtime_settings.memory_review_enabled and gateway.memory_service is not None:
+            app.include_router(
+                build_memory_review_router(gateway.memory_service, runtime_settings)
+            )
 
     return app
 
@@ -102,9 +119,24 @@ def create_production_app(settings: Optional[Settings] = None) -> FastAPI:
                 break
             await asyncio.sleep(min(0.05, remaining))
         scheduler.start()
+        mentors = getattr(gateway, "mentor_runtime", None)
+        if mentors is not None:
+            mentors.worker.start()
+        if gateway.memory_worker is not None:
+            assert gateway.memory_service is not None
+            # Rebuild the read-only projection at every service start. This is
+            # the consistency check that repairs a missing, stale, or manually
+            # edited MEMORY.md without ever importing it back into Mem0.
+            gateway.memory_service.operations.mark_snapshot_pending()
+            gateway.memory_worker.start()
+            gateway.memory_worker.wake()
         try:
             yield
         finally:
+            if mentors is not None:
+                mentors.worker.stop()
+            if gateway.memory_worker is not None:
+                gateway.memory_worker.stop()
             scheduler.stop()
 
     app = create_app(runtime_settings, gateway=gateway, lifespan=_lifespan)
@@ -175,6 +207,64 @@ def _run_doctor_command(env_file: str) -> int:
     return 0 if result.ok else 2
 
 
+def _run_memory_command(args: argparse.Namespace) -> int:
+    try:
+        settings = load_settings()
+    except ConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    service, _worker = build_memory_runtime(settings)
+    if service is None:
+        print("Mem0 memory provider is not enabled.", file=sys.stderr)
+        return 2
+    if args.memory_action == "journal":
+        return run_journal_command(args, service)
+    if args.memory_action == "snapshot":
+        try:
+            generated_at, count = service.refresh_snapshot()
+        except Exception:
+            print("MEMORY.md generation failed; check Mem0 status.", file=sys.stderr)
+            return 1
+        print(f"snapshot: generated_at={generated_at} memories={count}")
+        return 0
+    legacy = MemoryStore(settings.data_dir / "memory.sqlite3")
+    try:
+        if args.memory_action == "backfill":
+            return _run_memory_backfill(args, settings, legacy, service)
+        migrator = MemoryMigrator(legacy, service.backend, service.operations, service)
+        result = migrator.run(apply=args.apply)
+    except Exception:
+        print("memory operation failed; check backup and Mem0 status.", file=sys.stderr)
+        return 1
+    finally:
+        legacy.close()
+    mode = "applied" if args.apply else ("status" if args.status else "dry-run")
+    print(
+        f"migration {mode}: discovered={result.discovered} "
+        f"migrated={result.migrated} skipped={result.skipped}"
+    )
+    if result.backup_path is not None:
+        print(f"backup: {result.backup_path}")
+    return 0
+
+
+def _run_memory_backfill(
+    args: argparse.Namespace, settings: Settings, legacy: MemoryStore, service: MemoryService
+) -> int:
+    result = MemoryBackfill(
+        legacy, service.operations, set(settings.allowed_feishu_user_ids)
+    ).run(apply=args.apply)
+    mode = "applied" if args.apply else ("status" if args.status else "dry-run")
+    print(
+        f"backfill {mode}: discovered={result.discovered} eligible={result.eligible} "
+        f"skipped={result.skipped} already_queued={result.already_queued} enqueued={result.enqueued}"
+    )
+    if result.backup_path is not None:
+        print("backup: verified")
+    print("capture_queue: " + json.dumps(service.operations.queue_counts(), sort_keys=True))
+    return 0
+
+
 def _run_demo_command(args) -> int:
     if args.action == "init":
         try:
@@ -234,6 +324,8 @@ def _run_hermes_bridge_command(action: str, gateway_run: Optional[str], no_backu
 
     print(f"gateway_run: {result.gateway_run}")
     print(f"state: {result.state}")
+    print(f"group_bridge: {'installed' if result.group_installed else 'not_installed'}")
+    print(f"lifecycle_bridge: {'installed' if result.lifecycle_installed else 'not_installed'}")
     return 0 if result.installed or action != "status" else 1
 
 
@@ -312,7 +404,55 @@ def _serve() -> None:
     uvicorn.run(app, host="127.0.0.1", port=app.state.settings.port)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+def _register_memory_commands(sub: argparse._SubParsersAction) -> None:
+    memory_cmd = sub.add_parser("memory", help="Manage Mem0 migration and MEMORY.md.")
+    memory_sub = memory_cmd.add_subparsers(dest="memory_action", required=True)
+    register_journal_command(memory_sub)
+    migrate_cmd = memory_sub.add_parser("migrate", help="Migrate legacy confirmed memory.")
+    migrate_mode = migrate_cmd.add_mutually_exclusive_group(required=True)
+    migrate_mode.add_argument("--dry-run", action="store_true")
+    migrate_mode.add_argument("--apply", action="store_true")
+    migrate_mode.add_argument("--status", action="store_true")
+    memory_sub.add_parser("snapshot", help="Regenerate the read-only MEMORY.md snapshot.")
+    backfill_cmd = memory_sub.add_parser("backfill", help="Extract memory from retained user messages.")
+    backfill_mode = backfill_cmd.add_mutually_exclusive_group(required=True)
+    backfill_mode.add_argument("--dry-run", action="store_true")
+    backfill_mode.add_argument("--apply", action="store_true")
+    backfill_mode.add_argument("--status", action="store_true")
+
+
+def _register_service_commands(sub: argparse._SubParsersAction) -> None:
+    bridge_cmd = sub.add_parser(
+        "hermes-bridge",
+        help="Install, inspect, or remove the Hermes Feishu -> riji-agent bridge hook.",
+    )
+    bridge_cmd.add_argument("action", choices=("status", "install", "uninstall"))
+    bridge_cmd.add_argument(
+        "--gateway-run",
+        help="Path to Hermes gateway/run.py; defaults to ~/.hermes/hermes-agent/gateway/run.py.",
+    )
+    bridge_cmd.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Do not create a .riji-agent.bak copy before modifying gateway/run.py.",
+    )
+    service_cmd = sub.add_parser(
+        "service",
+        help="Install or manage riji-agent as a local background service.",
+    )
+    service_cmd.add_argument(
+        "action",
+        choices=("install", "start", "stop", "restart", "status", "logs", "uninstall"),
+    )
+    service_cmd.add_argument(
+        "--target",
+        default="auto",
+        choices=("auto", "launchd", "systemd", "windows"),
+    )
+    service_cmd.add_argument("--lines", type=int, default=80, help="Lines to show for logs.")
+
+
+def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="riji-agent", description="Local journal agent boundary."
     )
@@ -350,38 +490,19 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     index_cmd.add_argument(
         "--status", action="store_true", help="Print index metadata only; make no changes."
     )
-    bridge_cmd = sub.add_parser(
-        "hermes-bridge",
-        help="Install, inspect, or remove the Hermes Feishu -> riji-agent bridge hook.",
-    )
-    bridge_cmd.add_argument("action", choices=("status", "install", "uninstall"))
-    bridge_cmd.add_argument(
-        "--gateway-run",
-        help="Path to Hermes gateway/run.py; defaults to ~/.hermes/hermes-agent/gateway/run.py.",
-    )
-    bridge_cmd.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="Do not create a .riji-agent.bak copy before modifying gateway/run.py.",
-    )
-    service_cmd = sub.add_parser(
-        "service",
-        help="Install or manage riji-agent as a local background service.",
-    )
-    service_cmd.add_argument(
-        "action",
-        choices=("install", "start", "stop", "restart", "status", "logs", "uninstall"),
-    )
-    service_cmd.add_argument(
-        "--target",
-        default="auto",
-        choices=("auto", "launchd", "systemd", "windows"),
-    )
-    service_cmd.add_argument("--lines", type=int, default=80, help="Lines to show for logs.")
+    _register_memory_commands(sub)
+    _register_service_commands(sub)
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = _argument_parser()
     args = parser.parse_args(argv)
 
     if args.command == "index":
         raise SystemExit(_run_index_command(rebuild=args.rebuild, status=args.status))
+    if args.command == "memory":
+        raise SystemExit(_run_memory_command(args))
     if args.command == "init":
         raise SystemExit(_run_init_command(args))
     if args.command == "doctor":

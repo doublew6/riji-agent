@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date as Date
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from riji_agent.journal.models import NoteKind
+from riji_agent.journal.content import ContentSpan
 
 
 class Granularity(str, Enum):
@@ -30,6 +31,13 @@ class ToolContext:
     session_id: str
     feishu_user_id: str
     persona_id: str
+    allowed_tools: Optional[Tuple[str, ...]] = None
+    chat_type: str = "p2p"
+    purpose: str = "private_chat"
+    app_binding_id: str = "legacy"
+    execution_guard: Optional[Callable[[], None]] = field(default=None, repr=False, compare=False)
+    include_ai_discussions: bool = False
+    ai_discussion_history: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,8 @@ class SearchResultItem:
     kind: NoteKind
     note_date: Optional[Date]
     snippet: str
+    content_type: str = "personal_journal"
+    content_spans: Tuple[ContentSpan, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,6 +81,8 @@ class NoteResponse:
     note_date: Optional[Date]
     body: str
     truncated: bool
+    content_type: str = "personal_journal"
+    content_spans: Tuple[ContentSpan, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -95,6 +107,8 @@ class TimelineEntry:
     note_date: Optional[Date]
     title: str
     snippet: str
+    content_type: str = "personal_journal"
+    content_spans: Tuple[ContentSpan, ...] = ()
 
 
 @dataclass(frozen=True)

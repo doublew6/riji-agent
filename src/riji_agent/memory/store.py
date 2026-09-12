@@ -11,11 +11,12 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from riji_agent.memory.models import (
     CandidateStatus,
     ConfirmedMemory,
+    HistoricalMessage,
     MemoryCandidate,
     SessionMessage,
     session_key,
@@ -66,6 +67,9 @@ class MemoryStore:
         self._conn = sqlite3.connect(str(self._database_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(session_messages)")}
+        if "content_type" not in columns:
+            self._conn.execute("ALTER TABLE session_messages ADD COLUMN content_type TEXT NOT NULL DEFAULT 'conversation'")
         self._conn.commit()
 
     def __enter__(self) -> "MemoryStore":
@@ -142,6 +146,12 @@ class MemoryStore:
             for row in rows
         ]
 
+    def list_confirmed_users(self) -> List[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT user_id FROM confirmed_memories ORDER BY user_id"
+        )
+        return [str(row["user_id"]) for row in rows]
+
     # ---------------------------------------------------- preferences (shared)
 
     def set_preference(self, user_id: str, key: str, value: str) -> None:
@@ -158,17 +168,74 @@ class MemoryStore:
         )
         return {row["key"]: row["value"] for row in rows}
 
+    def list_preference_users(self) -> List[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT user_id FROM preferences ORDER BY user_id"
+        )
+        return [str(row["user_id"]) for row in rows]
+
+    @property
+    def database_path(self) -> Path:
+        return self._database_path
+
+    def backup_to(self, destination: Path) -> Path:
+        """Create a transactionally consistent SQLite backup, including WAL data."""
+        destination = Path(destination)
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with sqlite3.connect(str(destination)) as backup:
+            self._conn.backup(backup)
+        destination.chmod(0o600)
+        return destination
+
     # ----------------------------------------------------- sessions (private)
 
     def append_message(
-        self, user_id: str, persona_id: str, chat_id: str, role: str, content: str
-    ) -> None:
-        self._conn.execute(
-            "INSERT INTO session_messages (session_key, role, content, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (session_key(user_id, persona_id, chat_id), role, content, _now()),
+        self, user_id: str, persona_id: str, chat_id: str, role: str, content: str, *,
+        content_type: str = "conversation",
+    ) -> HistoricalMessage:
+        if content_type not in {"conversation", "ai_discussion_result", "unknown_ai"}:
+            raise ValueError("session_content_type_invalid")
+        created_at = _now()
+        sk = session_key(user_id, persona_id, chat_id)
+        cursor = self._conn.execute(
+            "INSERT INTO session_messages (session_key, role, content, created_at, content_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (sk, role, content, created_at, content_type),
         )
         self._conn.commit()
+        return HistoricalMessage(int(cursor.lastrowid), sk, user_id, persona_id, content, created_at)
+
+    def iter_user_messages(self, user_ids: set[str]) -> Iterator[HistoricalMessage]:
+        """Stream retained user statements without mixing assistants or users."""
+        rows = self._conn.execute(
+            "SELECT id, session_key, content, created_at FROM session_messages "
+            "WHERE role = 'user' ORDER BY id"
+        )
+        for row in rows:
+            parts = row["session_key"].split(":", 2)
+            if len(parts) == 3 and parts[0] in user_ids:
+                yield HistoricalMessage(
+                    row["id"], row["session_key"], parts[0], parts[1],
+                    row["content"], row["created_at"],
+                )
+
+    def search_user_messages(
+        self, sk: str, query: str, *, limit: int = 5
+    ) -> list[HistoricalMessage]:
+        """Literal substring search supports Chinese and never broadens session scope."""
+        parts = sk.split(":", 2)
+        if len(parts) != 3 or not query.strip() or len(query) > 200:
+            raise ValueError("invalid session search")
+        rows = self._conn.execute(
+            "SELECT id, content, created_at FROM session_messages "
+            "WHERE session_key = ? AND role = 'user' AND instr(lower(content), lower(?)) > 0 "
+            "ORDER BY id DESC LIMIT ?",
+            (sk, query.strip(), max(1, min(limit, 10))),
+        )
+        return [
+            HistoricalMessage(row["id"], sk, parts[0], parts[1], row["content"], row["created_at"])
+            for row in rows
+        ]
 
     def get_session_history(
         self, user_id: str, persona_id: str, chat_id: str, *, limit: Optional[int] = None
@@ -182,20 +249,20 @@ class MemoryStore:
         sk = session_key(user_id, persona_id, chat_id)
         if limit is None:
             rows = self._conn.execute(
-                "SELECT role, content, created_at FROM session_messages "
+                "SELECT role, content, created_at, content_type FROM session_messages "
                 "WHERE session_key = ? ORDER BY id",
                 (sk,),
             )
         else:
             rows = self._conn.execute(
-                "SELECT role, content, created_at FROM ("
-                "SELECT id, role, content, created_at FROM session_messages "
+                "SELECT role, content, created_at, content_type FROM ("
+                "SELECT id, role, content, created_at, content_type FROM session_messages "
                 "WHERE session_key = ? ORDER BY id DESC LIMIT ?"
                 ") ORDER BY id",
                 (sk, limit),
             )
         return [
-            SessionMessage(role=row["role"], content=row["content"], created_at=row["created_at"])
+            SessionMessage(role=row["role"], content=row["content"], created_at=row["created_at"], content_type=row["content_type"])
             for row in rows
         ]
 

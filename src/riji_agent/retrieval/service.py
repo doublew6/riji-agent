@@ -19,6 +19,7 @@ from datetime import timedelta
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from riji_agent.journal.index import JournalIndex, SearchHit
+from riji_agent.journal.content import ContentSpan, personal_body, slice_spans, source_type
 from riji_agent.retrieval.errors import RetrievalError, RetrievalErrorCode
 from riji_agent.retrieval.models import (
     BeforeAfterResponse,
@@ -43,7 +44,16 @@ class RetrievalService:
         self._index = index
         self._limits = limits or RetrievalLimits()
         self._evidence: Dict[str, Set[str]] = {}
+        self._ai_requests: Set[str] = set()
         self._lock = threading.Lock()
+
+    def source_versions(self, source_ids: Sequence[str]) -> Dict[str, Optional[str]]:
+        """Re-read cloud permission and full source versions for queued contexts."""
+        result: Dict[str, Optional[str]] = {}
+        for source_id in set(source_ids):
+            note = self._index.current_cloud_note(source_id)
+            result[source_id] = note.content_hash if note is not None else None
+        return result
 
     # ----------------------------------------------------------- search_journal
 
@@ -79,7 +89,7 @@ class RetrievalService:
         items: List[SearchResultItem] = []
         total = 0
         truncated = False
-        for hit in hits:
+        for hit in self._index.cloud_hits(hits, cleaned, include_ai_discussions=context.include_ai_discussions):
             snippet = hit.snippet[: self._limits.snippet_max_chars]
             if total + len(snippet) > self._limits.max_total_snippet_chars:
                 truncated = True
@@ -92,10 +102,13 @@ class RetrievalService:
                     kind=hit.kind,
                     note_date=hit.note_date,
                     snippet=snippet,
+                    content_type=hit.content_type,
+                    content_spans=slice_spans(hit.content_spans, 0, len(snippet)),
                 )
             )
 
         self._record_evidence(context.session_id, (item.source_id for item in items))
+        self._record_ai_evidence(context.request_id, tuple(span for item in items for span in item.content_spans))
         return SearchResponse(
             request_id=context.request_id, items=tuple(items), truncated=truncated
         )
@@ -117,8 +130,15 @@ class RetrievalService:
                 RetrievalErrorCode.PRIVATE_BLOCKED, "note is private and cannot be returned"
             )
 
-        body = note.body
+        note = self._index.current_cloud_note(source_id)
+        if note is None:
+            raise RetrievalError(RetrievalErrorCode.PRIVATE_BLOCKED, "source permission changed or unavailable")
+        body = note.body if context.include_ai_discussions else personal_body(note.body, note.content_spans)
+        end = min(len(body), self._limits.read_note_max_chars)
+        spans = slice_spans(note.content_spans, 0, end) if context.include_ai_discussions else (
+            ContentSpan(0, end, "personal_journal"),)
         truncated = len(body) > self._limits.read_note_max_chars
+        self._record_ai_evidence(context.request_id, spans)
         return NoteResponse(
             request_id=context.request_id,
             source_id=note.source_id,
@@ -127,6 +147,8 @@ class RetrievalService:
             note_date=note.note_date,
             body=body[: self._limits.read_note_max_chars],
             truncated=truncated,
+            content_type=source_type(spans),
+            content_spans=spans,
         )
 
     # ------------------------------------------------------------- list_periods
@@ -151,9 +173,10 @@ class RetrievalService:
                 source_id=summary.source_id,
                 kind=summary.kind,
                 note_date=summary.note_date,
-                title=summary.title,
+                title=note.title,
             )
             for summary in summaries
+            if (note := self._index.current_cloud_note(summary.source_id)) is not None
         )
         return PeriodsResponse(request_id=context.request_id, items=items)
 
@@ -183,7 +206,8 @@ class RetrievalService:
             raise RetrievalError(RetrievalErrorCode.INVALID_QUERY, "date range is too large")
 
         hits = self._search_or_raise(
-            cleaned, date_from=date_from, date_to=date_to, limit=self._limits.timeline_max_hits
+            cleaned, date_from=date_from, date_to=date_to, limit=self._limits.timeline_max_hits,
+            include_ai_discussions=context.include_ai_discussions,
         )
         entries, capped = self._cap_entries(hits)
         truncated = capped or len(hits) >= self._limits.timeline_max_hits
@@ -204,6 +228,7 @@ class RetrievalService:
         )
         notes_found = len(entries)
         self._record_evidence(context.session_id, (entry.source_id for entry in entries))
+        self._record_ai_evidence(context.request_id, tuple(span for item in entries for span in item.content_spans))
         return TimelineResponse(
             request_id=context.request_id,
             topic=cleaned,
@@ -235,6 +260,7 @@ class RetrievalService:
             hits = self._search_or_raise(
                 cleaned, date_from=window_from, date_to=window_to,
                 limit=self._limits.timeline_max_hits,
+                include_ai_discussions=context.include_ai_discussions,
             )
             entries, truncated = self._cap_entries(hits)
             truncated = truncated or len(hits) >= self._limits.timeline_max_hits
@@ -244,7 +270,8 @@ class RetrievalService:
                 include_private=False, limit=self._limits.timeline_max_hits,
             )
             entries = [
-                TimelineEntry(s.source_id, s.note_date, s.title, "") for s in summaries
+                TimelineEntry(s.source_id, s.note_date, note.title, "") for s in summaries
+                if (note := self._index.current_cloud_note(s.source_id)) is not None
             ]
             truncated = len(summaries) >= self._limits.timeline_max_hits
 
@@ -253,6 +280,7 @@ class RetrievalService:
         after = tuple(e for e in entries if e.note_date and e.note_date > pivot)
         notes_found = len(before) + len(on) + len(after)
         self._record_evidence(context.session_id, (e.source_id for e in entries))
+        self._record_ai_evidence(context.request_id, tuple(span for item in entries for span in item.content_spans))
         return BeforeAfterResponse(
             request_id=context.request_id,
             pivot=pivot,
@@ -269,16 +297,17 @@ class RetrievalService:
     # --------------------------------------------------------------- internals
 
     def _search_or_raise(
-        self, query: str, *, date_from: Date, date_to: Date, limit: int
+        self, query: str, *, date_from: Date, date_to: Date, limit: int, include_ai_discussions: bool = False
     ) -> List[SearchHit]:
         try:
-            return self._index.search(
+            hits = self._index.search(
                 query,
                 limit=limit,
                 include_private=False,
                 date_from=date_from,
                 date_to=date_to,
             )
+            return self._index.cloud_hits(hits, query, include_ai_discussions=include_ai_discussions)
         except sqlite3.OperationalError as exc:
             raise RetrievalError(
                 RetrievalErrorCode.INVALID_QUERY, "query could not be parsed"
@@ -294,7 +323,8 @@ class RetrievalService:
                 return entries, True
             total += len(snippet)
             entries.append(
-                TimelineEntry(hit.source_id, hit.note_date, hit.title, snippet)
+                TimelineEntry(hit.source_id, hit.note_date, hit.title, snippet, hit.content_type,
+                              slice_spans(hit.content_spans, 0, len(snippet)))
             )
         return entries, False
 
@@ -302,6 +332,16 @@ class RetrievalService:
         if top_k is None:
             return self._limits.default_top_k
         return max(1, min(int(top_k), self._limits.max_top_k))
+
+    def _record_ai_evidence(self, request_id: str, spans: tuple[ContentSpan, ...]) -> None:
+        if any(span.content_type != "personal_journal" for span in spans):
+            with self._lock:
+                self._ai_requests.add(request_id)
+
+    def has_ai_discussion_evidence(self, request_id: str) -> bool:
+        """Retain content taint across tool calls even if the model drops a heading."""
+        with self._lock:
+            return request_id in self._ai_requests
 
     def _record_evidence(self, session_id: str, source_ids) -> None:
         with self._lock:

@@ -15,9 +15,9 @@ def test_posix_defaults_are_unchanged_xdg_style(platform: str) -> None:
 
 
 def test_windows_defaults_use_localappdata(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\whit\AppData\Local")
-    assert default_data_dir("win32") == Path(r"C:\Users\whit\AppData\Local") / "riji-agent"
-    assert default_log_dir("win32") == Path(r"C:\Users\whit\AppData\Local") / "riji-agent" / "logs"
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\example\AppData\Local")
+    assert default_data_dir("win32") == Path(r"C:\Users\example\AppData\Local") / "riji-agent"
+    assert default_log_dir("win32") == Path(r"C:\Users\example\AppData\Local") / "riji-agent" / "logs"
 
 
 def test_windows_defaults_fall_back_when_localappdata_unset(

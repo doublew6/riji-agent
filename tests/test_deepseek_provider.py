@@ -6,6 +6,7 @@ import pytest
 
 from riji_agent.models.deepseek import DeepSeekProvider
 from riji_agent.models.types import LLMError
+from sse_fixtures import completion_response
 
 API_KEY = "sk-" + "super-secret-key"
 
@@ -34,7 +35,7 @@ def test_maps_tool_calls_and_sends_auth(monkeypatch: pytest.MonkeyPatch) -> None
                 }
             ]
         }
-        return httpx.Response(200, json=body)
+        return completion_response(body["choices"][0]["message"])
 
     turn = _provider(handler).complete(
         [{"role": "user", "content": "hi"}], [{"type": "function", "function": {"name": "search_journal"}}]
@@ -43,13 +44,14 @@ def test_maps_tool_calls_and_sends_auth(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["auth"] == f"Bearer {API_KEY}"
     assert captured["body"]["model"] == "deepseek-reasoner"
     assert "tools" in captured["body"]
+    assert captured["body"]["stream"] is True
     assert len(turn.tool_calls) == 1
     assert turn.tool_calls[0].name == "search_journal"
 
 
 def test_maps_plain_text_answer() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": "答案"}}]})
+        return completion_response({"content": "答案"})
 
     turn = _provider(handler).complete([{"role": "user", "content": "hi"}], [])
     assert turn.content == "答案"
@@ -61,7 +63,7 @@ def test_omits_tools_field_when_no_tools() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        return completion_response({"content": "ok"})
 
     _provider(handler).complete([{"role": "user", "content": "hi"}], [])
     assert "tools" not in captured["body"]

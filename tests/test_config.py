@@ -208,6 +208,22 @@ def test_settings_reads_comma_separated_users_from_environment(
     assert settings.allowed_feishu_user_ids == frozenset({"ou_one", "ou_two"})
 
 
+def test_runtime_trace_policy_path_must_be_absolute(tmp_path: Path) -> None:
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    with pytest.raises(ValueError, match="runtime trace policy path must be absolute"):
+        Settings(
+            _env_file=None,
+            RIJI_JOURNAL_ROOT=str(journal_root),
+            RIJI_DATA_DIR=str(tmp_path / "runtime"),
+            DEEPSEEK_API_KEY="secret",
+            RIJI_ALLOWED_FEISHU_USER_IDS="ou_one",
+            HERMES_SHARED_SECRET="another-secret",
+            RIJI_RUNTIME_TRACE_POLICY_PATH="relative/private-policy.json",
+        )
+
+
 def test_load_settings_returns_safe_error_without_sensitive_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RIJI_JOURNAL_ROOT", "/does/not/exist")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-that-must-not-leak")

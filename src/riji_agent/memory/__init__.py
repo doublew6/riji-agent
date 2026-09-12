@@ -17,3 +17,9 @@ __all__ = [
     "session_key",
     "MemoryStore",
 ]
+"""Long-term memory backends, capture and review services."""
+
+from riji_agent.memory.backend import LongTermMemoryBackend, MemoryBackendError
+from riji_agent.memory.mem0 import Mem0Client
+
+__all__ = ["LongTermMemoryBackend", "Mem0Client", "MemoryBackendError"]

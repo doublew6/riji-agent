@@ -105,6 +105,77 @@ def test_commit_succeeds_when_post_write_index_update_fails(setup, monkeypatch) 
     assert store.get(preview.draft_id).status is DraftStatus.COMMITTED
 
 
+def test_commit_repairs_rollback_that_happens_during_index_update(
+    setup, monkeypatch
+) -> None:
+    service, store, index, root, _clock = setup
+    preview = _create(service)
+    note = root / "daily" / "2026-06-25.md"
+    index_updates = {"count": 0}
+
+    def restore_old_version(_path):
+        index_updates["count"] += 1
+        if index_updates["count"] == 1:
+            note.write_text(
+                TEMPLATE.replace("{{date}}", "2026-06-25"), encoding="utf-8"
+            )
+
+    monkeypatch.setattr(index, "update_note", restore_old_version)
+    service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    assert note.read_text(encoding="utf-8").count("- 评审通过") == 1
+    assert index_updates["count"] == 2
+    assert store.get(preview.draft_id).status is DraftStatus.COMMITTED
+
+
+def test_commit_preserves_manual_edit_when_repairing_index_time_rollback(
+    setup, monkeypatch
+) -> None:
+    service, _store, index, root, _clock = setup
+    preview = _create(service)
+    note = root / "daily" / "2026-06-25.md"
+    restored = {"done": False}
+
+    def restore_version_with_manual_edit(_path):
+        if restored["done"]:
+            return
+        restored["done"] = True
+        note.write_text(
+            TEMPLATE.replace("{{date}}", "2026-06-25").replace(
+                "## 🌆 Evening", "## 🌆 Evening\n- 人工同时编辑"
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(index, "update_note", restore_version_with_manual_edit)
+    service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    text = note.read_text(encoding="utf-8")
+    assert "- 人工同时编辑" in text
+    assert text.count("- 评审通过") == 1
+
+
+def test_persistent_index_time_rollback_never_commits_draft(
+    setup, monkeypatch
+) -> None:
+    service, store, index, root, _clock = setup
+    preview = _create(service)
+    note = root / "daily" / "2026-06-25.md"
+
+    def always_restore_old_version(_path):
+        note.write_text(
+            TEMPLATE.replace("{{date}}", "2026-06-25"), encoding="utf-8"
+        )
+
+    monkeypatch.setattr(index, "update_note", always_restore_old_version)
+    with pytest.raises(DraftError) as err:
+        service.commit_draft(preview.draft_id, user_id="u1", token=preview.token)
+
+    assert err.value.code is DraftErrorCode.WRITE_VERIFICATION_FAILED
+    assert "- 评审通过" not in note.read_text(encoding="utf-8")
+    assert store.get(preview.draft_id).status is DraftStatus.AWAITING
+
+
 def test_transient_write_error_keeps_draft_awaiting(setup, monkeypatch) -> None:
     service, store, _index, root, _clock = setup
     preview = _create(service)

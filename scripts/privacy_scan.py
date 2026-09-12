@@ -1,187 +1,109 @@
 #!/usr/bin/env python3
-"""Fail fast when tracked or staged files contain private local details."""
+"""Check publication inputs without printing the private values they contain."""
 
 from __future__ import annotations
 
 import argparse
-import os
-import re
+import json
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
+from typing import Any
 
-
-TEXT_EXTENSIONS = {
-    ".cfg",
-    ".css",
-    ".env",
-    ".example",
-    ".html",
-    ".ini",
-    ".json",
-    ".md",
-    ".py",
-    ".sh",
-    ".toml",
-    ".txt",
-    ".yaml",
-    ".yml",
-}
-
-ALLOWED_BINARY_FILES = {
-    "assets/integrations/feishu/riji-bot-avatar.png",
-}
-
-FORBIDDEN_PATH_PARTS = (
-    "/.env",
-    ".sqlite3",
-    ".db",
-    ".pem",
-    ".key",
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from privacy_guard_core import (  # noqa: E402
+    Finding, GuardError, MAX_BYTES, load_config, report, scan_bytes, scan_path_name, scan_text,
 )
 
-PRIVATE_EMAIL_TOKENS = tuple(
-    token.strip()
-    for token in os.environ.get("RIJI_PRIVACY_SCAN_EXTRA_TOKENS", "").split(",")
-    if token.strip()
-)
 
-FORBIDDEN_CONTENT = (
-    re.compile("/" + r"Users/(?!example(?:/|\b))[^\s'\"`]+"),
-    re.compile("Mobile " + "Documents"),
-    re.compile("iCloud" + "~md~obsidian"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"\b(?:cli|ou|oc)_[A-Za-z0-9]{12,}\b"),
-    re.compile("Chat" + r"GPT.*(?:20|100).*(?:美|会员)"),
-    re.compile("Resource " + "deadlock avoided"),
-)
-
-if PRIVATE_EMAIL_TOKENS:
-    FORBIDDEN_CONTENT += (
-        re.compile(
-            r"\b(?:"
-            + "|".join(re.escape(token) for token in PRIVATE_EMAIL_TOKENS)
-            + r")@?[A-Za-z0-9._-]*\b"
-        ),
-    )
-
-
-def _git(repo: Path, *args: str) -> str:
+def _git(repo: Path, *args: str) -> bytes:
+    command_line_git = Path("/Library/Developer/CommandLineTools/usr/bin/git")
+    executable = str(command_line_git) if command_line_git.is_file() else "git"
     result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        [executable, *args], cwd=repo, capture_output=True, check=False,
     )
+    if result.returncode:
+        raise GuardError("git_read_failed")
     return result.stdout
 
 
-def _repo_root() -> Path:
-    return Path(_git(Path.cwd(), "rev-parse", "--show-toplevel").strip())
+def _names(raw: bytes) -> list[str]:
+    return [item.decode("utf-8") for item in raw.split(b"\0") if item]
 
 
-def _split_nul(output: bytes) -> list[str]:
-    return [item.decode("utf-8") for item in output.split(b"\0") if item]
+def _inspect(raw: bytes, name: str, config: dict[str, Any]) -> list[Finding]:
+    if len(raw) > MAX_BYTES:
+        raise GuardError("scan_input_too_large")
+    return scan_path_name(name, name, config) + scan_bytes(raw, name, config)
 
 
-def _staged_files(repo: Path) -> list[str]:
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
-        cwd=repo,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return _split_nul(result.stdout)
-
-
-def _tracked_files(repo: Path) -> list[str]:
-    result = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=repo,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return _split_nul(result.stdout)
-
-
-def _is_text_file(path: Path) -> bool:
-    if path.suffix in TEXT_EXTENSIONS:
-        return True
-    try:
-        sample = path.read_bytes()[:4096]
-    except OSError:
-        return False
-    return b"\0" not in sample
-
-
-def _check_path(rel_path: str) -> list[str]:
-    if rel_path in ALLOWED_BINARY_FILES:
-        return []
-
-    lowered = rel_path.lower()
-    errors: list[str] = []
-    if lowered == ".env" or lowered.endswith(FORBIDDEN_PATH_PARTS):
-        errors.append("private file type should not be tracked or committed")
-    if lowered.startswith(("data/", "riji/", "journals/")):
-        errors.append("private data directory should not be tracked or committed")
-    return errors
-
-
-def _line_number(text: str, index: int) -> int:
-    return text.count("\n", 0, index) + 1
-
-
-def _check_content(path: Path) -> list[str]:
-    if not path.exists() or not _is_text_file(path):
-        return []
-
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return []
-
-    errors: list[str] = []
-    for pattern in FORBIDDEN_CONTENT:
-        for match in pattern.finditer(text):
-            line = _line_number(text, match.start())
-            errors.append(f"line {line}: matched {pattern.pattern!r}")
-    return errors
+def _working_files(repo: Path, files: list[str], config: dict[str, Any]) -> list[Finding]:
+    findings = []
+    for name in sorted(set(files)):
+        path = repo / name
+        if path.is_symlink():
+            raise GuardError("publication_symlink_requires_review")
+        if not path.exists():
+            continue
+        findings.extend(_inspect(path.read_bytes(), name, config))
+    return findings
 
 
 def scan(repo: Path, files: list[str]) -> list[str]:
-    failures: list[str] = []
-    for rel_path in sorted(set(files)):
-        path = repo / rel_path
-        for error in _check_path(rel_path):
-            failures.append(f"{rel_path}: {error}")
-        for error in _check_content(path):
-            failures.append(f"{rel_path}: {error}")
-    return failures
+    """Keep the existing working-file API for local callers and tests."""
+    return [f"{item.source}:{item.line}: {item.category}" for item in
+            _working_files(repo, files, load_config())]
+
+
+def staged_findings(repo: Path, config: dict[str, Any]) -> list[Finding]:
+    names = _names(_git(repo, "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"))
+    findings = []
+    for name in names:
+        mode = _git(repo, "ls-files", "--stage", "--", name).split(b" ", 1)[0]
+        if mode in (b"120000", b"160000"):
+            raise GuardError("publication_link_requires_review")
+        findings.extend(_inspect(_git(repo, "show", ":" + name), name, config))
+    return findings
+
+
+def event_findings(path: Path, config: dict[str, Any]) -> list[Finding]:
+    if not path.is_file() or path.stat().st_size > MAX_BYTES:
+        raise GuardError("event_input_unavailable")
+    event = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(event, dict):
+        raise GuardError("event_input_invalid")
+    findings = []
+    for subject in ("issue", "pull_request", "comment", "review"):
+        item = event.get(subject)
+        if not isinstance(item, dict):
+            continue
+        for field in ("title", "body"):
+            value = item.get(field)
+            if isinstance(value, str):
+                findings.extend(scan_text(value, f"event.{subject}.{field}", config))
+    return findings
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--staged", action="store_true", help="scan staged files")
-    mode.add_argument("--tracked", action="store_true", help="scan tracked files")
+    mode.add_argument("--staged", action="store_true")
+    mode.add_argument("--tracked", action="store_true")
+    mode.add_argument("--event-file", type=Path)
+    parser.add_argument("--config", type=Path)
     args = parser.parse_args()
-
-    repo = _repo_root()
-    files = _staged_files(repo) if args.staged else _tracked_files(repo)
-    failures = scan(repo, files)
-    if failures:
-        print("Privacy scan failed:", file=sys.stderr)
-        for failure in failures:
-            print(f"- {failure}", file=sys.stderr)
-        return 1
-
-    scope = "staged files" if args.staged else "tracked files"
-    print(f"Privacy scan passed for {len(files)} {scope}.")
-    return 0
+    try:
+        config = load_config(args.config)
+        if args.event_file:
+            return report(event_findings(args.event_file, config))
+        repo = Path(_git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
+        if args.staged:
+            return report(staged_findings(repo, config))
+        return report(_working_files(repo, _names(_git(repo, "ls-files", "-z")), config))
+    except GuardError as exc:
+        return report([], str(exc))
+    except (OSError, ValueError, UnicodeError):
+        return report([], "scan_input_invalid")
 
 
 if __name__ == "__main__":

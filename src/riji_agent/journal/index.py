@@ -12,7 +12,7 @@ import json
 import re
 import sqlite3
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date as Date
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from riji_agent.journal.embedding import EmbeddingProvider, cosine
 from riji_agent.journal.models import NoteKind, NoteSummary, ParsedNote
+from riji_agent.journal.content import ContentSpan, personal_body, restore_spans, slice_spans, source_type
 from riji_agent.journal.parser import (
     JournalParseError,
     SlowFileError,
@@ -84,6 +85,8 @@ class SearchHit:
     note_date: Optional[Date]
     private: bool
     snippet: str
+    content_type: str = "personal_journal"
+    content_spans: tuple[ContentSpan, ...] = ()
 
 
 def _rrf_fuse(keyword_ids: List[str], semantic_ids: List[str], limit: int, *, k: int = 60) -> List[str]:
@@ -147,6 +150,9 @@ class JournalIndex:
 
     def _ensure_schema(self) -> None:
         self._conn.execute(_NOTES_TABLE)
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(notes)")}
+        if "content_spans" not in columns:
+            self._conn.execute("ALTER TABLE notes ADD COLUMN content_spans TEXT NOT NULL DEFAULT '[]'")
         try:
             self._conn.execute(_FTS_TRIGRAM)
         except sqlite3.OperationalError:
@@ -264,6 +270,41 @@ class JournalIndex:
         ).fetchone()
         return self._row_to_note(row, body_row["body"] if body_row else "")
 
+    def current_cloud_note(self, source_id: str) -> Optional[ParsedNote]:
+        """Recheck source permissions on every outbound read, even with a stale index."""
+        cached = self.get(source_id)
+        if cached is None:
+            return None
+        root = self._journal_root.resolve()
+        path = root / cached.relative_path
+        try:
+            if path.resolve() != path or not path.is_relative_to(root) or path.stat().st_size > 262144:
+                return None
+            note = parse_note(path, root, reader=lambda value: read_file_bytes(value, self._file_read_timeout or 2.0))
+            return None if note.private else note
+        except (OSError, ValueError, UnicodeError):
+            return None
+
+    def cloud_hits(self, hits: Sequence[SearchHit], query: str, *, include_ai_discussions: bool = False) -> List[SearchHit]:
+        result = []
+        for hit in hits:
+            note = self.current_cloud_note(hit.source_id)
+            if note is not None and note.body:
+                body = note.body if include_ai_discussions else personal_body(note.body, note.content_spans)
+                terms = _like_terms(query)
+                excluded_match = (not include_ai_discussions and body != note.body
+                                  and any(term.lower() in note.body.lower() for term in terms)
+                                  and not any(term.lower() in body.lower() or term.lower() in note.title.lower()
+                                              for term in terms))
+                if not body.strip() or excluded_match:
+                    continue
+                snippet, start, end, prefix = _snippet_slice(body, query.split())
+                spans = slice_spans(note.content_spans, start, end, prefix=prefix) if include_ai_discussions else (
+                    ContentSpan(0, len(snippet), "personal_journal"),)
+                result.append(SearchHit(note.source_id, note.title, note.kind, note.note_date, False,
+                                        snippet, source_type(spans), spans))
+        return result
+
     @_synchronized
     def search(
         self,
@@ -309,7 +350,7 @@ class JournalIndex:
         clauses += self._filter_clauses(include_private, date_from, date_to, tags, params, prefix="n.")
         params.append(limit)
         sql = (
-            "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, "
+            "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, n.content_spans, "
             "snippet(notes_fts, 3, '[', ']', '…', 12) AS snippet "
             "FROM notes_fts JOIN notes n ON n.source_id = notes_fts.source_id "
             "WHERE " + " AND ".join(clauses) + " ORDER BY rank LIMIT ?"
@@ -343,7 +384,7 @@ class JournalIndex:
         clauses.append("(" + " OR ".join(like_clauses) + ")")
         params.append(limit)
         sql = (
-            "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, notes_fts.body AS body "
+            "SELECT n.source_id, n.title, n.kind, n.note_date, n.private, n.content_spans, notes_fts.body AS body "
             "FROM notes_fts JOIN notes n ON n.source_id = notes_fts.source_id "
             "WHERE " + " AND ".join(clauses)
             + " ORDER BY n.note_date DESC, n.source_id LIMIT ?"
@@ -393,8 +434,10 @@ class JournalIndex:
         snippet = (body_row["body"][:80] if body_row else "")
         return self._row_to_hit(row, snippet)
 
-    @staticmethod
-    def _row_to_hit(row: sqlite3.Row, snippet: str) -> SearchHit:
+    def _row_to_hit(self, row: sqlite3.Row, snippet: str) -> SearchHit:
+        body_row = self._conn.execute("SELECT body FROM notes_fts WHERE source_id=?", (row["source_id"],)).fetchone()
+        body = body_row["body"] if body_row else ""
+        spans = _hit_spans(body, restore_spans(json.loads(row["content_spans"]), body), snippet)
         return SearchHit(
             source_id=row["source_id"],
             title=row["title"],
@@ -402,6 +445,8 @@ class JournalIndex:
             note_date=Date.fromisoformat(row["note_date"]) if row["note_date"] else None,
             private=bool(row["private"]),
             snippet=snippet,
+            content_type=source_type(spans),
+            content_spans=spans,
         )
 
     @_synchronized
@@ -460,7 +505,7 @@ class JournalIndex:
         self._conn.execute(
             "INSERT OR REPLACE INTO notes "
             "(source_id, relative_path, kind, note_date, title, tags, private, "
-            "content_hash, mtime, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "content_hash, mtime, indexed_at, content_spans) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 note.source_id,
                 note.relative_path,
@@ -472,6 +517,7 @@ class JournalIndex:
                 note.content_hash,
                 mtime,
                 datetime.now(timezone.utc).isoformat(),
+                json.dumps([asdict(span) for span in note.content_spans], ensure_ascii=False),
             ),
         )
         if self._embedder is not None:
@@ -498,6 +544,7 @@ class JournalIndex:
             body=body,
             private=bool(row["private"]),
             content_hash=row["content_hash"],
+            content_spans=restore_spans(json.loads(row["content_spans"]), body),
         )
 
 
@@ -528,3 +575,31 @@ def _like_snippet(body: str, terms: Sequence[str], *, radius: int = 80) -> str:
     prefix = "…" if start > 0 else ""
     suffix = "…" if end < len(body) else ""
     return prefix + body[start:end] + suffix
+
+
+def _snippet_slice(body: str, terms: Sequence[str], *, radius: int = 80) -> tuple[str, int, int, int]:
+    positions = [body.lower().find(term.lower()) for term in terms if term]
+    positions = [pos for pos in positions if pos >= 0]
+    pos = min(positions) if positions else 0
+    start, end = max(0, pos - radius), min(len(body), pos + radius if positions else radius * 2)
+    prefix, suffix = "…" if start > 0 else "", "…" if end < len(body) else ""
+    return prefix + body[start:end] + suffix, start, end, len(prefix)
+
+
+def _hit_spans(body: str, spans: tuple[ContentSpan, ...], snippet: str) -> tuple[ContentSpan, ...]:
+    plain = snippet.strip("…")
+    start = body.find(plain)
+    if start >= 0:
+        return slice_spans(spans, start, start + len(plain), prefix=int(snippet.startswith("…")))
+    # FTS highlight delimiters alter offsets. Conservatively label the entire returned
+    # fragment until a current source read can produce exact spans.
+    plain = plain.replace("[", "").replace("]", "")
+    start = body.find(plain)
+    covered = slice_spans(spans, start, start + len(plain)) if start >= 0 else spans
+    kinds = {item.content_type for item in covered}
+    if kinds == {"personal_journal"} or not kinds:
+        return (ContentSpan(0, len(snippet), "personal_journal"),)
+    unique = {item.provenance for item in covered}
+    origin = next(iter(unique)) if len(unique) == 1 else None
+    kind = "ai_discussion_result" if kinds == {"ai_discussion_result"} else "unknown_ai"
+    return (ContentSpan(0, len(snippet), kind, origin),)
