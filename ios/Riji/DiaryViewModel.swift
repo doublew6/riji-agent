@@ -16,6 +16,8 @@ final class DiaryViewModel: ObservableObject {
     @Published private(set) var isPending = false
     @Published private(set) var isSaved = false
     @Published private(set) var directory: [JournalDirectoryEntry] = []
+    @Published private(set) var workflows: WorkflowViewModel?
+    @Published private(set) var templateLabel = DailyTemplate.label
     private var store: LocalJournalStore?
     private var snapshot: JournalSnapshot?
     private var draft: JournalDraft?
@@ -50,6 +52,7 @@ final class DiaryViewModel: ObservableObject {
         do {
             if store == nil { store = try storageFactory() }
             guard let store else { return }
+            if workflows == nil { workflows = WorkflowViewModel(store: store) }
             today = JournalDay(date: now(), timeZone: store.timeZone)
             let day = try await retainedText.isEmpty ? store.initialDay(now: now()) : selectedDay
             try await load(day)
@@ -96,7 +99,7 @@ final class DiaryViewModel: ObservableObject {
         guard let store, let snapshot else { errorMessage = JournalError.storage.localizedDescription; return }
         if draft == nil {
             draft = JournalDraft(day: selectedDay, section: section, sourceHash: snapshot.sourceHash,
-                                 effectiveTemplate: (try? DailyTemplate.instantiate(day: selectedDay)) ?? markdown)
+                                 effectiveTemplate: snapshot.draft?.effectiveTemplate ?? snapshot.markdown)
         }
         draft = draft?.updating(text: text, section: section)
         guard let value = draft else { return }
@@ -207,7 +210,7 @@ final class DiaryViewModel: ObservableObject {
             snapshot = latest
             markdown = latest.markdown
             draft = JournalDraft(day: selectedDay, section: section, text: text, sourceHash: latest.sourceHash,
-                                 effectiveTemplate: (try? DailyTemplate.instantiate(day: selectedDay)) ?? markdown)
+                                 effectiveTemplate: draft?.effectiveTemplate ?? latest.markdown)
             queuePersistence()
             await persistence?.value
             if errorMessage == nil { status = "已显示当前正文，请核对后点保存这段" }
@@ -222,9 +225,11 @@ final class DiaryViewModel: ObservableObject {
         snapshot = value
         selectedDay = day
         markdown = value.markdown
+        let selectedTemplate = try await store.selectedTemplate(.daily)
+        templateLabel = value.draft.map { $0.effectiveTemplate.utf8.elementsEqual(selectedTemplate.instantiate(day: day).utf8) ? selectedTemplate.label : "草稿绑定的原模板" } ?? (value.isSaved ? "已保存日记 · 原模板保留" : selectedTemplate.label)
         draft = value.draft
         text = value.draft?.text ?? ""
-        section = value.draft?.section ?? "🧠 Notes"
+        section = value.draft?.section ?? (sections.contains("🧠 Notes") ? "🧠 Notes" : sections.first ?? "🧠 Notes")
         isSaved = value.isSaved
         isPending = value.isPending
         status = value.draft == nil ? (value.isSaved ? "已保存在手机" : "") : "草稿已保留在手机 · 尚未写入日记"
@@ -238,6 +243,7 @@ final class DiaryViewModel: ObservableObject {
         snapshot = value
         markdown = value.markdown
         isSaved = value.isSaved
+        templateLabel = "已保存日记 · 原模板保留"
         draft = nil
         text = ""
         isPending = false

@@ -20,7 +20,7 @@ struct TodayDiaryView: View {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    Text(DailyTemplate.label).font(.caption).foregroundStyle(.secondary)
+                    Text(model.templateLabel).font(.caption).foregroundStyle(.secondary)
                         .accessibilityIdentifier("templateLabel")
                     ForEach(blocks) { block in
                         VStack(alignment: .leading, spacing: 12) {
@@ -209,7 +209,7 @@ struct TodayDiaryView: View {
     private var blocks: [DiaryBlock] {
         let data = Data(model.markdown.utf8)
         guard let headings = try? MarkdownSectionAppender.headings(in: data), !headings.isEmpty else {
-            return [DiaryBlock(id: "body", title: model.selectedDay.value, level: 1, body: model.markdown)]
+            return [DiaryBlock(id: "body", title: model.selectedDay.value, level: 1, body: WorkflowSamples.visible(model.markdown))]
         }
         var occurrences: [String: Int] = [:]
         return headings.enumerated().map { index, heading in
@@ -218,7 +218,7 @@ struct TodayDiaryView: View {
             let end = index + 1 < headings.count ? headings[index + 1].start : data.count
             let body = String(decoding: data[heading.end..<end], as: UTF8.self)
                 .trimmingCharacters(in: .newlines)
-            return DiaryBlock(id: "\(heading.level)-\(heading.title)-\(occurrence)", title: heading.title, level: heading.level, body: body)
+            return DiaryBlock(id: "\(heading.level)-\(heading.title)-\(occurrence)", title: heading.title, level: heading.level, body: WorkflowSamples.visible(body))
         }
     }
 }

@@ -3,11 +3,11 @@ import Foundation
 /// One actor owns all journal operations for an application process. No backend is involved.
 public actor LocalJournalStore {
     public nonisolated let timeZone: TimeZone
-    private let journals: URL
-    private let state: URL
-    private let files: JournalFileSystem
-    private let encoder: JSONEncoder
-    private let decoder = JSONDecoder()
+    let journals: URL
+    let state: URL
+    let files: JournalFileSystem
+    let encoder: JSONEncoder
+    let decoder = JSONDecoder()
 
     public init(journalDirectory: URL, stateDirectory: URL, timeZone: TimeZone = .current,
                 failure: @escaping FileFailureHook = { _, _ in }) throws {
@@ -20,8 +20,11 @@ public actor LocalJournalStore {
         self.encoder = encoder
         try files.createDirectory(journalDirectory)
         try files.createDirectory(stateDirectory)
-        for folder in ["drafts", "transactions", "receipts"] {
+        for folder in ["drafts", "transactions", "receipts", "workflow-transactions", "workflow-receipts", "workflow-drafts"] {
             try files.createDirectory(stateDirectory.appendingPathComponent(folder, isDirectory: true))
+        }
+        for folder in ["Templates", "Weekly", "Monthly", "Goals"] {
+            try files.createDirectory(journalDirectory.deletingLastPathComponent().appendingPathComponent(folder))
         }
         let zoneURL = stateDirectory.appendingPathComponent("timezone.json")
         if let data = try files.read(zoneURL) {
@@ -50,7 +53,7 @@ public actor LocalJournalStore {
     public func open(_ day: JournalDay) throws -> JournalSnapshot {
         let data = try files.read(diaryURL(day))
         let draft = try readDraft(day)
-        let template = try draft?.effectiveTemplate ?? DailyTemplate.instantiate(day: day)
+        let template = try draft?.effectiveTemplate ?? selectedTemplate(.daily).instantiate(day: day)
         guard let markdown = data.map({ String(data: $0, encoding: .utf8) }) ?? template else {
             throw JournalError.invalidMarkdown
         }
@@ -62,7 +65,7 @@ public actor LocalJournalStore {
 
     public func makeDraft(for snapshot: JournalSnapshot, section: String) throws -> JournalDraft {
         JournalDraft(day: snapshot.day, section: section, sourceHash: snapshot.sourceHash,
-                     effectiveTemplate: try DailyTemplate.instantiate(day: snapshot.day))
+                     effectiveTemplate: snapshot.draft?.effectiveTemplate ?? snapshot.markdown)
     }
 
     public func saveDraft(_ draft: JournalDraft) throws {
@@ -84,6 +87,7 @@ public actor LocalJournalStore {
     }
 
     public func commit(_ draft: JournalDraft) throws -> JournalReceipt {
+        try assertNoWorkflowPending(.daily(draft.day))
         try validate(draft)
         let hash = payloadHash(draft)
         if let receipt: JournalReceipt = try decode(receiptURL(draft.operationID)) {
@@ -108,6 +112,7 @@ public actor LocalJournalStore {
 
     /// Recovery only completes a previously persisted, explicitly confirmed operation.
     public func recover(_ day: JournalDay) throws -> JournalReceipt? {
+        try recoverWorkflows(target: .daily(day))
         guard let draft = try readDraft(day) else { return try recoverOrphanedTransaction(day) }
         if try files.read(transactionURL(draft.operationID)) != nil || files.read(receiptURL(draft.operationID)) != nil {
             return try commit(draft)
@@ -194,6 +199,7 @@ public actor LocalJournalStore {
     }
 
     private func validate(_ draft: JournalDraft) throws {
+        guard !draft.text.contains("<!-- riji-record:") else { throw JournalError.invalidMarkdown }
         guard SourceHash.digest(Data(draft.effectiveTemplate.utf8)) == draft.templateHash else {
             throw JournalError.invalidTemplate
         }
@@ -206,7 +212,7 @@ public actor LocalJournalStore {
 
     private func readDraft(_ day: JournalDay) throws -> JournalDraft? { try decode(draftURL(day)) }
 
-    private func decode<T: Decodable>(_ url: URL) throws -> T? {
+    func decode<T: Decodable>(_ url: URL) throws -> T? {
         guard let data = try files.read(url) else { return nil }
         guard let value = try? decoder.decode(T.self, from: data) else { throw JournalError.storage }
         return value

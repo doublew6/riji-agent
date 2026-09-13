@@ -32,6 +32,86 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(input.value as? String, value)
     }
 
+    private func reveal(_ element: XCUIElement) {
+        for _ in 0..<7 {
+            if element.isHittable { return }
+            app.swipeUp()
+        }
+        XCTAssertTrue(element.isHittable)
+    }
+
+    func testSyntheticTemplateRoundTripThroughSystemFilesPicker() {
+        app.buttons["diaryDirectory"].tap(); app.buttons["templatesFlow"].tap()
+        let export = app.buttons["exportSampleTemplate"]; reveal(export); export.tap()
+        let filename = app.textFields["DOCPicker.filenameTextField"]
+        XCTAssertTrue(filename.waitForExistence(timeout: 10))
+        let sampleName = "Riji-Synthetic-Import-" + container
+        filename.tap()
+        let previousName = filename.value as? String ?? ""
+        filename.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousName.count))
+        filename.typeText(sampleName)
+        app.buttons["保存"].tap()
+        let importer = app.buttons["importTemplateFile"]
+        for _ in 0..<5 { if importer.isHittable { break }; app.swipeDown() }
+        XCTAssertTrue(importer.waitForExistence(timeout: 10)); importer.tap()
+        let file = app.cells.matching(NSPredicate(format: "identifier BEGINSWITH %@", sampleName)).firstMatch
+        if !file.waitForExistence(timeout: 5) {
+            let recents = app.buttons["最近项目"]
+            if recents.exists { recents.tap() }
+        }
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        // Files treats the filename separately; open the document thumbnail.
+        file.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        XCTAssertTrue(app.buttons["confirmTemplateImport"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "synthetic-manual-acceptance")).firstMatch.exists)
+        app.buttons["confirmTemplateImport"].tap()
+        let imported = app.buttons["template-imported"]
+        for _ in 0..<5 { if imported.isHittable { break }; app.swipeDown() }
+        XCTAssertTrue(imported.waitForExistence(timeout: 5))
+    }
+
+    func testTemplateMITAndWeeklyReviewNativeWorkflow() {
+        app.buttons["diaryDirectory"].tap()
+        app.buttons["templatesFlow"].tap()
+        let sample = app.buttons["previewSampleTemplate"]
+        reveal(sample); sample.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "{{weather}}")).firstMatch.exists)
+        app.buttons["confirmTemplateImport"].tap()
+        let imported = app.buttons["template-imported"]
+        for _ in 0..<5 { if imported.isHittable { break }; app.swipeDown() }
+        XCTAssertTrue(imported.waitForExistence(timeout: 5)); imported.tap()
+        app.buttons["selectTemplate"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        // The new template must work without reopening the diary to refresh it.
+        app.buttons["mitFlow"].tap()
+        let action = app.textFields["mit-action"]
+        XCTAssertTrue(action.waitForExistence(timeout: 5)); action.tap(); action.typeText("Synthetic native MIT")
+        app.textFields["mit-criterion"].tap(); app.textFields["mit-criterion"].typeText("One checked artifact")
+        let section = app.buttons["mitSection"]; reveal(section); section.tap()
+        app.buttons["🎯 Most Important Task (MIT)"].tap()
+        let preview = app.buttons["previewMIT"]; reveal(preview); preview.tap()
+        XCTAssertTrue(app.buttons["confirmMIT"].waitForExistence(timeout: 5)); app.buttons["confirmMIT"].tap()
+        XCTAssertTrue(app.staticTexts["currentMIT"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["currentMIT"].label, "Synthetic native MIT")
+        app.terminate(); app.launch()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        app.buttons["diaryDirectory"].tap(); app.buttons["mitFlow"].tap()
+        XCTAssertTrue(app.staticTexts["currentMIT"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["currentMIT"].label, "Synthetic native MIT")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["reviewsFlow"].tap(); app.buttons["openReviewPeriod"].tap()
+        let editor = app.textViews["reviewEditor"]; reveal(editor); editor.tap(); editor.typeText("Synthetic native weekly reflection")
+        let reviewPreview = app.buttons["previewReview"]; reveal(reviewPreview); reviewPreview.tap()
+        let confirm = app.buttons["confirmReview"]; reveal(confirm); confirm.tap()
+        XCTAssertTrue(app.staticTexts["savedReview"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["savedReview"].label.contains("Synthetic native weekly reflection"))
+        app.terminate(); app.launch()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        app.buttons["diaryDirectory"].tap(); app.buttons["reviewsFlow"].tap(); app.buttons["openReviewPeriod"].tap()
+        XCTAssertTrue(app.staticTexts["savedReview"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["savedReview"].label.contains("Synthetic native weekly reflection"))
+    }
+
     func testFirstLaunchShowsTodayWithoutSetup() {
         XCTAssertTrue(app.staticTexts["templateLabel"].exists)
         XCTAssertEqual(app.staticTexts["templateLabel"].label, "产品初始模板")

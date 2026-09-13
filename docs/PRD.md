@@ -3,13 +3,14 @@ title: Riji iOS — 日记、长期记忆与导师
 version: 2.2-review
 status: final
 created: 2026-09-12
-updated: 2026-09-12
+updated: 2026-09-13
+implementation_state: in-progress
 review_state: user_review_pending
 ---
 
 # Riji iOS 产品需求文档
 
-**本轮交付：供用户走查的 iOS 产品设计与低保真全流程图，尚未实现。** 打开 App 直接进入今天的日记。日记文件保存在手机；智能能力由产品统一提供，Air 是当前维护者管理的后台运行主机，普通用户不用知道或配置它。本文重写产品主线，不代表旧服务已迁移或新权限已启用。
+**本文定义 iOS 产品目标；客户端正在分批实现，具体完成项与验证证据见[实施进度](product/ios-implementation-status.md)。** 打开 App 直接进入今天的日记。日记文件保存在手机；智能能力由产品统一提供，Air 是当前维护者管理的后台运行主机，普通用户不用知道或配置它。已实现的本地功能不代表旧服务已迁移或新权限已启用。
 
 [打开低保真全流程图](product/ios-design-2026-09-12/wireframe-riji-ios.html) · [原 PRD 完整基线](PRD-feishu-baseline-2026-09-12.md) · [近期进展与证据](product/ios-design-2026-09-12/progress-extract.md) · [技术补充与方案边界](product/ios-design-2026-09-12/addendum.md)
 
@@ -30,6 +31,8 @@ review_state: user_review_pending
 ## 2. 截至 2026-09-12 的可复用基线
 
 代码、部署和用户体验分别核对；GitHub Issue 的 OPEN 状态不等于代码未实现，文档中的早期状态也不替代后续验收记录。
+
+2026-09-13 实施补充：原生本地日记已在提交 `9f3b3d0` 完成并通过 Core/State 与 Simulator 验证；模板、目标及复盘正在继续实现。下表保留设计时的后端核对基线，最新客户端状态以[实施进度](product/ios-implementation-status.md)和[iOS 验证说明](../ios/README.md)为准。
 
 | 能力 | 最新可见证据 | iOS 设计的处理 |
 | --- | --- | --- |
@@ -309,7 +312,7 @@ review_state: user_review_pending
 | P0-D 完整个人试用 | 长录音、后台任务恢复、导出、设备撤销、两周试用 | 分开报告代码、实模、Air 和 iPhone 证据 |
 | 后续 | iPad/桌面、更多设备、自选同步提供方、更多模型或商业分发 | 另立范围，不改变首版数据归属 |
 
-优先做 iOS；不要求先开发 Mac 客户端。实施与部署另立 Issue，本轮设计不启动服务、不调整生产权限、不迁移真实数据。
+优先做 iOS；不要求先开发 Mac 客户端。用户已授权继续客户端开发和电脑上的手动、自动验收；原设计阶段没有启动服务、调整生产权限或迁移真实数据。后续生产部署仍遵循 Air 部署边界与独立验收。
 
 ## 9. 本轮低保真范围
 

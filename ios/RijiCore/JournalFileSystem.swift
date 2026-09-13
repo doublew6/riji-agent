@@ -15,13 +15,22 @@ struct JournalFileSystem: Sendable {
     func createDirectory(_ url: URL) throws {
         do {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            var info = stat()
+            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { throw JournalError.storage }
             try synchronizeDirectory(url)
             try synchronizeDirectory(url.deletingLastPathComponent())
         }
         catch { throw JournalError.storage }
     }
 
-    func read(_ url: URL) throws -> Data? {
+    func read(_ url: URL, maximumBytes: Int? = nil) throws -> Data? {
+        var info = stat()
+        if lstat(url.path, &info) != 0 {
+            if errno == ENOENT { return nil }
+            throw JournalError.storage
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { throw JournalError.storage }
+        if let maximumBytes, info.st_size > maximumBytes { throw JournalError.scanLimit }
         do { return try Data(contentsOf: url) }
         catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
             return nil

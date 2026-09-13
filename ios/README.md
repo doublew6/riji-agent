@@ -1,8 +1,14 @@
-# Riji for iPhone — local diary slice
+# Riji for iPhone — local daily workflows
 
-A native SwiftUI iPhone app with an iOS 17 deployment target. It opens today's diary immediately, retains typed drafts, appends the exact confirmed text to a selected heading, browses dates and saved diaries, and exports standard Markdown. It has no account setup, networking, AI calls, credentials, vault access or third-party runtime dependencies.
+A native SwiftUI iPhone app with an iOS 17 deployment target. The offline increment adds raw Markdown template import/selection, explicit blank days, saved-file search, versioned North Star definitions, one confirmed daily MIT with replacement/feedback history, and editable source-linked weekly/monthly reviews. It opens today's diary immediately, retains typed drafts, appends the exact confirmed text to a selected heading, browses dates and saved diaries, and exports standard Markdown. It has no account setup, networking, AI calls, credentials, external-vault access or third-party runtime dependencies.
 
-The bundled template is visibly labeled **产品初始模板**. Personal templates have not been migrated. This is the first local slice of the accepted product plan, not the complete first release. Original daily/weekly/monthly templates, weekly and monthly reports, north-star metrics and MIT, voice, mentors, memory, account isolation, managed AI and controlled synchronization remain required product work.
+The bundled template is visibly labeled **产品初始模板**. Personal templates have not been migrated. This is the first local slice of the accepted product plan, not the complete first release. Generic daily/weekly/monthly template import, manual reports, North Star definitions and manual MIT/feedback are implemented locally. Personal template migration awaits the user’s file path. AI synthesis, voice, mentors, memory, account isolation and controlled synchronization remain subsequent required product work.
+
+## Double-click on a Mac
+
+Double-click **Run Riji Simulator.command** at the repository root for normal use, or **Run Riji Sample Simulator.command** for isolated synthetic acceptance. Both build and open **Riji Development iPhone**, preserve the app’s data, and fail clearly when Xcode/runtime prerequisites are missing. An unavailable existing named device stops launch instead of being replaced. First-time creation selects an iPhone type only when both its minimum and maximum runtime versions admit an installed runtime. Terminal equivalents are `./scripts/run_ios_simulator.sh` and `./scripts/run_ios_simulator.sh --sample`. They do not run backend services or touch Air.
+
+Sample mode reuses UUID `743D25D2-4E3E-4B8B-A8DC-70D8A4A59B12` rather than generating a new namespace on each run. In the template screen, export the synthetic template through the system Files destination picker and then import that saved file; the Simulator cannot directly browse a Mac repository path. The [manual checklist](../docs/testing/ios-manual-acceptance.md) gives complete steps, relaunch expectations and filesystem results.
 
 ## Build and test
 
@@ -33,6 +39,11 @@ All application storage stays in its own sandbox:
 | Location within the app container | Content |
 | --- | --- |
 | `Documents/Journals/YYYY-MM-DD.md` | Confirmed user Markdown only |
+| `Documents/Templates/<kind>-<SHA256>.md` | Imported template bytes, immutable by content version |
+| `Documents/Goals/<UUID>.md` | Immutable dated North Star versions |
+| `Documents/Weekly/<Monday>.md`, `Documents/Monthly/<first-day>.md` | Confirmed manual reviews and appended revisions, with source IDs/hashes |
+| `Library/Application Support/Riji/workflow-drafts/` | Retained goal/MIT forms, confirmation candidates and review drafts |
+| `Library/Application Support/Riji/workflow-transactions/`, `workflow-receipts/` | Separate recoverable confirmed workflow operations |
 | `Library/Application Support/Riji/timezone.json` | Device timezone selected on first use, then fixed |
 | `Library/Application Support/Riji/selection.json` | Last selected diary date |
 | `Library/Application Support/Riji/drafts/` | Unconfirmed text, day, exact heading, effective template, source version and stable operation ID |
@@ -47,7 +58,7 @@ Recovery only completes an already persisted confirmation. The current diary mus
 
 Draft typing is queued in order to disk, outside the diary; superseded queued revisions are skipped before their writes. Save and navigation wait for the latest retained version. The UI only reports retained text after its write succeeds; a failed write keeps the latest visible text and reports the failure. A forced termination before a pending draft write reaches disk can only restore the last successfully persisted version. A draft's date is never silently changed at midnight or after travel; use **回到今天** or date navigation explicitly. Navigation preserves drafts for other days in the directory.
 
-The app matches complete ATX Markdown headings outside backtick/tilde fences, HTML comments and frontmatter, including nested section boundaries. It rejects missing or duplicate destination headings, and input that would hide an existing heading or introduce a duplicate existing anchor. Such input stays in the draft. Appending inserts the original user string unchanged, with only the required surrounding line separator, while preserving all preexisting Markdown bytes. The initial template instantiates only `{{date}}` and `{{title}}`; template scripts are never executed. Existing diary bodies are never re-templated or overwritten wholesale. Reading currently presents headings and literal Markdown body text; advanced Markdown rendering and template import are separate work.
+The app matches complete ATX Markdown headings outside backtick/tilde fences, HTML comments and frontmatter, including nested section boundaries. It rejects missing or duplicate destination headings, and input that would hide an existing heading or introduce a duplicate existing anchor. Such input stays in the draft. Appending inserts the original user string unchanged, with only the required surrounding line separator, while preserving all preexisting Markdown bytes. The initial template instantiates only `{{date}}` and `{{title}}`; template scripts are never executed. Existing diary bodies are never re-templated or overwritten wholesale. Reading currently presents headings and literal Markdown body text; advanced Markdown rendering remains separate work. Imported templates use a separate safe representation that retains unsupported macros visibly and never evaluates them. Only explicit raw-preview confirmation copies a selected file into the library; existing day bodies and old draft templates are preserved. Reopening that template kind or reimporting the same bytes recovers a previously confirmed transaction using its original source checks. Content-identical versions share one list identity, including bytes identical to a bundled template, while the imported raw file remains available. Saved diaries without template provenance use a neutral label instead of claiming the currently selected global template.
 
 ## Verification scope
 
@@ -67,3 +78,13 @@ This evidence covers simulator execution, not a physical iPhone or the full prod
 
 
 Review fixes also cover raw UTF-8 identity, foreground midnight in the fixed journal timezone, source-review serialization and empty-draft directory filtering. The scrolling regression creates a long diary, scrolls to a middle heading, adds text to an earlier section, and checks the same heading remains within 2 points of its original position. Restoration waits for a geometry snapshot belonging to the new Markdown before adjusting the native scroll offset.
+
+## Workflow verification — 2026-09-13
+
+The Core/State suite now exercises template byte/version retention, invalid/oversize input, old draft binding, exact blank-day creation, saved-only search, ISO/year/leap-month periods, missing measurements, multiple immutable metric definitions, one-current MIT adoption/replacement/feedback, source-linked review drafts/revisions and stale source/target/template rejection. A 33-case workflow failure matrix covers MIT, blank days and reviews at transaction, Markdown, receipt and cleanup boundaries. State tests cover uncertain results retaining the original operation and blocking edits until retry. See the spec’s Verification section for final executed counts and Simulator results.
+
+Review Markdown contains manual text first (preserving initial frontmatter) and appended provenance. Later revisions append without replacing the old bytes. MIT history is stored in readable daily sections with encoded provenance comments; current plan identity is derived from its replacement chain, independent of section order. Internal provenance comments remain in exports, but are hidden from reading/search prose. Weekly/monthly synthesis is manual and does not imply AI-generated analysis.
+
+Workflow form/review reloads wait for queued work and retry the latest failed autosave before replacing visible inputs. If retry still fails, the current text and error remain; a force-quit can restore only bytes that reached storage. Page loads wait for another page’s operation and respect cancellation, while confirmation commands remain non-reentrant. MIT destinations come from the selected day’s current snapshot, including its existing draft template. Feedback requires an explicit completed/partial/not-done selection. Refreshing stale MIT dependencies retains the typed fields and original goal ID; a superseded goal requires an explicit valid selection.
+
+Saved-file search sorts by the actual file date (day, week start or month start), with deterministic type ties. Oversized files are skipped with a count and partial-results notice rather than discarding valid matches; changing the query does not change the fixed scan inventory. Reviews distinguish future, current and historical periods using their recorded cutoff. Both optional North Star measurement fields use the same validation limits as the required definition fields.

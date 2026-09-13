@@ -9,8 +9,8 @@ let package = Package(
         .target(name: "RijiCore", path: "RijiCore"),
         .testTarget(name: "RijiCoreTests", dependencies: ["RijiCore"], path: "RijiCoreTests"),
         .target(name: "RijiState", dependencies: ["RijiCore"], path: "Riji",
-                exclude: ["RijiApp.swift", "TodayDiaryView.swift", "DiaryDirectoryView.swift"],
-                sources: ["DiaryViewModel.swift", "MarkdownDocument.swift"]),
+                exclude: ["RijiApp.swift", "TodayDiaryView.swift", "DiaryDirectoryView.swift", "WorkflowViews.swift"],
+                sources: ["DiaryViewModel.swift", "MarkdownDocument.swift", "WorkflowViewModel.swift"]),
         .testTarget(name: "RijiStateTests", dependencies: ["RijiState", "RijiCore"], path: "RijiStateTests")
     ]
 )
