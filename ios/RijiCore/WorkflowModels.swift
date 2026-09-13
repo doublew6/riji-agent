@@ -6,6 +6,22 @@ public enum TemplateKind: String, Codable, CaseIterable, Sendable, Identifiable 
     public var label: String { self == .daily ? "日模板" : self == .weekly ? "周模板" : "月模板" }
 }
 
+public enum WeekdayLanguage: String, Codable, CaseIterable, Sendable, Identifiable {
+    case chinese, english
+    public var id: String { rawValue }
+    public var label: String { self == .chinese ? "中文（星期一）" : "English (Monday)" }
+
+    func weekday(for day: JournalDay) -> String {
+        let zone = TimeZone(secondsFromGMT: 0)!
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        let index = calendar.component(.weekday, from: day.date(in: zone)) - 1
+        let names = self == .chinese
+            ? ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"]
+            : ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        return names[index]
+    }
+}
+
 /// Raw UTF-8 bytes are retained independently of safe, literal substitutions.
 public struct TemplateVersion: Codable, Identifiable, Equatable, Sendable {
     public let kind: TemplateKind
@@ -14,17 +30,14 @@ public struct TemplateVersion: Codable, Identifiable, Equatable, Sendable {
     public var id: String { "\(kind.rawValue)-\(SourceHash.digest(raw))" }
     public var source: String { String(decoding: raw, as: UTF8.self) }
     public var label: String { isInitial ? DailyTemplate.label : "已导入\(kind.label) · \(SourceHash.digest(raw).prefix(8))" }
-    public var warnings: [String] {
-        let pattern = #"\{\{[^}]*\}\}|<%[\s\S]*?%>|\$\{[^}]*\}|`=(?:[^`]+)`"#
-        let regex = try! NSRegularExpression(pattern: pattern)
-        var values = regex.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap { match -> String? in
-            guard let range = Range(match.range, in: source) else { return nil }
-            let value = String(source[range])
-            return ["{{date}}", "{{title}}"].contains(value) ? nil : value
-        }
-        let stripped = source.replacingOccurrences(of: "{{date}}", with: "").replacingOccurrences(of: "{{title}}", with: "")
-        if stripped.contains("{{") || stripped.contains("<%") || stripped.contains("${") || stripped.contains("```dataview") {
-            values.append("未支持的宏、脚本或插件字段将按原文保留，不会执行。")
+    private static let supportedTokens = ["{{date}}", "{{title}}", "{{date:YYYY-MM-DD}}", "{{date:dddd}}"]
+    public var warnings: [String] { Self.warnings(in: source) }
+    public static func warnings(in source: String) -> [String] {
+        let bytes = Array(source.utf8)
+        let values = TemplateSyntax.parts(in: bytes).compactMap { part -> String? in
+            let value = String(decoding: bytes[part.range], as: UTF8.self)
+            if part.isScriptFence { return "未支持的 Dataview 脚本区块将按原文保留，不会执行。" }
+            return Self.supportedTokens.contains(value) ? nil : value
         }
         return Array(Set(values)).sorted()
     }
@@ -35,10 +48,26 @@ public struct TemplateVersion: Codable, Identifiable, Equatable, Sendable {
         self.kind = kind; self.raw = raw; self.isInitial = isInitial
     }
 
-    public func instantiate(day: JournalDay, title: String? = nil) -> String {
-        // Never recursively interpret replacement values or evaluate template code.
+    public func instantiate(day: JournalDay, title: String? = nil, weekdayLanguage: WeekdayLanguage = .chinese) -> String {
+        let replacements = ["{{date}}": day.value, "{{title}}": title ?? day.value,
+                            "{{date:YYYY-MM-DD}}": day.value, "{{date:dddd}}": weekdayLanguage.weekday(for: day)]
+        let bytes = Array(raw)
+        var rendered = Data(); var cursor = 0
+        // Scan source boundaries once; unsupported expressions are opaque, even when unfinished.
+        for part in TemplateSyntax.parts(in: bytes) {
+            rendered.append(contentsOf: bytes[cursor..<part.range.lowerBound])
+            let token = String(decoding: bytes[part.range], as: UTF8.self)
+            rendered.append(contentsOf: replacements[token].map { Array($0.utf8) } ?? Array(bytes[part.range]))
+            cursor = part.range.upperBound
+        }
+        rendered.append(contentsOf: bytes[cursor...])
+        return String(decoding: rendered, as: UTF8.self)
+    }
+
+    /// Missing-field operations must retain the pre-upgrade after bytes and retry identity.
+    func instantiateLegacy(day: JournalDay) -> String {
         source.replacingOccurrences(of: "{{date}}", with: day.value)
-            .replacingOccurrences(of: "{{title}}", with: title ?? day.value)
+            .replacingOccurrences(of: "{{title}}", with: day.value)
     }
 
     public static func initial(_ kind: TemplateKind) -> Self {
@@ -156,6 +185,13 @@ public struct BlankDayDraft: Codable, Equatable, Sendable {
     public let operationID: UUID
     public let day: JournalDay
     public let template: TemplateVersion
+    // Synthesized Codable omits nil, preserving legacy encoded payload hashes.
+    public let renderedContent: String?
+    public var preview: String { renderedContent ?? template.instantiateLegacy(day: day) }
+
+    public init(operationID: UUID, day: JournalDay, template: TemplateVersion, renderedContent: String? = nil) {
+        self.operationID = operationID; self.day = day; self.template = template; self.renderedContent = renderedContent
+    }
 }
 
 public enum SavedFile: Codable, Hashable, Sendable {
@@ -193,4 +229,115 @@ struct WorkflowReceipt: Codable {
     let id: UUID
     let payloadHash: String
     let afterHash: String
+}
+
+/// Only lexical boundaries are recognized. Script contents are never interpreted or executed.
+private enum TemplateSyntax {
+    struct Part { let range: Range<Int>; var isScriptFence = false }
+
+    static func parts(in bytes: [UInt8]) -> [Part] {
+        var result = [Part](); var cursor = 0
+        while cursor < bytes.count {
+            if (cursor == 0 || bytes[cursor - 1] == 10), let end = scriptFenceEnd(bytes, at: cursor) {
+                result.append(Part(range: cursor..<end, isScriptFence: true)); cursor = end; continue
+            }
+            let end: Int?
+            if starts(bytes, cursor, "{{") { end = braceEnd(bytes, at: cursor) }
+            else if starts(bytes, cursor, "${") { end = braceEnd(bytes, at: cursor + 1) }
+            else if starts(bytes, cursor, "<%") { end = scriptEnd(bytes, at: cursor) }
+            else if starts(bytes, cursor, "`=") { end = inlineEnd(bytes, at: cursor) }
+            else { end = nil }
+            if let end { result.append(Part(range: cursor..<end)); cursor = end }
+            else { cursor += 1 }
+        }
+        return result
+    }
+
+    private static func starts(_ bytes: [UInt8], _ offset: Int, _ marker: String) -> Bool {
+        bytes[offset...].starts(with: marker.utf8)
+    }
+
+    private static func quotedEnd(_ bytes: [UInt8], at start: Int) -> Int {
+        let quote = bytes[start]; var cursor = start + 1
+        while cursor < bytes.count {
+            if bytes[cursor] == 92 { cursor = min(bytes.count, cursor + 2); continue }
+            if bytes[cursor] == quote { return cursor + 1 }
+            cursor += 1
+        }
+        return bytes.count
+    }
+
+    private static func braceEnd(_ bytes: [UInt8], at start: Int) -> Int {
+        var cursor = start; var depth = 0
+        while cursor < bytes.count {
+            let byte = bytes[cursor]
+            if let end = commentEnd(bytes, at: cursor) { cursor = end; continue }
+            if [UInt8(34), 39, 96].contains(byte) { cursor = quotedEnd(bytes, at: cursor); continue }
+            if byte == 123 { depth += 1 }
+            if byte == 125 { depth -= 1; if depth == 0 { return cursor + 1 } }
+            cursor += 1
+        }
+        return bytes.count
+    }
+
+    private static func scriptEnd(_ bytes: [UInt8], at start: Int) -> Int {
+        var cursor = start + 2; var depth = 1
+        while cursor < bytes.count {
+            if let end = commentEnd(bytes, at: cursor) { cursor = end; continue }
+            if [UInt8(34), 39, 96].contains(bytes[cursor]) { cursor = quotedEnd(bytes, at: cursor); continue }
+            if starts(bytes, cursor, "<%") { depth += 1; cursor += 2 }
+            else if starts(bytes, cursor, "%>") {
+                depth -= 1; cursor += 2; if depth == 0 { return cursor }
+            } else { cursor += 1 }
+        }
+        return bytes.count
+    }
+
+    private static func commentEnd(_ bytes: [UInt8], at start: Int) -> Int? {
+        if starts(bytes, start, "//") { return lineEnd(bytes, at: start) }
+        guard starts(bytes, start, "/*") else { return nil }
+        var cursor = start + 2
+        while cursor < bytes.count {
+            if starts(bytes, cursor, "*/") { return cursor + 2 }
+            cursor += 1
+        }
+        return bytes.count
+    }
+
+    private static func inlineEnd(_ bytes: [UInt8], at start: Int) -> Int {
+        var cursor = start + 2
+        while cursor < bytes.count {
+            if bytes[cursor] == 92 { cursor = min(bytes.count, cursor + 2); continue }
+            if bytes[cursor] == 96 { return cursor + 1 }
+            if [UInt8(34), 39].contains(bytes[cursor]) { cursor = quotedEnd(bytes, at: cursor) }
+            else { cursor += 1 }
+        }
+        return bytes.count
+    }
+
+    private static func scriptFenceEnd(_ bytes: [UInt8], at start: Int) -> Int? {
+        let end = lineEnd(bytes, at: start)
+        let line = Array(bytes[start..<end].drop(while: { $0 == 32 }))
+        let spaces = bytes[start..<end].prefix(while: { $0 == 32 }).count
+        guard spaces <= 3, let marker = line.first, marker == 96 || marker == 126 else { return nil }
+        let count = line.prefix(while: { $0 == marker }).count
+        let info = String(decoding: line.dropFirst(count), as: UTF8.self).split(whereSeparator: { $0.isWhitespace }).first?.lowercased()
+        guard count >= 3, info == "dataview" || info == "dataviewjs" else { return nil }
+        var cursor = end
+        while cursor < bytes.count {
+            let next = lineEnd(bytes, at: cursor)
+            let closing = bytes[cursor..<next].drop(while: { $0 == 32 })
+            let indent = bytes[cursor..<next].prefix(while: { $0 == 32 }).count
+            let run = closing.prefix(while: { $0 == marker }).count
+            if indent <= 3, run >= count, closing.dropFirst(run).allSatisfy({ [UInt8(9), 10, 13, 32].contains($0) }) { return next }
+            cursor = next
+        }
+        return bytes.count
+    }
+
+    private static func lineEnd(_ bytes: [UInt8], at start: Int) -> Int {
+        var cursor = start
+        while cursor < bytes.count && bytes[cursor] != 10 { cursor += 1 }
+        return cursor < bytes.count ? cursor + 1 : cursor
+    }
 }

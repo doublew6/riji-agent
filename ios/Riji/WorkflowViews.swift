@@ -28,9 +28,18 @@ struct TemplatesView: View {
                     }.accessibilityIdentifier("template-\(version.isInitial ? "initial" : "imported")")
                 }
             } header: { Text("已选择：\(model.selectedTemplate.label)") }
+            Section("日期偏好") {
+                Picker("星期语言", selection: Binding(get: { model.weekdayLanguage }, set: { language in
+                    Task { await model.chooseWeekdayLanguage(language) }
+                })) {
+                    ForEach(WeekdayLanguage.allCases) { Text($0.label).tag($0) }
+                }.accessibilityIdentifier("weekdayLanguage")
+                Text("默认中文。只用于新日期和新准备的复盘；已保存内容与待确认草稿保持原文。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("导入 Markdown") {
                 Button("从文件选择模板") { showImporter = true }.accessibilityIdentifier("importTemplateFile")
-                Text("先查看原文，再确认复制。仅替换 {{date}} 和 {{title}}；其他宏保留为原文。")
+                Text("先查看原文，再确认复制。支持 {{date}}、{{title}}、{{date:YYYY-MM-DD}} 和 {{date:dddd}}；其他宏保留为原文。")
                     .font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $pasted).frame(minHeight: 130).accessibilityIdentifier("templateSourceInput")
                 Button("预览粘贴的模板") { model.previewImport(Data(pasted.utf8), kind: kind) }
@@ -107,9 +116,11 @@ struct BlankDayView: View {
             Text("按选定模板保留空白日记；已有日记会保持原文。")
             Button("预览空白日记") { Task { await model.prepareBlank(JournalDay(date: date, timeZone: diary.timeZone)) } }.accessibilityIdentifier("previewBlankDay")
             if let blank = model.blank {
-                Section("\(blank.day.value) · \(blank.template.label)") {
-                    Text(blank.template.instantiate(day: blank.day)).font(.system(.body, design: .monospaced))
-                    ForEach(blank.template.warnings, id: \.self) { Text($0).foregroundStyle(.orange) }
+                Section("\(blank.day.value) · 已固定的日记预览") {
+                    Text("这是已固定的预览；仍显示的变量会按原文保存，不再替换。")
+                        .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("fixedPreviewNotice")
+                    Text(blank.preview).accessibilityIdentifier("blankDayPreview").font(.system(.body, design: .monospaced))
+                    ForEach(TemplateVersion.warnings(in: blank.preview), id: \.self) { Text($0).foregroundStyle(.orange) }
                     Button("确认保留空白日记") { Task { if await model.confirmBlank() { _ = await diary.navigate(to: blank.day) } } }.accessibilityIdentifier("confirmBlankDay")
                 }
             }
@@ -366,7 +377,7 @@ enum WorkflowSamples {
         return false
         #endif
     }
-    static let template = "---\nfixture: synthetic-manual-acceptance\ndate: '{{date}}'\nunknown: keep-this-field\n---\n# {{title}}\n\n## 🎯 Most Important Task (MIT)\n\n## 🌆 Evening\n\n## 🧠 Notes\n\nWeather: {{weather}}\n<% unsupported_synthetic_macro %>\n"
+    static let template = "---\nfixture: synthetic-manual-acceptance\ndate: '{{date:YYYY-MM-DD}}'\nweekday: '{{date:dddd}}'\nunknown: keep-this-field\n---\n# {{title}}\n\n## 🎯 Most Important Task (MIT)\n\n## 🌆 Evening\n\n## 🧠  **Notes**\n\nWeather: {{weather}}\n<% unsupported_synthetic_macro %>\n"
     static func visible(_ markdown: String) -> String {
         markdown.components(separatedBy: "\n").filter { !$0.hasPrefix("<!-- riji-record:") }.joined(separator: "\n")
     }

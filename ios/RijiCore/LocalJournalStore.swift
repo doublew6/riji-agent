@@ -50,13 +50,61 @@ public actor LocalJournalStore {
         try files.write(encoder.encode(day), to: state.appendingPathComponent("selection.json"), purpose: .metadata)
     }
 
+    public func weekdayLanguage() throws -> WeekdayLanguage {
+        if let update: WeekdayPreferenceUpdate = try decode(weekdayUpdateURL) {
+            return update.committed ? update.next : try decodeWeekday(update.previous)
+        }
+        return try decodeWeekday(files.read(weekdayURL))
+    }
+
+    public func setWeekdayLanguage(_ language: WeekdayLanguage) throws {
+        try recoverWeekdayPreference()
+        let previous = try files.read(weekdayURL)
+        _ = try decodeWeekday(previous)
+        var update = WeekdayPreferenceUpdate(previous: previous, next: language, committed: false)
+        // A durable pending record remains authoritative if both the write and rollback fail.
+        try files.write(encoder.encode(update), to: weekdayUpdateURL, purpose: .transaction)
+        do { try files.write(encoder.encode(language), to: weekdayURL, purpose: .metadata) }
+        catch { try? recoverWeekdayPreference(); throw JournalError.storage }
+        update.committed = true
+        do { try files.write(encoder.encode(update), to: weekdayUpdateURL, purpose: .transaction) }
+        catch {
+            let recorded: WeekdayPreferenceUpdate? = try decode(weekdayUpdateURL)
+            guard recorded == update else { try? recoverWeekdayPreference(); throw JournalError.storage }
+        }
+        // Once committed, cleanup is retryable and cannot turn a saved choice into a UI failure.
+        try? files.remove(weekdayUpdateURL, purpose: .transaction)
+    }
+
+    private var weekdayURL: URL { state.appendingPathComponent("weekday-language.json") }
+    private var weekdayUpdateURL: URL { state.appendingPathComponent("weekday-language-update.json") }
+
+    private func decodeWeekday(_ data: Data?) throws -> WeekdayLanguage {
+        guard let data else { return .chinese }
+        guard let language = try? decoder.decode(WeekdayLanguage.self, from: data) else { throw JournalError.storage }
+        return language
+    }
+
+    private func recoverWeekdayPreference() throws {
+        guard let update: WeekdayPreferenceUpdate = try decode(weekdayUpdateURL) else { return }
+        let desired = try update.committed ? encoder.encode(update.next) : update.previous
+        if try files.read(weekdayURL) != desired {
+            if let desired { try files.write(desired, to: weekdayURL, purpose: .metadata) }
+            else { try files.remove(weekdayURL, purpose: .metadata) }
+        }
+        do { try files.remove(weekdayUpdateURL, purpose: .transaction) }
+        catch { if try files.read(weekdayUpdateURL) != nil { throw JournalError.storage } }
+    }
+
     public func open(_ day: JournalDay) throws -> JournalSnapshot {
         let data = try files.read(diaryURL(day))
         let draft = try readDraft(day)
-        let template = try draft?.effectiveTemplate ?? selectedTemplate(.daily).instantiate(day: day)
-        guard let markdown = data.map({ String(data: $0, encoding: .utf8) }) ?? template else {
-            throw JournalError.invalidMarkdown
-        }
+        let markdown: String
+        if let data {
+            guard let source = String(data: data, encoding: .utf8) else { throw JournalError.invalidMarkdown }
+            markdown = source
+        } else if let draft { markdown = draft.effectiveTemplate }
+        else { markdown = try selectedTemplate(.daily).instantiate(day: day, weekdayLanguage: weekdayLanguage()) }
         let pending = try draft.map { try files.read(transactionURL($0.operationID)) != nil ||
             files.read(receiptURL($0.operationID)) != nil } ?? false
         return JournalSnapshot(day: day, markdown: markdown, sourceHash: data.map(SourceHash.digest),
@@ -222,4 +270,10 @@ public actor LocalJournalStore {
     private func draftURL(_ day: JournalDay) -> URL { state.appendingPathComponent("drafts/\(day.value).json") }
     private func transactionURL(_ id: UUID) -> URL { state.appendingPathComponent("transactions/\(id.uuidString).json") }
     private func receiptURL(_ id: UUID) -> URL { state.appendingPathComponent("receipts/\(id.uuidString).json") }
+}
+
+private struct WeekdayPreferenceUpdate: Codable, Equatable {
+    let previous: Data?
+    let next: WeekdayLanguage
+    var committed: Bool
 }

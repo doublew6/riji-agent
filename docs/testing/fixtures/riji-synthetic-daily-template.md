@@ -1,6 +1,7 @@
 ---
 fixture: synthetic-manual-acceptance
-date: '{{date}}'
+date: '{{date:YYYY-MM-DD}}'
+weekday: '{{date:dddd}}'
 unknown: keep-this-field
 ---
 # {{title}}
@@ -9,7 +10,7 @@ unknown: keep-this-field
 
 ## 🌆 Evening
 
-## 🧠 Notes
+## 🧠  **Notes**
 
 Weather: {{weather}}
 <% unsupported_synthetic_macro %>

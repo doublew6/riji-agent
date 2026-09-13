@@ -129,9 +129,10 @@ extension LocalJournalStore {
 
     public func prepareBlankDay(_ day: JournalDay) throws -> BlankDayDraft {
         let snapshot = try open(day)
-        // An existing pending daily draft keeps its exact template, even after selection changes.
-        let template = try snapshot.draft.map { try TemplateVersion(kind: .daily, raw: Data($0.effectiveTemplate.utf8)) } ?? selectedTemplate(.daily)
-        return BlankDayDraft(operationID: UUID(), day: day, template: template)
+        // An unsaved day's snapshot already contains its retained draft's effective template.
+        // Saved Markdown may contain provenance and must never be validated as an import.
+        let template = try selectedTemplate(.daily)
+        return BlankDayDraft(operationID: UUID(), day: day, template: template, renderedContent: snapshot.markdown)
     }
 
     public func createBlankDay(_ draft: BlankDayDraft) throws {
@@ -139,9 +140,12 @@ extension LocalJournalStore {
         let hash = try workflowHash(draft)
         if try retryWorkflow(id: draft.operationID, payloadHash: hash) { return }
         let target = WorkflowTarget.daily(draft.day)
-        if try files.read(workflowURL(target)) != nil { return }
+        if let existing = try files.read(workflowURL(target)) {
+            guard existing == Data(draft.preview.utf8) else { throw JournalError.changedSource }
+            return
+        }
         try commitWorkflow(id: draft.operationID, payloadHash: hash, target: target, beforeHash: nil,
-                           after: Data(draft.template.instantiate(day: draft.day).utf8))
+                           after: Data(draft.preview.utf8))
     }
 
     public func readSavedFile(_ file: SavedFile, maximumBytes: Int? = nil) throws -> Data {
@@ -193,7 +197,8 @@ extension LocalJournalStore {
 
     func records<T: Decodable>(_ data: Data, type: String) throws -> [T] {
         let prefix = "<!-- riji-record:\(type):"
-        return try String(decoding: data, as: UTF8.self).components(separatedBy: "\n").compactMap { line in
+        return try String(decoding: data, as: UTF8.self).components(separatedBy: "\n").compactMap { rawLine in
+            let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
             guard line.hasPrefix(prefix), line.hasSuffix(" -->") else { return nil }
             guard let encoded = Data(base64Encoded: String(line.dropFirst(prefix.count).dropLast(4))),
                   let value = try? decoder.decode(T.self, from: encoded) else { throw JournalError.storage }

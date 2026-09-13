@@ -12,11 +12,26 @@ private final class WorkflowFailure: @unchecked Sendable {
     }
 }
 
+private final class PreferenceFaults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var faults: [(FilePurpose, FileStage, Int)] = []
+    func arm(_ faults: [(FilePurpose, FileStage, Int)]) { lock.lock(); defer { lock.unlock() }; self.faults = faults }
+    func check(_ purpose: FilePurpose, _ stage: FileStage) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard let next = faults.first, next.0 == purpose, next.1 == stage else { return }
+        if next.2 > 1 { faults[0].2 -= 1; return }
+        faults.removeFirst(); throw JournalError.storage
+    }
+}
+
 final class WorkflowStoreTests: XCTestCase {
     private var root: URL!
     private let zone = TimeZone(identifier: "Asia/Shanghai")!
     private let day = try! JournalDay("2026-09-12")
-    override func setUpWithError() throws { root = FileManager.default.temporaryDirectory.appendingPathComponent("RijiWorkflowSynthetic-\(UUID().uuidString)") }
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("RijiWorkflowSynthetic-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
     private func store(_ failure: WorkflowFailure? = nil, suffix: String = "") throws -> LocalJournalStore {
         let directory = root.appendingPathComponent(suffix)
@@ -377,6 +392,309 @@ final class WorkflowStoreTests: XCTestCase {
         XCTAssertEqual(after.components(separatedBy: "Synthetic pending append").count, 2)
         let history = try await store.mitHistory(day); XCTAssertTrue(history.isEmpty)
         XCTAssertFalse(after.contains("Synthetic blocked MIT"))
+    }
+
+    func testFormattedDatesUseCalendarDayChineseAndEnglishWithoutChangingRawIdentity() throws {
+        let source = "---\r\ndate: '{{date:YYYY-MM-DD}}'\r\nweekday: '{{date:dddd}}'\r\n---\r\n# {{title}} / {{date}}\r\n## **🧠 Notes**\r\ne\u{0301}  \r\n"
+        let value = try template(source: source); let identity = value.id
+        let cases = [("2020-12-31", "星期四", "Thursday"), ("2021-01-01", "星期五", "Friday"),
+                     ("2024-02-29", "星期四", "Thursday"), ("2026-09-13", "星期日", "Sunday")]
+        for (date, chinese, english) in cases {
+            let day = try JournalDay(date)
+            for (language, weekday) in [(WeekdayLanguage.chinese, chinese), (.english, english)] {
+                let expected = "---\r\ndate: '\(date)'\r\nweekday: '\(weekday)'\r\n---\r\n# \(date) / \(date)\r\n## **🧠 Notes**\r\ne\u{0301}  \r\n"
+                XCTAssertEqual(Data(value.instantiate(day: day, weekdayLanguage: language).utf8), Data(expected.utf8))
+            }
+        }
+        XCTAssertEqual(value.raw, Data(source.utf8)); XCTAssertEqual(value.id, identity); XCTAssertTrue(value.warnings.isEmpty)
+    }
+
+    func testLiteralSinglePassPreservesUnsupportedMacrosAndReplacementTokens() throws {
+        let value = try template(source: "# {{title}}\r\n{{date:dddd}} | {{date:YYYY-MM-DD}} | {{date:YY}} | <% {{date}} synthetic() %> | ${custom} | `=synthetic()`\r\n")
+        let title = "Literal {{date}} {{date:dddd}} {{title}}"
+        XCTAssertEqual(value.instantiate(day: day, title: title, weekdayLanguage: .english),
+                       "# \(title)\r\nSaturday | 2026-09-12 | {{date:YY}} | <% {{date}} synthetic() %> | ${custom} | `=synthetic()`\r\n")
+        XCTAssertTrue(value.warnings.contains("{{date:YY}}")); XCTAssertTrue(value.warnings.contains("<% {{date}} synthetic() %>"))
+        XCTAssertFalse(value.warnings.contains("{{date:dddd}}")); XCTAssertFalse(value.warnings.contains("{{date:YYYY-MM-DD}}"))
+    }
+
+    func testWeekdayPreferencePersistsAndFailedWritesRetainPreviousChoice() async throws {
+        let failure = WorkflowFailure(); let store = try store(failure)
+        let initial = try await store.weekdayLanguage(); XCTAssertEqual(initial, .chinese)
+        failure.arm(.metadata, .afterReplace)
+        do { try await store.setWeekdayLanguage(.english); XCTFail() }
+        catch { XCTAssertEqual(error as? JournalError, .storage) }
+        let unchangedDefault = try await store.weekdayLanguage(); XCTAssertEqual(unchangedDefault, .chinese)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("State/weekday-language.json").path))
+        try await store.setWeekdayLanguage(.english)
+        for stage in [FileStage.beforeWrite, .beforeReplace, .afterReplace] {
+            failure.arm(.metadata, stage)
+            do { try await store.setWeekdayLanguage(.chinese); XCTFail() }
+            catch { XCTAssertEqual(error as? JournalError, .storage) }
+            let current = try await store.weekdayLanguage(); XCTAssertEqual(current, .english)
+            let reopened = try self.store(); let saved = try await reopened.weekdayLanguage(); XCTAssertEqual(saved, .english)
+        }
+    }
+
+    func testLanguageChangesOnlyNewSnapshotsAndNewReviewText() async throws {
+        let store = try store(); let source = "# {{date:YYYY-MM-DD}} {{date:dddd}}\n## 🧠 Notes\n"
+        for kind in TemplateKind.allCases {
+            let version = try template(kind, source: source)
+            try await store.importTemplate(version, operationID: UUID()); try await store.selectTemplate(version)
+        }
+        let old = try await store.open(day)
+        var ordinary = try await store.makeDraft(for: old, section: "🧠 Notes"); ordinary.text = "Retained {{date:dddd}}"
+        try await store.saveDraft(ordinary)
+        let review = try await store.prepareReview(period()); try await store.retainReviewDraft(review)
+        try await store.setWeekdayLanguage(.english)
+        let reopened = try self.store(); let restored = try await reopened.open(day)
+        XCTAssertEqual(restored.draft, ordinary); XCTAssertEqual(Data(restored.markdown.utf8), Data(old.markdown.utf8))
+        let retained = try await reopened.savedReviewDraft(period()); XCTAssertEqual(retained, review)
+        let refreshed = try await reopened.prepareReview(period(), retaining: review.text); XCTAssertEqual(refreshed.text, review.text)
+        let next = try await reopened.open(JournalDay("2026-09-13")); XCTAssertTrue(next.markdown.contains("Sunday"))
+        let newReview = try await reopened.prepareReview(period(.monthly)); XCTAssertTrue(newReview.text.contains("Tuesday"))
+        _ = try await reopened.commit(ordinary)
+        let bytes = try await reopened.exportMarkdown(day); XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains("星期六"))
+        XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains("Retained {{date:dddd}}"))
+        try await reopened.setWeekdayLanguage(.chinese)
+        let unchanged = try await reopened.exportMarkdown(day); XCTAssertEqual(unchanged, bytes)
+    }
+
+    func testBlankPreviewFreezesNewAndLegacyEffectiveDraftBytesAcrossPreferenceChanges() async throws {
+        for existingDraft in [false, true] {
+            let suffix = existingDraft ? "retained" : "new"; let store = try store(suffix: suffix)
+            let value = try template(source: "# {{date:YYYY-MM-DD}} {{date:dddd}}\r\n## **🧠 Notes**\r\n")
+            try await store.importTemplate(value, operationID: UUID()); try await store.selectTemplate(value)
+            let expected: String
+            if existingDraft {
+                expected = "# 2026-09-12 {{date:dddd}} {{date:YYYY-MM-DD}}\r\n## **🧠 Notes**\r\n"
+                let draft = JournalDraft(day: day, section: "**🧠 Notes**", text: "Unconfirmed", sourceHash: nil, effectiveTemplate: expected)
+                try await store.saveDraft(draft)
+            } else { expected = "# 2026-09-12 星期六\r\n## **🧠 Notes**\r\n" }
+            let blank = try await store.prepareBlankDay(day); XCTAssertEqual(Data(blank.preview.utf8), Data(expected.utf8))
+            try await store.setWeekdayLanguage(.english); try await store.selectTemplate(.initial(.daily))
+            let restored = try JSONDecoder().decode(BlankDayDraft.self, from: JSONEncoder().encode(blank))
+            let reopened = try self.store(suffix: suffix)
+            try await reopened.createBlankDay(restored); try await reopened.createBlankDay(restored)
+            let actual = try await reopened.exportMarkdown(day); XCTAssertEqual(actual, Data(expected.utf8))
+            XCTAssertFalse(String(decoding: actual, as: UTF8.self).contains("Unconfirmed"))
+        }
+    }
+
+    func testLegacyBlankJSONHashAndTransactionOrReceiptRetryAreUnchanged() async throws {
+        let value = try template(source: "# {{date}} {{title}}\r\n{{date:YYYY-MM-DD}} {{date:dddd}}\r\n## 🧠 Notes\r\n")
+        let after = Data("# 2026-09-12 2026-09-12\r\n{{date:YYYY-MM-DD}} {{date:dddd}}\r\n## 🧠 Notes\r\n".utf8)
+        for mode in ["fresh", "transaction", "receipt"] {
+            let store = try store(suffix: mode); let id = UUID()
+            let rawTemplate = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+            let legacyJSON = try JSONSerialization.data(withJSONObject: ["operationID": id.uuidString, "day": day.value, "template": rawTemplate], options: [.sortedKeys, .fragmentsAllowed])
+            let legacy = try JSONDecoder().decode(BlankDayDraft.self, from: legacyJSON)
+            let sorted = JSONEncoder(); sorted.outputFormatting = [.sortedKeys]
+            XCTAssertEqual(try sorted.encode(legacy), legacyJSON); XCTAssertNil(legacy.renderedContent)
+            let hash = SourceHash.digest(legacyJSON)
+            if mode == "transaction" {
+                let transaction = WorkflowTransaction(id: id, payloadHash: hash, target: .daily(day), beforeHash: nil,
+                                                      afterHash: SourceHash.digest(after), after: after)
+                try sorted.encode(transaction).write(to: root.appendingPathComponent("\(mode)/State/workflow-transactions/\(id.uuidString).json"))
+            } else if mode == "receipt" {
+                try after.write(to: root.appendingPathComponent("\(mode)/Journals/\(day.value).md"))
+                let receipt = WorkflowReceipt(id: id, payloadHash: hash, afterHash: SourceHash.digest(after))
+                try sorted.encode(receipt).write(to: root.appendingPathComponent("\(mode)/State/workflow-receipts/\(id.uuidString).json"))
+            }
+            try await store.setWeekdayLanguage(.english)
+            let reopened = try self.store(suffix: mode)
+            try await reopened.createBlankDay(legacy); try await reopened.createBlankDay(legacy)
+            let actual = try await reopened.exportMarkdown(day); XCTAssertEqual(actual, after)
+            let changed = BlankDayDraft(operationID: id, day: day, template: value, renderedContent: "Changed preview")
+            do { try await reopened.createBlankDay(changed); XCTFail() }
+            catch { XCTAssertEqual(error as? JournalError, .operationMismatch) }
+        }
+    }
+
+    func testLegacyOrdinaryMITAndReviewDraftsPersistRelaunchAndConfirmTheirOriginalBytes() async throws {
+        for workflow in ["ordinary", "mit", "review"] {
+            let store = try store(suffix: workflow)
+            let old = "# 2026-09-12 {{date:YYYY-MM-DD}} {{date:dddd}}\r\n## 🧠  **Notes**\r\n"
+            let raw = "# {{date}} {{date:YYYY-MM-DD}} {{date:dddd}}\r\n## 🧠  **Notes**\r\n"
+            let version = try template(workflow == "review" ? .weekly : .daily, source: raw)
+            try await store.importTemplate(version, operationID: UUID()); try await store.selectTemplate(version)
+            let ordinary = JournalDraft(day: day, section: "🧠  **Notes**", text: "Original literal {{date:dddd}}", sourceHash: nil, effectiveTemplate: old)
+            let mit = MITDraft(event: MITEvent(day: day, action: "Original literal {{date:dddd}}", criterion: "One"),
+                               section: "🧠  **Notes**", sourceHash: nil, effectiveTemplate: old)
+            let period = try period()
+            let review = ReviewDraft(operationID: UUID(), period: period, text: old, template: version, sources: [],
+                                     missingDays: period.days(timeZone: zone), targetHash: nil, asOf: day, timeZone: zone.identifier)
+            if workflow == "ordinary" { try await store.saveDraft(ordinary) }
+            else if workflow == "mit" {
+                try await store.retainForm(["candidate": JSONEncoder().encode(mit).base64EncodedString()], name: "mit-\(day.value)")
+            } else { try await store.retainReviewDraft(review) }
+            try await store.setWeekdayLanguage(.english)
+            let reopened = try self.store(suffix: workflow)
+            if workflow == "ordinary" {
+                let restored = try await reopened.open(day).draft!; XCTAssertEqual(restored, ordinary)
+                let receipt = try await reopened.commit(restored); XCTAssertEqual(receipt.operationID, ordinary.operationID)
+                let bytes = try await reopened.exportMarkdown(day)
+                XCTAssertEqual(bytes, Data((old + ordinary.text + "\r\n").utf8))
+            } else if workflow == "mit" {
+                let form = try await reopened.loadForm("mit-\(day.value)")
+                let restored = try JSONDecoder().decode(MITDraft.self, from: Data(base64Encoded: form["candidate"]!)!)
+                XCTAssertEqual(restored, mit); try await reopened.commitMIT(restored); try await reopened.commitMIT(restored)
+                let bytes = try await reopened.exportMarkdown(day); XCTAssertTrue(bytes.starts(with: Data(old.utf8)))
+                XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains(mit.event.action))
+                let history = try await reopened.mitHistory(day); XCTAssertEqual(history, [mit.event])
+                let receipt: WorkflowReceipt? = try await reopened.decode(reopened.workflowState("receipts", restored.operationID))
+                let expectedHash = try await reopened.workflowHash(mit); XCTAssertEqual(receipt?.payloadHash, expectedHash)
+            } else {
+                let restored = try await reopened.savedReviewDraft(period)!; XCTAssertEqual(restored, review)
+                try await reopened.commitReview(restored); try await reopened.commitReview(restored)
+                let bytes = try await reopened.readSavedFile(.review(period)); XCTAssertTrue(bytes.starts(with: Data(old.utf8)))
+                let records: [ReviewDraft] = try await reopened.records(bytes, type: "review"); XCTAssertEqual(records, [review])
+            }
+        }
+    }
+
+    func testFrozenBlankRetryRecoversExactPreviewAfterPreferenceAndTemplateChange() async throws {
+        for (index, boundary) in [(FilePurpose.diary, FileStage.beforeReplace), (.receipt, .afterReplace)].enumerated() {
+            let failure = WorkflowFailure(); let store = try store(failure, suffix: "frozen-\(index)")
+            let version = try template(source: "# {{date:YYYY-MM-DD}} {{date:dddd}}\r\n## 🧠  **Notes**\r\n")
+            try await store.importTemplate(version, operationID: UUID()); try await store.selectTemplate(version)
+            let blank = try await store.prepareBlankDay(day)
+            let expected = Data("# 2026-09-12 星期六\r\n## 🧠  **Notes**\r\n".utf8)
+            failure.arm(boundary.0, boundary.1)
+            do { try await store.createBlankDay(blank); XCTFail() }
+            catch { XCTAssertEqual(error as? JournalError, .storage) }
+            try await store.setWeekdayLanguage(.english); try await store.selectTemplate(.initial(.daily))
+            let reopened = try self.store(suffix: "frozen-\(index)")
+            try await reopened.createBlankDay(blank); try await reopened.createBlankDay(blank)
+            let actual = try await reopened.exportMarkdown(day); XCTAssertEqual(actual, expected)
+            let receipt: WorkflowReceipt? = try await reopened.decode(reopened.workflowState("receipts", blank.operationID))
+            let expectedHash = try await reopened.workflowHash(blank)
+            XCTAssertEqual(receipt?.payloadHash, expectedHash); XCTAssertEqual(receipt?.afterHash, SourceHash.digest(expected))
+        }
+    }
+
+    func testSavedMITDiaryWithOrdinaryDraftCanPrepareBlankWithoutRevalidatingDiaryAsTemplate() async throws {
+        let store = try store()
+        let version = try template(source: "# {{date:dddd}}\r\n## 🧠  **Notes**\r\n")
+        try await store.importTemplate(version, operationID: UUID()); try await store.selectTemplate(version)
+        let mit = try await store.prepareMIT(MITEvent(day: day, action: "Synthetic existing MIT", criterion: "Once"), section: "🧠  **Notes**")
+        try await store.commitMIT(mit)
+        let before = try await store.exportMarkdown(day); let snapshot = try await store.open(day)
+        var ordinary = try await store.makeDraft(for: snapshot, section: "🧠  **Notes**")
+        ordinary.text = "Synthetic still unconfirmed"; try await store.saveDraft(ordinary)
+        try await store.setWeekdayLanguage(.english); try await store.selectTemplate(.initial(.daily))
+        let blank = try await store.prepareBlankDay(day)
+        XCTAssertEqual(Data(blank.preview.utf8), before)
+        let reopened = try self.store(); try await reopened.createBlankDay(blank)
+        let after = try await reopened.exportMarkdown(day); XCTAssertEqual(after, before)
+        let retained = try await reopened.open(day).draft; XCTAssertEqual(retained, ordinary)
+        XCTAssertFalse(String(decoding: after, as: UTF8.self).contains(ordinary.text))
+    }
+
+    func testReviewFixNestedAndUnfinishedExpressionsRemainOpaque() throws {
+        let expressions = ["${f({}, '{{date:dddd}}')}", "{{unsupported {a: 1} '{{date:dddd}}' }}",
+                           "<% nested <%= '{{date:dddd}}' %> %>", "`=f({}, '{{date:dddd}}')`",
+                           "${1 /* } */ + '{{date:dddd}}'}", "<% 1 /* %> */ + '{{date:dddd}}' %>",
+                           "${1 // } {{date:dddd}}\r\n + 2}", "<% 1 // %> {{date:dddd}}\r\n + 2 %>"]
+        for expression in expressions {
+            let source = "{{date:YYYY-MM-DD}}\r\n\(expression)\r\n{{date:dddd}}"
+            let version = try template(source: source)
+            let expected = "2026-09-12\r\n\(expression)\r\nSaturday"
+            XCTAssertEqual(Data(version.instantiate(day: day, weekdayLanguage: .english).utf8), Data(expected.utf8))
+            XCTAssertTrue(version.warnings.contains(expression))
+        }
+        for expression in ["<% unfinished {{date:dddd}}", "${f({}, '{{date:dddd}}')", "{{unfinished {}} {{date:dddd}}",
+                           "${1 /* } '{{date:dddd}}'", "<% 1 /* %> '{{date:dddd}}'", "${1 // } {{date:dddd}}"] {
+            let source = "{{date}}\r\n\(expression)\r\n{{title}}"
+            let version = try template(source: source)
+            XCTAssertEqual(Data(version.instantiate(day: day).utf8), Data("2026-09-12\r\n\(expression)\r\n{{title}}".utf8))
+            XCTAssertEqual(version.raw, Data(source.utf8)); XCTAssertFalse(version.warnings.isEmpty)
+        }
+    }
+
+    func testReviewFixDataviewFenceBytesStayLiteralAndOutsideTokensRender() throws {
+        for (opening, closing) in [("```dataview", "```"), ("  ~~~~dataviewjs", "  ~~~~"), ("```dataviewjs", "")] {
+            let script = "\(opening)\r\nLIST {{date:dddd}}\r\nconst text = '{{date:YYYY-MM-DD}}';\r\n"
+            let suffix = closing.isEmpty ? "{{title}}" : "\(closing)\r\n{{date:dddd}}"
+            let source = "{{date}}\r\n" + script + suffix
+            let expected = "2026-09-12\r\n" + script + (closing.isEmpty ? "{{title}}" : "\(closing)\r\nSaturday")
+            let version = try template(source: source)
+            XCTAssertEqual(Data(version.instantiate(day: day, weekdayLanguage: .english).utf8), Data(expected.utf8))
+            XCTAssertTrue(version.warnings.contains { $0.contains("Dataview") }); XCTAssertEqual(version.raw, Data(source.utf8))
+        }
+    }
+
+    func testReviewFixConsecutivePreferenceWriteAndRollbackFailuresKeepPriorEffectiveChoice() async throws {
+        for (index, initial) in [nil, WeekdayLanguage.english].enumerated() {
+            let directory = root.appendingPathComponent("preference-\(index)"); let faults = PreferenceFaults()
+            let store = try LocalJournalStore(journalDirectory: directory.appendingPathComponent("Journals"),
+                stateDirectory: directory.appendingPathComponent("State"), timeZone: zone, failure: { try faults.check($0, $1) })
+            if let initial { try await store.setWeekdayLanguage(initial) }
+            let next: WeekdayLanguage = initial == nil ? .english : .chinese
+            faults.arm([(.metadata, .afterReplace, 1), (.metadata, initial == nil ? .beforeRemove : .beforeWrite, 1)])
+            do { try await store.setWeekdayLanguage(next); XCTFail() } catch { XCTAssertEqual(error as? JournalError, .storage) }
+            let effective = try await store.weekdayLanguage(); XCTAssertEqual(effective, initial ?? .chinese)
+            let disk = try JSONDecoder().decode(WeekdayLanguage.self, from: Data(contentsOf: directory.appendingPathComponent("State/weekday-language.json")))
+            XCTAssertEqual(disk, next, "The pending marker must protect the effective choice even with new bytes on disk")
+            let reopened = try self.store(suffix: "preference-\(index)")
+            let relaunched = try await reopened.weekdayLanguage(); XCTAssertEqual(relaunched, initial ?? .chinese)
+            try await reopened.setWeekdayLanguage(next)
+            let saved = try await reopened.weekdayLanguage(); XCTAssertEqual(saved, next)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("State/weekday-language-update.json").path))
+        }
+    }
+
+    func testReviewFixPreferenceCommitAndCleanupFailuresReconcileRetryAndRelaunch() async throws {
+        for (index, boundary) in [(FileStage.beforeReplace, 2), (.afterReplace, 2), (.beforeRemove, 1), (.afterRemove, 1)].enumerated() {
+            let directory = root.appendingPathComponent("preference-cleanup-\(index)"); let faults = PreferenceFaults()
+            let store = try LocalJournalStore(journalDirectory: directory.appendingPathComponent("Journals"),
+                stateDirectory: directory.appendingPathComponent("State"), timeZone: zone, failure: { try faults.check($0, $1) })
+            try await store.setWeekdayLanguage(.english)
+            faults.arm([(.transaction, boundary.0, boundary.1)])
+            if boundary.0 == .beforeReplace {
+                do { try await store.setWeekdayLanguage(.chinese); XCTFail() } catch { XCTAssertEqual(error as? JournalError, .storage) }
+            } else { try await store.setWeekdayLanguage(.chinese) }
+            let reopened = try self.store(suffix: "preference-cleanup-\(index)")
+            let actual = try await reopened.weekdayLanguage()
+            XCTAssertEqual(actual, boundary.0 == .beforeReplace ? .english : .chinese)
+            try await reopened.setWeekdayLanguage(.english)
+            let final = try await reopened.weekdayLanguage(); XCTAssertEqual(final, .english)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("State/weekday-language-update.json").path))
+        }
+    }
+
+    func testReviewFixCorruptPreferenceDoesNotBlockExistingDiaryOrDraft() async throws {
+        let store = try store(); try await addDiary(store)
+        let before = try await store.exportMarkdown(day); let draftDay = try JournalDay("2026-09-13")
+        let draft = JournalDraft(day: draftDay, section: "🧠 Notes", text: "Retained literal {{date:dddd}}", sourceHash: nil,
+                                 effectiveTemplate: "# {{date:dddd}}\n## 🧠 Notes\n")
+        try await store.saveDraft(draft)
+        try Data("corrupt weekday metadata".utf8).write(to: root.appendingPathComponent("State/weekday-language.json"))
+        let reopened = try self.store(); let saved = try await reopened.open(day)
+        let retained = try await reopened.open(draftDay)
+        XCTAssertEqual(Data(saved.markdown.utf8), before); XCTAssertEqual(retained.draft, draft)
+        XCTAssertEqual(retained.markdown, draft.effectiveTemplate)
+        _ = try await reopened.commit(draft)
+        let actual = try await reopened.exportMarkdown(draftDay)
+        XCTAssertEqual(actual, Data((draft.effectiveTemplate + draft.text + "\n").utf8))
+        do { _ = try await reopened.open(JournalDay("2026-09-14")); XCTFail() }
+        catch { XCTAssertEqual(error as? JournalError, .storage) }
+    }
+
+    func testReviewFixBlankCollisionWithMITRejectsWithoutChangingEitherCandidate() async throws {
+        let store = try store(); let blank = try await store.prepareBlankDay(day)
+        let mit = try await store.prepareMIT(MITEvent(day: day, action: "Synthetic collision MIT", criterion: "Once"), section: "🌅 Morning")
+        try await store.commitMIT(mit); let before = try await store.exportMarkdown(day)
+        var ordinary = try await store.makeDraft(for: store.open(day), section: "🧠 Notes")
+        ordinary.text = "Unconfirmed collision draft"; try await store.saveDraft(ordinary)
+        for _ in 0..<2 {
+            do { try await store.createBlankDay(blank); XCTFail() } catch { XCTAssertEqual(error as? JournalError, .changedSource) }
+        }
+        let after = try await store.exportMarkdown(day); XCTAssertEqual(after, before)
+        let draft = try await store.open(day).draft; XCTAssertEqual(draft, ordinary)
+        let reviewed = try await store.prepareBlankDay(day)
+        try await store.createBlankDay(reviewed); try await store.createBlankDay(reviewed)
+        let unchanged = try await store.exportMarkdown(day); XCTAssertEqual(unchanged, before)
     }
 
 }

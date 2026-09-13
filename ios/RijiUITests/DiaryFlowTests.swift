@@ -41,6 +41,10 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testSyntheticTemplateRoundTripThroughSystemFilesPicker() {
+        importSyntheticTemplateFile()
+    }
+
+    private func importSyntheticTemplateFile() {
         app.buttons["diaryDirectory"].tap(); app.buttons["templatesFlow"].tap()
         let export = app.buttons["exportSampleTemplate"]; reveal(export); export.tap()
         let filename = app.textFields["DOCPicker.filenameTextField"]
@@ -68,6 +72,76 @@ final class DiaryFlowTests: XCTestCase {
         let imported = app.buttons["template-imported"]
         for _ in 0..<5 { if imported.isHittable { break }; app.swipeDown() }
         XCTAssertTrue(imported.waitForExistence(timeout: 5))
+    }
+
+    func testFormattedDateStyledNotesCaptureAndLanguageRelaunchExport() {
+        importSyntheticTemplateFile()
+        let language = app.buttons["weekdayLanguage"]
+        XCTAssertTrue(language.label.contains("中文"))
+        app.buttons["template-imported"].tap(); app.buttons["selectTemplate"].tap()
+        language.tap(); app.buttons["English (Monday)"].tap()
+        XCTAssertTrue(language.label.contains("English"))
+        app.terminate()
+        app.launchEnvironment["RIJI_TEST_DATE"] = "2026-09-13T08:00:00Z"
+        app.launch()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["selectedDate"].label.contains("2026-09-13"))
+        XCTAssertTrue(app.buttons["sectionPicker"].label.contains("🧠  **Notes**"))
+        let styled = app.staticTexts["🧠  Notes"]
+        XCTAssertTrue(styled.exists, "Heading style is rendered without changing its raw anchor")
+        type("Synthetic styled capture")
+        app.buttons["saveEntry"].tap(); waitForStatus("已保存在手机")
+        app.buttons["diaryDirectory"].tap(); app.buttons["templatesFlow"].tap()
+        XCTAssertTrue(language.label.contains("English"))
+        language.tap(); app.buttons["中文（星期一）"].tap()
+        app.terminate(); app.launch()
+        XCTAssertTrue(input.waitForExistence(timeout: 10)); waitForStatus("已保存在手机")
+        app.buttons["moreMenu"].tap(); app.buttons["exportMarkdown"].tap()
+        let filename = app.textFields["DOCPicker.filenameTextField"]
+        XCTAssertTrue(filename.waitForExistence(timeout: 10)); filename.tap()
+        let previousName = filename.value as? String ?? ""
+        filename.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousName.count))
+        filename.typeText("Riji-Styled-Capture-" + container)
+        app.buttons["保存"].tap(); waitForStatus("Markdown 已导出")
+        let expected = "---\nfixture: synthetic-manual-acceptance\ndate: '2026-09-13'\nweekday: 'Sunday'\nunknown: keep-this-field\n---\n# 2026-09-13\n\n## 🎯 Most Important Task (MIT)\n\n## 🌆 Evening\n\n## 🧠  **Notes**\n\nWeather: {{weather}}\n<% unsupported_synthetic_macro %>\nSynthetic styled capture\n"
+        let digest = SHA256.hash(data: Data(expected.utf8)).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(status.value as? String, digest, "Export retains the confirmed language, raw heading and unsupported macros")
+    }
+
+    func testBlankPreviewStaysFixedThroughLanguageChangeAndExportsConfirmedBytes() {
+        app.buttons["diaryDirectory"].tap(); app.buttons["templatesFlow"].tap()
+        let sample = app.buttons["previewSampleTemplate"]; reveal(sample); sample.tap()
+        app.buttons["confirmTemplateImport"].tap()
+        let imported = app.buttons["template-imported"]
+        for _ in 0..<5 { if imported.isHittable { break }; app.swipeDown() }
+        imported.tap(); app.buttons["selectTemplate"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["blankDayFlow"].tap()
+        app.buttons["previewBlankDay"].tap()
+        let preview = app.staticTexts["blankDayPreview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        let original = preview.label
+        XCTAssertTrue(app.staticTexts["fixedPreviewNotice"].label.contains("仍显示的变量会按原文保存，不再替换"))
+        XCTAssertTrue(original.contains("date: '2026-09-12'")); XCTAssertTrue(original.contains("weekday: '星期六'"))
+        XCTAssertTrue(original.contains("## 🧠  **Notes**"))
+        app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["templatesFlow"].tap()
+        app.buttons["weekdayLanguage"].tap(); app.buttons["English (Monday)"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["blankDayFlow"].tap()
+        XCTAssertTrue(preview.waitForExistence(timeout: 5)); XCTAssertEqual(preview.label, original)
+        let confirm = app.buttons["confirmBlankDay"]; reveal(confirm); confirm.tap()
+        let saved = app.staticTexts["workflowStatus"]
+        expectation(for: NSPredicate(format: "label CONTAINS %@", "已保存在手机"), evaluatedWith: saved)
+        waitForExpectations(timeout: 10)
+        app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["完成"].tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); waitForStatus("已保存在手机")
+        app.buttons["moreMenu"].tap(); app.buttons["exportMarkdown"].tap()
+        let filename = app.textFields["DOCPicker.filenameTextField"]
+        XCTAssertTrue(filename.waitForExistence(timeout: 10)); filename.tap()
+        let previousName = filename.value as? String ?? ""
+        filename.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousName.count))
+        filename.typeText("Riji-Frozen-Preview-" + container)
+        app.buttons["保存"].tap(); waitForStatus("Markdown 已导出")
+        let digest = SHA256.hash(data: Data(original.utf8)).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(status.value as? String, digest, "The actual exported bytes must match the frozen preview")
     }
 
     func testTemplateMITAndWeeklyReviewNativeWorkflow() {

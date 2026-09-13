@@ -24,7 +24,7 @@ struct TodayDiaryView: View {
                         .accessibilityIdentifier("templateLabel")
                     ForEach(blocks) { block in
                         VStack(alignment: .leading, spacing: 12) {
-                            Text(block.title).font(block.level == 1 ? .largeTitle.weight(.semibold) : .headline)
+                            Text(DiaryHeadingPresentation.styled(block.title)).font(block.level == 1 ? .largeTitle.weight(.semibold) : .headline)
                                 .background(GeometryReader { geometry in
                                     Color.clear.preference(key: DiaryHeadingPositions.self,
                                         value: DiaryHeadingLayout(source: source,
@@ -118,12 +118,14 @@ struct TodayDiaryView: View {
             HStack {
                 Text("写入区块").font(.caption).foregroundStyle(.secondary)
                 Picker("写入区块", selection: Binding(get: { model.section }, set: model.updateSection)) {
-                    ForEach(Array(Set(model.sections + [model.section])).sorted(), id: \.self) { Text($0).tag($0) }
+                    if model.requiresSectionSelection { Text("请选择写入区块").tag(DiaryViewModel.unselectedSection) }
+                    ForEach(Array(Set(model.sections + [model.section])).filter { $0 != DiaryViewModel.unselectedSection }.sorted(), id: \.self) { Text($0.isEmpty ? "空标题" : $0).tag($0) }
                 }
                 .pickerStyle(.menu).labelsHidden().accessibilityIdentifier("sectionPicker")
                 .disabled(model.isBusy || model.isPending)
                 Spacer()
             }
+            if model.requiresSectionSelection { Text("有多个 Notes 标题，请明确选择写入区块。").font(.caption).foregroundStyle(.secondary) }
             TextField("写一点…", text: Binding(get: { model.text }, set: model.updateText), axis: .vertical)
                 .lineLimit(2...5).focused($composing).autocorrectionDisabled().padding(12)
                 .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))

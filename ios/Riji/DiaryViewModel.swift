@@ -30,10 +30,15 @@ final class DiaryViewModel: ObservableObject {
 
     var timeZone: TimeZone { store?.timeZone ?? .current }
     var isReady: Bool { snapshot != nil && store != nil }
-    var canSave: Bool { isReady && !isBusy && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    // Parsed heading titles never contain a newline; the empty string remains a valid raw anchor.
+    static let unselectedSection = "\n"
+    var requiresSectionSelection: Bool { section == Self.unselectedSection }
+    var canSave: Bool { isReady && !isBusy && !requiresSectionSelection && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var rawHeadings: [MarkdownHeading] {
+        (try? MarkdownSectionAppender.headings(in: Data(markdown.utf8))) ?? []
+    }
     var sections: [String] {
-        let headings = (try? MarkdownSectionAppender.headings(in: Data(markdown.utf8))) ?? []
-        return Array(Set(headings.filter { $0.level > 1 }.map(\.title))).sorted()
+        return Array(Set(rawHeadings.filter { $0.level > 1 || DiaryHeadingPresentation.isNotes($0.title) }.map(\.title))).sorted()
     }
 
     init(now: @escaping () -> Date = Date.init, storageFactory: @escaping () throws -> LocalJournalStore = DiaryViewModel.makeStore) {
@@ -147,8 +152,7 @@ final class DiaryViewModel: ObservableObject {
         await persistence?.value
         do {
             if let draft, !isPending { try await store.saveDraft(draft) }
-            try await store.select(day)
-            try await load(day)
+            try await load(day, selecting: true)
             isBusy = false
             return true
         } catch {
@@ -217,24 +221,41 @@ final class DiaryViewModel: ObservableObject {
         } catch { show(error) }
     }
 
-    private func load(_ day: JournalDay) async throws {
+    private func load(_ day: JournalDay, selecting: Bool = false) async throws {
         guard let store else { throw JournalError.storage }
         var recoveryError: Error?
         do { _ = try await store.recover(day) } catch { recoveryError = error }
         let value = try await store.open(day)
+        let label = try await label(for: value, store: store)
+        let headings = try MarkdownSectionAppender.headings(in: Data(value.markdown.utf8))
+        let nextSection = value.draft?.section ?? defaultSection(headings)
+        if selecting { try await store.select(day) }
+        // All throwing reads complete before the current page is replaced.
         snapshot = value
         selectedDay = day
         markdown = value.markdown
-        let selectedTemplate = try await store.selectedTemplate(.daily)
-        templateLabel = value.draft.map { $0.effectiveTemplate.utf8.elementsEqual(selectedTemplate.instantiate(day: day).utf8) ? selectedTemplate.label : "草稿绑定的原模板" } ?? (value.isSaved ? "已保存日记 · 原模板保留" : selectedTemplate.label)
+        templateLabel = label
         draft = value.draft
         text = value.draft?.text ?? ""
-        section = value.draft?.section ?? (sections.contains("🧠 Notes") ? "🧠 Notes" : sections.first ?? "🧠 Notes")
+        section = nextSection
         isSaved = value.isSaved
         isPending = value.isPending
         status = value.draft == nil ? (value.isSaved ? "已保存在手机" : "") : "草稿已保留在手机 · 尚未写入日记"
         errorMessage = nil
         if let recoveryError { show(recoveryError); status = "上次保存尚待核对，请重试" }
+    }
+
+    private func label(for value: JournalSnapshot, store: LocalJournalStore) async throws -> String {
+        if value.isSaved { return "已保存日记 · 原模板保留" }
+        if value.draft != nil { return "草稿绑定的原模板" }
+        return try await store.selectedTemplate(.daily).label
+    }
+
+    private func defaultSection(_ headings: [MarkdownHeading]) -> String {
+        let notes = headings.filter { DiaryHeadingPresentation.isNotes($0.title) }
+        if notes.count == 1 { return notes[0].title }
+        if notes.count > 1 { return Self.unselectedSection }
+        return Array(Set(headings.filter { $0.level > 1 }.map(\.title))).sorted().first ?? "🧠 Notes"
     }
 
     private func refreshAfterSave() async throws {
@@ -265,5 +286,23 @@ final class DiaryViewModel: ObservableObject {
         #endif
         return try LocalJournalStore(journalDirectory: documents.appendingPathComponent("Journals"),
                                      stateDirectory: support.appendingPathComponent("Riji"))
+    }
+}
+
+/// Inline presentation is separate from the raw heading used by storage and view identity.
+enum DiaryHeadingPresentation {
+    static func styled(_ raw: String) -> AttributedString {
+        (try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(raw)
+    }
+    static func isNotes(_ raw: String) -> Bool {
+        let title = normalized(String(styled(raw).characters))
+        let withoutStyleDelimiters = normalized(String(raw.filter { !"*_~`".contains($0) }))
+        // Links, images, HTML and entities are not mere changes to inline heading style.
+        guard withoutStyleDelimiters == title else { return false }
+        return title == "🧠 Notes" || title == "Notes"
+    }
+    private static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 }

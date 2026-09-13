@@ -12,6 +12,7 @@ final class WorkflowViewModel: ObservableObject {
     @Published private(set) var pendingCandidate = false
     @Published private(set) var templateVersions: [TemplateVersion] = []
     @Published private(set) var selectedTemplate: TemplateVersion = .initial(.daily)
+    @Published private(set) var weekdayLanguage = WeekdayLanguage.chinese
     @Published var importPreview: TemplateVersion?
     private var importID = UUID()
     @Published var blank: BlankDayDraft?
@@ -80,7 +81,17 @@ final class WorkflowViewModel: ObservableObject {
     }
 
     func loadTemplates(_ kind: TemplateKind) async {
-        await run(waitForPrevious: true) { templateVersions = try await store.templates(kind); selectedTemplate = try await store.selectedTemplate(kind) }
+        await run(waitForPrevious: true) {
+            templateVersions = try await store.templates(kind); selectedTemplate = try await store.selectedTemplate(kind)
+            weekdayLanguage = try await store.weekdayLanguage()
+        }
+    }
+    func chooseWeekdayLanguage(_ language: WeekdayLanguage) async {
+        await run {
+            try await store.setWeekdayLanguage(language)
+            weekdayLanguage = try await store.weekdayLanguage()
+            status = "星期语言已保存；用于新日期和新准备的复盘。"
+        }
     }
     func previewImport(_ data: Data, kind: TemplateKind) {
         do { importPreview = try TemplateVersion(kind: kind, raw: data); importID = UUID(); error = nil }

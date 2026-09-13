@@ -102,7 +102,7 @@ extension LocalJournalStore {
         let sources = try periodSources(period); let template = try selectedTemplate(period.kind)
         let before = try files.read(workflowURL(.review(period)))
         return ReviewDraft(operationID: UUID(), period: period,
-                           text: text ?? template.instantiate(day: period.start, title: period.title), template: template,
+                           text: try text ?? template.instantiate(day: period.start, title: period.title, weekdayLanguage: weekdayLanguage()), template: template,
                            sources: sources.sources, missingDays: sources.missing, targetHash: before.map(SourceHash.digest),
                            asOf: JournalDay(date: now, timeZone: timeZone), timeZone: timeZone.identifier)
     }
