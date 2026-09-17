@@ -13,13 +13,15 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/run_ios_simulator.sh"
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="Mac-only launcher")
 
 
-def run_launcher(tmp_path, *, devices=None, runtime=True, xcode=True, args=(), device_types=None):
+def run_launcher(tmp_path, *, devices=None, runtime=True, xcode=True, args=(), device_types=None, device_hub=False):
     """Supply a temporary tool environment and record every attempted mutation."""
     tools = tmp_path / "bin"
     tools.mkdir()
-    developer = tmp_path / "Xcode"
+    developer = tmp_path / "Xcode.app/Contents/Developer"
+    application = (developer.parent / "Applications/DeviceHub.app" if device_hub
+                   else developer / "Applications/Simulator.app")
     if xcode:
-        (developer / "Applications/Simulator.app").mkdir(parents=True)
+        application.mkdir(parents=True)
     fixture = tmp_path / "fixtures"
     fixture.mkdir()
     (fixture / "devices.json").write_text(json.dumps({"devices": {
@@ -37,7 +39,7 @@ def run_launcher(tmp_path, *, devices=None, runtime=True, xcode=True, args=(), d
         "xcode-select": 'printf "%s\\n" "$LAUNCHER_TEST_DEVELOPER"',
         "xcodebuild": 'if [ "$1" = -version ]; then exit 0; fi\n'
         'echo build >> "$LAUNCHER_TEST_CALLS"\nexit 9',
-        "open": 'echo open >> "$LAUNCHER_TEST_CALLS"',
+        "open": '[ "$2" = "$LAUNCHER_TEST_APPLICATION" ]\necho open >> "$LAUNCHER_TEST_CALLS"',
         "xcrun": '''if [ "$1" = --find ]; then exit 0; fi
 if [ "$2" = list ]; then
     if [ "$3" = devices ] && [ "$4" != -j ]; then
@@ -59,6 +61,7 @@ case "$2" in create) echo synthetic-device ;; esac
     calls = tmp_path / "calls"
     environment = dict(os.environ, PATH=f"{tools}:/usr/bin:/bin", TMPDIR=str(tmp_path),
                        LAUNCHER_TEST_DEVELOPER=str(developer),
+                       LAUNCHER_TEST_APPLICATION=str(application),
                        LAUNCHER_TEST_CALLS=str(calls), LAUNCHER_TEST_FIXTURES=str(fixture),
                        LAUNCHER_TEST_PYTHON=sys.executable)
     # The system Python shim can require Xcode setup. These tests exercise only
@@ -115,6 +118,14 @@ def test_unavailable_existing_device_is_not_replaced(tmp_path):
     assert result.returncode != 0
     assert "Existing Riji Development iPhone is unavailable" in result.stderr
     assert calls == []
+
+
+def test_xcode_device_hub_opens_existing_simulator_without_replacing_data(tmp_path):
+    device = {"name": "Riji Development iPhone", "state": "Booted", "udid": "test-1", "isAvailable": True}
+    result, calls = run_launcher(tmp_path, devices=[device], device_hub=True)
+    assert result.returncode == 1  # The stub deliberately fails the later build.
+    assert "existing app and its data were not replaced" in result.stderr
+    assert calls == ["open", "simctl bootstatus test-1 -b", "build"]
 
 
 def test_creation_uses_type_with_matching_minimum_and_maximum_runtime(tmp_path):

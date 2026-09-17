@@ -13,7 +13,15 @@ simulator_name='Riji Development iPhone'
 sample_namespace='743D25D2-4E3E-4B8B-A8DC-70D8A4A59B12'
 bundle_id='com.riji.local'
 derived_directory="${TMPDIR:-/tmp}/riji-ios-manual-derived"
-if ! developer_directory="$(xcode-select -p 2>/dev/null)" || [ ! -d "$developer_directory/Applications/Simulator.app" ]; then
+if ! developer_directory="$(xcode-select -p 2>/dev/null)"; then
+    echo "Full Xcode is required. Select the installed Xcode in Xcode Settings > Locations > Command Line Tools." >&2
+    exit 1
+fi
+simulator_application="$developer_directory/Applications/Simulator.app"
+device_hub_application="$(dirname "$developer_directory")/Applications/DeviceHub.app"
+if [ -d "$device_hub_application" ]; then
+    simulator_application="$device_hub_application"
+elif [ ! -d "$simulator_application" ]; then
     echo "Full Xcode is required. Select the installed Xcode in Xcode Settings > Locations > Command Line Tools." >&2
     exit 1
 fi
@@ -83,7 +91,11 @@ case "$simulator_state" in
     Booted) ;;
     *) echo "Simulator is $simulator_state. Wait for it to finish, then rerun." >&2; exit 1 ;;
 esac
-open -a "$developer_directory/Applications/Simulator.app" --args -CurrentDeviceUDID "$simulator_id"
+if [ "$simulator_application" = "$device_hub_application" ]; then
+    open -a "$simulator_application"
+else
+    open -a "$simulator_application" --args -CurrentDeviceUDID "$simulator_id"
+fi
 xcrun simctl bootstatus "$simulator_id" -b
 mkdir -p "$derived_directory"
 echo "Building Riji for $simulator_name. Existing app records are preserved."
