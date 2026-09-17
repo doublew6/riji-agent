@@ -20,10 +20,17 @@ def register_mobile_commands(sub) -> None:
     pair.add_argument("--principal", required=True)
     pair.add_argument("--output", required=True)
     pair.add_argument("--url", required=True, help="Verified private HTTPS base URL.")
+    provision = actions.add_parser("provision", help="Write a one-shot USB installation package to a new private file.")
+    provision.add_argument("--principal", required=True)
+    provision.add_argument("--output", required=True)
+    provision.add_argument("--url", required=True, help="Verified public HTTPS origin.")
+    provision.add_argument("--previous-endpoint")
+    provision.add_argument("--device-name", default="Personal iPhone")
     actions.add_parser("devices", help="List local device IDs and revocation state.")
     revoke = actions.add_parser("revoke", help="Revoke a specific device credential.")
     revoke.add_argument("--device", required=True)
     actions.add_parser("proxy", help="Serve only mobile paths on loopback port 8766.")
+    actions.add_parser("public-proxy", help="Serve authenticated mobile paths on loopback port 8767.")
 
 
 def verified_principal(settings, identifier: str) -> Principal:
@@ -72,10 +79,22 @@ def run_mobile_command(args) -> int:
             uvicorn.run(create_proxy_app(), host="127.0.0.1", port=8766,
                         access_log=False, proxy_headers=False)
             return 0
+        if args.mobile_action == "public-proxy":
+            import uvicorn
+            from riji_agent.mobile.public_proxy import create_public_proxy_app
+            uvicorn.run(create_public_proxy_app(settings.data_dir / "mobile.sqlite3"),
+                        host="127.0.0.1", port=8767, access_log=False, proxy_headers=False,
+                        limit_concurrency=32, timeout_keep_alive=5, http="h11",
+                        h11_max_incomplete_event_size=16384, headers=[("Cache-Control", "no-store")])
+            return 0
         store = MobileStore(settings.data_dir / "mobile.sqlite3")
         if args.mobile_action == "pair":
             write_pairing(settings, store, args)
             print("Pairing package written to the requested private file; expires in 10 minutes.")
+        elif args.mobile_action == "provision":
+            from riji_agent.mobile.provisioning import write_installation
+            write_installation(settings, store, args)
+            print("Installation package written to the requested private file.")
         elif args.mobile_action == "devices":
             print(json.dumps({"devices": store.devices()}))
         elif args.mobile_action == "revoke":

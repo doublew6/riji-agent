@@ -90,6 +90,14 @@ class MobileStore:
             raise MobileError("device_authentication_required", 401)
         return dict(row)
 
+    def provision(self, principal: str, name: str) -> dict:
+        """Issue a distinct device only after the local operator verifies its owner."""
+        token, identifier = secrets.token_urlsafe(48), str(uuid4())
+        with self.transaction() as db:
+            db.execute("INSERT INTO devices VALUES (?,?,?,?,?,0)",
+                       (identifier, principal, digest(token), name, time.time()))
+        return {"device_id": identifier, "device_token": token}
+
     def device(self, identifier: str) -> dict:
         with self.transaction() as db:
             row = db.execute("SELECT * FROM devices WHERE id=? AND revoked=0", (identifier,)).fetchone()
