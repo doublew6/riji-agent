@@ -139,6 +139,8 @@ class Conversation(Record):
     source_platform: str = ""
     source_tenant: str = ""
     source_ids: tuple[str, ...] = ()
+    history_source_ids: tuple[str, ...] = ()
+    history_artifact_ids: tuple[str, ...] = ()
     run_id: str = Field(default_factory=new_id)
     run_kind: str = "initial"
     run_personas: tuple[str, ...] = ()

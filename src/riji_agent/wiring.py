@@ -143,6 +143,9 @@ def build_memory_runtime(
         settings.mem0_base_url,
         settings.mem0_api_key.get_secret_value(),  # type: ignore[union-attr]
     )
+    if settings.mobile_enabled:
+        from riji_agent.memory.serialized import SerializedMemoryBackend
+        memory_backend = SerializedMemoryBackend(memory_backend, settings.data_dir / "memory-mutations.lock")
     operations_path = settings.data_dir / "memory-operations.sqlite3"
     extractor_model = extractor_provider or build_memory_model_provider(settings)
     journal = build_journal_memory(settings, memory_backend, extractor_model, personas=registry)

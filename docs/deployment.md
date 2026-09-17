@@ -167,3 +167,51 @@ uv run riji-agent hermes-bridge status
 ## 升级
 
 拉取新代码后重新 `uv sync`（或重建镜像）；索引为增量，源文件变更会被检测并增量更新，无需手动全量重建。
+
+## Personal mobile ingress (opt-in)
+
+The versioned [mobile contract](architecture/ios-mobile-api.md) reuses the existing
+Air runtime and worker. Set `RIJI_MOBILE_ENABLED=true` only after the backend
+regressions and verified-owner checks pass. `RIJI_DEPLOYMENT_REVISION` is the
+validated source revision; `/.well-known/fleet` freezes it and the installed
+package version at startup, and is never forwarded by the mobile proxy.
+
+The existing mixed listener remains `127.0.0.1:8765`. Register and inspect the
+project-specific `127.0.0.1:8766` listener before starting `riji-agent mobile proxy`;
+port occupation is a hard failure, never permission to kill an unrelated process.
+The proxy forwards only the documented mobile method/path set, ignores environment
+proxies, rejects escaped paths and redirects, and cannot forward admin/Hermes/Fleet
+routes. Tailscale Serve may terminate private HTTPS to **8766 only**, after checking
+existing Serve configuration and tailnet access; do not use Funnel or expose 8765.
+Preserve all existing Serve listeners and mappings. Select a separate unused private
+HTTPS port (for example 8443) when the default endpoint already serves another
+project, and include that port in the pairing URL. Valid explicit HTTPS ports are
+1–65535; the URL must remain an origin without credentials, query or fragment.
+No Serve configuration is installed automatically by these commands.
+
+Use the existing runtime working directory/environment. The LaunchAgent template
+`ops/launchd/ai.riji-agent.mobile-proxy.plist` requires verified absolute runtime
+and log paths before loading; never load placeholders or overwrite a live plist.
+It starts a proxy, not a second gateway, model scheduler or memory worker.
+
+Enrollment is operator-only: verify the existing principal against the current
+mentor configuration, then run `riji-agent mobile pair --principal <verified-id>
+--url <verified-private-https-origin> --output <new-private-file>`. Output is a
+mode-0600 JSON package containing `base_url`, a one-time code and its ten-minute
+validity, never printed credentials. Transfer it privately to the owner's device;
+no Review/model credential enters iOS. A lost pairing response needs a fresh code;
+inspect/revoke the orphaned device with `mobile devices` / `mobile revoke --device`.
+The phone persists its distinct token in Keychain. `mobile.sqlite3` holds hashes,
+revocations, channel bindings and conservative operation receipts outside iCloud.
+Back it up alongside the existing private runtime; never copy it into the repo.
+
+Revocation affects native queued generation and delivery at policy boundaries,
+including after restart; disabling mobile also fails existing native work closed.
+Already sent model requests cannot be recalled. Existing IM bindings and delivery
+are unchanged. Native history is device/persona scoped and does not silently import
+Feishu history. Device re-pairing creates a distinct native conversation namespace.
+
+Deployment remains governed by the Air identity/Fleet/process checks, backup,
+rsync dry-run, secret/data exclusions, runtime tests, doctor and controlled restart
+above. This implementation does not itself deploy, modify consent/providers,
+open historical-initialization exceptions, or prove real-phone iCloud/model access.

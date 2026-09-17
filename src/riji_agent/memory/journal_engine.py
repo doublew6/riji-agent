@@ -21,6 +21,7 @@ from riji_agent.memory.journal_types import (
 from riji_agent.memory.models import LongTermMemory, MemoryScope, MemoryStatus
 from riji_agent.memory.model_call import deferred_model_error
 from riji_agent.memory.organization import memory_version
+from riji_agent.memory.serialized import serialize_mutation
 from riji_agent.models.types import LLMProvider
 
 
@@ -170,6 +171,7 @@ class JournalMemoryEngine:
                                    (after, "memory_cleanup_pending", row["memory_id"]))
         return True
 
+    @serialize_mutation()
     def erase_backend_memory(self, memory_id: str) -> None:
         links = self.store.rows("SELECT source_id FROM relations WHERE target_id=?", (memory_id,))
         for link in links:
@@ -289,6 +291,7 @@ class JournalMemoryEngine:
                     found[item.id] = item
         return dict(list(found.items())[:12])
 
+    @serialize_mutation()
     def _apply(self, write: _Write, guard: Callable[[], None]) -> None:
         candidate, evidence = write.candidate, write.evidence
         operation = self.store.operation(write.operation_id)

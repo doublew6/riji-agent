@@ -15,6 +15,7 @@ from riji_agent.memory.journal_backend import JournalEvidenceBackend
 from riji_agent.memory.journal_types import JournalMemoryError, content_key, fingerprint, utc_now
 from riji_agent.memory.models import LongTermMemory, MemoryScope, MemoryStatus
 from riji_agent.memory.organization import memory_fingerprint
+from riji_agent.memory.serialized import serialize_mutation
 
 _FORMAT = "riji-journal-memory/v1"
 _TABLES = ("sources", "evidence", "records", "supports", "relations", "operations", "content_aliases", "suppression", "native_supports", "budgets")
@@ -50,6 +51,7 @@ class JournalMemoryTransfer:
         _write_bundle(path, payload)
         return {"memories": len(records), "sources": len(tables["sources"]), "format": _FORMAT}
 
+    @serialize_mutation()
     def restore(self, path: Path, *, apply: bool = False) -> dict[str, Any]:
         _check_path(path, self.engine.policy.root)
         payload = _read_bundle(path, self.engine.policy.user_id)
@@ -121,6 +123,7 @@ class JournalMemoryTransfer:
             raise JournalMemoryError("invalid_memory_restore_result")
         return result[0]
 
+    @serialize_mutation()
     def _restore_links(self, records: list[LongTermMemory], mapping: dict[str, str]) -> None:
         for original in records:
             if original.id not in mapping:

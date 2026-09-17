@@ -59,8 +59,14 @@ case "$2" in create) echo synthetic-device ;; esac
     calls = tmp_path / "calls"
     environment = dict(os.environ, PATH=f"{tools}:/usr/bin:/bin", TMPDIR=str(tmp_path),
                        LAUNCHER_TEST_DEVELOPER=str(developer),
-                       LAUNCHER_TEST_CALLS=str(calls), LAUNCHER_TEST_FIXTURES=str(fixture))
-    result = subprocess.run(["/bin/bash", str(SCRIPT), *args], env=environment,
+                       LAUNCHER_TEST_CALLS=str(calls), LAUNCHER_TEST_FIXTURES=str(fixture),
+                       LAUNCHER_TEST_PYTHON=sys.executable)
+    # The system Python shim can require Xcode setup. These tests exercise only
+    # synthetic discovery and must use their already-running Python interpreter.
+    source = SCRIPT.read_text()
+    assert source.count('/usr/bin/python3 - ') == 1
+    source = source.replace('/usr/bin/python3 - ', '"$LAUNCHER_TEST_PYTHON" - ')
+    result = subprocess.run(["/bin/bash", "-c", source, str(SCRIPT), *args], env=environment,
                             capture_output=True, text=True, timeout=20)
     return result, calls.read_text().splitlines() if calls.exists() else []
 

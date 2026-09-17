@@ -38,7 +38,7 @@ class JournalPrivacy:
                 "permissions": {key: valid and consent.get(key) is True for key in PURPOSES},
                 "initialization": self.engine.initialization_status()}
 
-    def grant(self, binding: str, permissions: dict[str, bool]) -> None:
+    def grant(self, binding: str, permissions: dict[str, bool], *, paused: bool = False) -> None:
         if binding != self.binding or set(permissions) != set(PURPOSES) or any(
                 type(value) is not bool for value in permissions.values()):
             raise JournalMemoryError("privacy_scope_changed_or_invalid")
@@ -57,6 +57,8 @@ class JournalPrivacy:
         with self.store._lock, self.store._conn:
             conn = self.store._conn
             conn.execute("BEGIN IMMEDIATE")
+            if paused:
+                conn.execute("INSERT INTO control VALUES ('paused','1') ON CONFLICT(key) DO UPDATE SET value='1'")
             conn.execute("DELETE FROM privacy_history")
             conn.execute("INSERT INTO privacy_history SELECT id,version FROM evidence WHERE active=1")
             conn.execute("INSERT INTO control VALUES ('privacy_consent',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(payload),))

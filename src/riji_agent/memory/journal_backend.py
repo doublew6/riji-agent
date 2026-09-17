@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, ContextManager, Mapping, Optional, Sequence
 
 from riji_agent.memory.backend import LongTermMemoryBackend, MemoryBackendError
 from riji_agent.memory.journal_engine import JournalMemoryEngine
 from riji_agent.memory.journal_types import content_key
 from riji_agent.memory.models import CaptureJob, LongTermMemory, MemoryHistoryEntry, MemoryScope, MemoryStatus
+from riji_agent.memory.serialized import serialize_mutation
 
 
 class JournalEvidenceBackend:
     def __init__(self, backend: LongTermMemoryBackend, engine: JournalMemoryEngine) -> None:
         self.raw, self.engine = backend, engine
+
+    @property
+    def mutation_guard(self) -> Optional[Callable[[], ContextManager[None]]]:
+        return getattr(self.raw, "mutation_guard", None)
 
     def health(self) -> bool:
         return self.raw.health()
@@ -106,6 +111,7 @@ class JournalEvidenceBackend:
             metadata.update(source_id=native[0]["source_id"], source_created_at=native[0]["observed_at"], source_type="conversation")
         return metadata
 
+    @serialize_mutation("raw")
     def attach_native_support(self, memory_id: str, job: CaptureJob) -> None:
         item = self.get(memory_id)
         if item.user_id != job.user_id or item.scope is not MemoryScope.SHARED or not item.metadata.get("journal_managed"):
@@ -152,6 +158,7 @@ class JournalEvidenceBackend:
             raise MemoryBackendError("memory_not_found")
         return self._decorate(item)
 
+    @serialize_mutation("raw")
     def add(self, content: str, *, user_id: str, scope: MemoryScope,
             persona_id: Optional[str], metadata: Mapping[str, Any]) -> Sequence[LongTermMemory]:
         if self.engine.store.get_control("restore_in_progress"):
@@ -162,6 +169,7 @@ class JournalEvidenceBackend:
         self.engine.store.bump_epoch()
         return result
 
+    @serialize_mutation("raw")
     def update(self, memory_id: str, *, content: Optional[str] = None,
                metadata: Optional[Mapping[str, Any]] = None) -> LongTermMemory:
         before = self.get(memory_id)
@@ -176,6 +184,7 @@ class JournalEvidenceBackend:
                                       (content_key(content), memory_id))
         return self._decorate(updated)
 
+    @serialize_mutation("raw")
     def delete(self, memory_id: str) -> None:
         item = self.get(memory_id)
         self.engine.store.bump_epoch()
