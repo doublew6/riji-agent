@@ -10,6 +10,9 @@
   <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
     <Testables>
       <TestableReference skipped="NO" parallelizable="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000000000108" BuildableName="RijiNativeTests.xctest" BlueprintName="RijiNativeTests" ReferencedContainer="container:Riji.xcodeproj"/>
+      </TestableReference>
+      <TestableReference skipped="NO" parallelizable="NO">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000000000047" BuildableName="RijiUITests.xctest" BlueprintName="RijiUITests" ReferencedContainer="container:Riji.xcodeproj"/>
       </TestableReference>
     </Testables>

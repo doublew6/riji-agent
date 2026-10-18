@@ -14,9 +14,10 @@ MAX_RESPONSE = 4 * 1024 * 1024
 IDENTIFIER = r"[A-Za-z0-9_-]{1,128}"
 ROUTES = {
     "GET": (r"capabilities", r"operations/" + IDENTIFIER, r"mentors/" + IDENTIFIER + r"/conversation",
-            r"memories", r"memories/" + IDENTIFIER, r"privacy"),
+            r"memories", r"memories/" + IDENTIFIER, r"memory-overview", r"privacy", r"roundtables", r"roundtables/" + IDENTIFIER),
     "POST": (r"pair", r"device/revoke", r"mentors/" + IDENTIFIER + r"/(messages|control)",
-             r"memories/" + IDENTIFIER + r"/actions", r"privacy/actions"),
+             r"memories/" + IDENTIFIER + r"/actions", r"memory-overview/actions", r"privacy/actions", r"roundtables",
+             r"roundtables/" + IDENTIFIER + r"/(messages|commands|materials/preview|result-preview|result-validation)"),
 }
 
 
@@ -27,8 +28,9 @@ def admitted(method: str, raw_path: bytes, query: bytes) -> bool:
         return False
     if not any(re.fullmatch(r"/mobile/v1/" + pattern, path) for pattern in ROUTES.get(method, ())):
         return False
-    pageable = path == "/mobile/v1/memories" or re.fullmatch(
+    pageable = path in {"/mobile/v1/memories", "/mobile/v1/memory-overview", "/mobile/v1/roundtables"} or re.fullmatch(
         r"/mobile/v1/mentors/" + IDENTIFIER + r"/conversation", path) is not None
+    pageable = pageable or re.fullmatch(r"/mobile/v1/roundtables/" + IDENTIFIER, path) is not None
     return not args or (method == "GET" and pageable
                         and re.fullmatch(r"cursor=[A-Za-z0-9_-]{1,512}", args) is not None)
 

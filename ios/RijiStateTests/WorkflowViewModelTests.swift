@@ -332,3 +332,37 @@ final class WorkflowViewModelTests: XCTestCase {
     }
 
 }
+
+extension WorkflowViewModelTests {
+    func testBodyChangedMITShowsRecordedPlanAndReconcilesThroughExistingPreview() async throws {
+        let store = try self.store(), event = MITEvent(day: day, action: "Confirmed historical action", criterion: "Original criterion")
+        try await store.commitMIT(store.prepareMIT(event, section: "🌅 Morning"))
+        let source = try await store.exportMarkdown(day)
+        let changed = Data(String(decoding: source, as: UTF8.self).replacingOccurrences(of: "Confirmed historical action", with: "Manually edited action").utf8)
+        try await store.commitBodyEdit(BodyEdit(day: day, before: source, content: changed))
+        let model = WorkflowViewModel(store: store); await model.loadMIT(day)
+        XCTAssertTrue(model.mitBodyChanged); XCTAssertEqual(model.mit, event); XCTAssertEqual(model.mitHistory, [event])
+        model.updateField("feedbackStatus", MITStatus.completed.rawValue); model.updateField("result", "Attempted result")
+        await model.previewMIT(day: day, section: "🌆 Evening", feedback: true)
+        XCTAssertEqual(model.error, JournalError.mitBodyChanged.localizedDescription); XCTAssertNil(model.mitPreview)
+        model.reconcileMITBody(); model.updateField("action", "Explicit new plan"); model.updateField("criterion", "Explicit new criterion")
+        await model.previewMIT(day: day, section: "🌅 Morning", feedback: false)
+        XCTAssertEqual(model.mitPreview?.event.replaces, event.id)
+        await model.confirmMIT(); XCTAssertNil(model.error); XCTAssertFalse(model.mitBodyChanged)
+        XCTAssertEqual(model.mit?.action, "Explicit new plan"); XCTAssertEqual(model.mitHistory.count, 2)
+        XCTAssertEqual(model.mitBodyMismatches, [event.id])
+        let body = try await store.exportMarkdown(day)
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("Manually edited action"))
+        let cold = WorkflowViewModel(store: try self.store()); await cold.loadMIT(day)
+        XCTAssertFalse(cold.mitBodyChanged); XCTAssertEqual(cold.mitHistory.first, event)
+        cold.updateField("feedbackStatus", MITStatus.partial.rawValue); cold.updateField("result", "Recorded feedback result")
+        await cold.previewMIT(day: day, section: "🌆 Evening", feedback: true); await cold.confirmMIT()
+        let feedback = try XCTUnwrap(cold.mitHistory.last)
+        let withFeedback = try await store.exportMarkdown(day)
+        let manualFeedback = Data(String(decoding: withFeedback, as: UTF8.self).replacingOccurrences(of: "Recorded feedback result", with: "Edited feedback result").utf8)
+        try await store.commitBodyEdit(BodyEdit(day: day, before: withFeedback, content: manualFeedback))
+        await cold.loadMIT(day)
+        XCTAssertFalse(cold.mitBodyChanged); XCTAssertTrue(cold.mitBodyMismatches.contains(feedback.id))
+        XCTAssertEqual(cold.mitHistory.last, feedback)
+    }
+}

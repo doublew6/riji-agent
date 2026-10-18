@@ -142,7 +142,9 @@ def test_provider_ignoring_schema_still_fails_without_retaining_partial_topics(t
     assert worker.process_next()
     run = dict(store._conn.execute("SELECT * FROM memory_organization_runs WHERE id=?", (run_id,)).fetchone())
     assert run["status"] == "failed" and run["error_code"] == error
-    assert run["report_json"] is None
+    checkpoint = json.loads(run["report_json"])
+    assert checkpoint["journal_checkpoint"] == 1 and checkpoint["groups"] == []
+    assert checkpoint["covered_seeds"] == {} and checkpoint["remaining"] == 2
     assert store.latest("u1", ready_only=True) is None
     assert engine.initialization_status()["organization"] == {"failed": 1, "pending": 1}
     assert len(model.schemas) == 1 and len(model.batches) == 1

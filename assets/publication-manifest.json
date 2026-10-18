@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-18",
+  "scope": "Reviewed publication assets; this is not a complete secret scan or a license audit.",
+  "private_overlays": [
+    {
+      "path": "ios/Riji/Assets.xcassets/MentorPortraitAtlas.imageset/",
+      "policy": "local-only; exclude the entire directory from public source and app builds",
+      "purpose": "Optional personal mentor artwork; public builds use PublicMentor_* assets."
+    }
+  ],
+  "public_assets": [
+    {
+      "path": "assets/branding/riji-memory-pages-master.png",
+      "sha256": "d7cd5a3b7b88fc2171e7f8f569827d80734e6fcf13d6ebe292dd933af226bae5",
+      "classification": "abstract-app-mark"
+    },
+    {
+      "path": "assets/branding/riji-memory-pages-source.png",
+      "sha256": "bc4b00094e3cf75c9fdf544c8242e231f5ff3fbeb4249815ff2ccda84a4b54f6",
+      "classification": "abstract-app-mark"
+    },
+    {
+      "path": "assets/integrations/feishu/riji-bot-avatar.png",
+      "sha256": "e1ba459c7144d71d48eb9534edbc6ec7f954fb7632346298dfec6980f28fceea",
+      "classification": "fictional-bot-avatar"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/blunt_coach.jpg",
+      "sha256": "f33d3ebd98f5c219fc0506b5183a6b51af96b33bdd29e9a9e2617f2ea03f18e6",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/blunt_coach.png",
+      "sha256": "ea545c1334b32804cf698ecde427005d81e703c3c1d20a1ab37815f6816ee809",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/future_self.jpg",
+      "sha256": "2e8b4cca7b43836cf3c3512e1d1460c3d484db5e2efceec92de462df766c232e",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/future_self.png",
+      "sha256": "bac776d30e618cbc59fc0bcd155285618778dd65ed81722889e49a63f5c22321",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/gentle_reviewer.jpg",
+      "sha256": "6c85eeb8734edb154eaf94b112bbdb32546433203b3cd77be32d053197346819",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/gentle_reviewer.png",
+      "sha256": "4ba472f13930745a7d277fbdc5d86472ce8673789a7df180403717c2628e974d",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/wang_yangming.jpg",
+      "sha256": "b449b98fea3f3a508133fe42b786006e98b53e1e5e0ee7be4e7262a5bc7990dc",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "assets/mentor-avatars/2026-09-11/wang_yangming.png",
+      "sha256": "7ff2c8ea4153a108ad3576c7e97b5b8adeb99056ee74a1f00e094e3dcd092dbe",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-B01.png",
+      "sha256": "f69cdd6a93bb0585b678341b1ac493eea46fde1fd17b5d0e5ef5d45584de6949",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-C01.png",
+      "sha256": "71310c39b89ee1ff499239b33ec535a1394794bf2e1e1cf7a72ad6da72c0be72",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-D01.png",
+      "sha256": "20386f0dc50b628830cb77a1e2a2bbfd6ef255113610ce95c678c5c074317058",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-D03.png",
+      "sha256": "f398750e939c3ec25ce5b5265dd05572196494e1a4bfbdbb20eb79f5731228b0",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-J06.png",
+      "sha256": "682b75d7f50ea44295cede447aea0b6719671090a4964a6fe7f4c1d356b01115",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-N05.png",
+      "sha256": "f2b15b9117c93f09a65eeb0bc3a9e15e3ad503bd1293730df1f62a9212f2734f",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-R03.png",
+      "sha256": "66e522efb5e5d46e1b5509cd8677de37aaba40dcd462e4ae28bb3c0b18c076ea",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-desktop.png",
+      "sha256": "9584a8050baac4d058c759776648381ee4eca8415a4fc12431315ae012f1fb4f",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-mobile.png",
+      "sha256": "c8f4e883f359fee52781111179345199d9317273658c0efde2f1df3c89e2ea4e",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-routine-mobile.png",
+      "sha256": "a71007166742f7cceb6d42d5bf72d04e95a4cef576f186ece5f07dbcf9112041",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-share.png",
+      "sha256": "84e30748a0ef8094875ab8913c4de39464fab051131fbc0f412894a286872f18",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "docs/product/ios-design-2026-09-12/wireframe-today-mobile.png",
+      "sha256": "9030f2c9c918293d58781f4a04109cbee719b821a904469da48719e982d2c7db",
+      "classification": "synthetic-wireframe-screenshot"
+    },
+    {
+      "path": "ios/Riji/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "sha256": "c9a19bdcc1b0ca04e15bdb2db27d13f3f9ff2a279d52c8a9b813ed9a103ac360",
+      "classification": "abstract-app-mark"
+    },
+    {
+      "path": "ios/Riji/Assets.xcassets/PublicMentor_blunt_coach.imageset/portrait.jpg",
+      "sha256": "f33d3ebd98f5c219fc0506b5183a6b51af96b33bdd29e9a9e2617f2ea03f18e6",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "ios/Riji/Assets.xcassets/PublicMentor_future_self.imageset/portrait.jpg",
+      "sha256": "2e8b4cca7b43836cf3c3512e1d1460c3d484db5e2efceec92de462df766c232e",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "ios/Riji/Assets.xcassets/PublicMentor_gentle_reviewer.imageset/portrait.jpg",
+      "sha256": "6c85eeb8734edb154eaf94b112bbdb32546433203b3cd77be32d053197346819",
+      "classification": "generic-ai-mentor-illustration"
+    },
+    {
+      "path": "ios/Riji/Assets.xcassets/PublicMentor_wang_yangming.imageset/portrait.jpg",
+      "sha256": "b449b98fea3f3a508133fe42b786006e98b53e1e5e0ee7be4e7262a5bc7990dc",
+      "classification": "generic-ai-mentor-illustration"
+    }
+  ]
+}

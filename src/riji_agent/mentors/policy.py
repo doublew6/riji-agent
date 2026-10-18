@@ -6,7 +6,7 @@ import hashlib
 import time
 from typing import Callable
 
-from riji_agent.mentors.models import Application, AudienceGrant, ChatBinding, Conversation, Execution, MentorError, Principal, Source
+from riji_agent.mentors.models import Application, AudienceGrant, ChatBinding, Conversation, Execution, MentorError, Principal, RoomSnapshot, Source
 from riji_agent.mentors.ports import ChannelPort, SourcePort
 from riji_agent.mentors.store import MentorStore, key
 
@@ -19,6 +19,8 @@ class DiscussionPolicy:
 
     def freeze(self, conversation: Conversation) -> Conversation:
         self.check_device(conversation)
+        if conversation.source_scope == "mobile_selected":
+            return conversation
         if conversation.source_scope == "group_only":
             self.group_content(conversation)
             return conversation
@@ -129,6 +131,8 @@ class DiscussionPolicy:
         if not current.complete:
             self.block(conversation.id, "verification_paused", execution=execution)
             raise MentorError("audience_verification_failed")
+        if conversation.chat_kind == "group":
+            self._check_group_members(conversation, current)
         if current != grant.snapshot:
             self.block(conversation.id, "room_sealed", execution=execution)
             raise MentorError("audience_changed")
@@ -136,6 +140,21 @@ class DiscussionPolicy:
         if versions != grant.source_versions:
             self.block(conversation.id, "source_revoked", execution=execution)
             raise MentorError("source_revoked")
+
+    def _check_group_members(self, conversation: Conversation, snapshot: RoomSnapshot) -> None:
+        principal = self.store.read("principal", conversation.owner_id, Principal)
+        applications = [app for app in self.channel.applications.values()
+                        if app.platform == "mobile" and app.tenant == "personal-mobile-v1"
+                        and app.persona_id in conversation.personas and app.role == "mentor"]
+        valid = (len(applications) == len(conversation.personas)
+                 and {app.persona_id for app in applications} == set(conversation.personas)
+                 and set(snapshot.application_ids) == {app.id for app in applications}
+                 and len(snapshot.application_ids) == len(applications)
+                 and snapshot.private and snapshot.management_restricted and snapshot.history_restricted
+                 and snapshot.continuity_verified and principal is not None
+                 and snapshot.human_subjects == (principal.account.subject,))
+        if not valid:
+            raise MentorError("audience_not_authorized")
 
     def group_snapshot(self, conversation: Conversation):
         from riji_agent.mentors.group_scope import current_snapshot
@@ -168,6 +187,9 @@ class DiscussionPolicy:
 
     def _cancel_pending(self, db, conversation_id: str) -> None:
         from riji_agent.mentors.models import Delivery
+        current = self.store.get(db, "conversation", conversation_id, Conversation)
         for delivery in self.store.records(db, "delivery", conversation_id, Delivery):
             if delivery.status in {"pending", "sending"}:
-                self.store.put(db, "delivery", delivery.model_copy(update={"status": "cancelled"}), conversation_id)
+                uncertain = current is not None and current.chat_kind == "group" and delivery.status == "sending"
+                self.store.put(db, "delivery", delivery.model_copy(
+                    update={"status": "unknown" if uncertain else "cancelled"}), conversation_id)

@@ -1,5 +1,7 @@
 # MVP 架构设计：默认 Feishu + Hermes + DeepSeek 栈
 
+> **iOS 个人版范围说明（2026-09-15）：** [PRD v3.0](../PRD.md)已确认手机人工直接编辑本人授权的同一 iCloud Markdown 文件集合；本文的唯一 vault 访问组件和草稿确认规则继续约束 Air 上的 AI/旧飞书/Hermes 路径，不禁止本人在 iOS 编辑器中直接修改文件。iOS 文档读写与手机服务适配边界按[开发计划](../product/ios-personal-mvp-development-plan.md)验证，尚未作为已实现架构。没有新增独立 Air 文件同步或开放现有 loopback 管理接口，既有服务、数据库、身份和权限边界保持。
+
 **状态**：已确认设计（2026-06-24）  
 **对应**：[MVP-00](https://github.com/doublew6/riji-agent/issues/11)  
 **范围**：阶段 1 MVP。Feishu、Hermes、DeepSeek 是默认选项，而不是架构上唯一支持的实现。

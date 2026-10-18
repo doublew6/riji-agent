@@ -2,7 +2,7 @@
 
 > #40 日记长期记忆的开发实现见 [操作说明](journal-memory.md) 和 [验收记录](journal-memory-acceptance.md)。生产目标仍只有 Air。启用前需按 AGENTS.md 的 Air 备份、同步、测试和服务顺序更新 Mem0 API 镜像；开发机不得启动生产 Compose 或迁移真实日记。不要使用下面的通用安装示例覆盖 Air 已有 runtime、凭据或服务配置。
 
-riji-agent 是本地隐私边界，固定监听 `127.0.0.1`。远程访问由 Hermes/飞书或受控的私有网络（如 Tailscale）处理，不要把端口暴露到公网。
+riji-agent 是本地隐私边界，固定监听 `127.0.0.1`。远程访问由 Hermes/飞书或受控网络入口处理。既有混合服务和管理端口不得暴露到公网；2026-09-17 已授权的个人手机公网入口只可指向下述独立认证代理 `8767`。
 
 ## 依赖与部署
 
@@ -182,7 +182,9 @@ port occupation is a hard failure, never permission to kill an unrelated process
 The proxy forwards only the documented mobile method/path set, ignores environment
 proxies, rejects escaped paths and redirects, and cannot forward admin/Hermes/Fleet
 routes. Tailscale Serve may terminate private HTTPS to **8766 only**, after checking
-existing Serve configuration and tailnet access; do not use Funnel or expose 8765.
+existing Serve configuration and tailnet access; do not use Funnel for this legacy
+8766 proxy or expose 8765. The separately authenticated public proxy below is the
+approved exception for the managed personal installation.
 Preserve all existing Serve listeners and mappings. Select a separate unused private
 HTTPS port (for example 8443) when the default endpoint already serves another
 project, and include that port in the pairing URL. Valid explicit HTTPS ports are
@@ -215,3 +217,77 @@ Deployment remains governed by the Air identity/Fleet/process checks, backup,
 rsync dry-run, secret/data exclusions, runtime tests, doctor and controlled restart
 above. This implementation does not itself deploy, modify consent/providers,
 open historical-initialization exceptions, or prove real-phone iCloud/model access.
+
+### Managed personal installation: dedicated authenticated public ingress
+
+The approved topology is HTTPS **10000 → 127.0.0.1:8767 → 127.0.0.1:8765**.
+`riji-agent mobile public-proxy` starts only the independent public proxy; it does
+not start a gateway, memory worker or model scheduler. Preserve the running main
+service, private 8766 proxy, Serve 443/8443 and all other projects. Verify Air via
+the existing `air` SSH alias, Fleet heartbeat and actual process ownership; inspect
+8767 and 10000 before any launch. Occupied ports fail rather than switch or kill.
+Back up replaced files, perform rsync dry-run with the documented secret/data
+exclusions, synchronize only verified sources and run the relevant Air tests first.
+
+The placeholder template `ops/launchd/ai.riji-agent.mobile-public-proxy.plist`
+requires verified absolute `__RUNTIME_EXECUTABLE__`, `__RUNTIME_DIRECTORY__` and
+`__LOCAL_LOG_DIR__` substitutions in a separate installation copy. Its working
+directory is the existing runtime so the existing `.env` is used without copying
+secrets. Never load the repository placeholders or overwrite an existing live
+plist. Only after local denial/acceptance checks pass may the approved HTTPS 10000
+Funnel mapping point to this proxy. Do not redirect another mapping or enable public
+access to 8766. Public pairing, health, admin, Hermes and Fleet must all return 404;
+missing/invalid/revoked credentials must return 401 without upstream work.
+
+Immediately before a trusted USB installation, verify the existing principal and
+issue the package with `riji-agent mobile provision --principal <verified-id>
+--url <verified-public-https-origin> --previous-endpoint <exact-existing-origin>
+--output <new-private-file> --device-name <personal-device-name>`. Omit the previous
+origin for a fresh device. The output is exclusive mode 0600 outside the vault;
+the command never prints tokens. The installer transfers it to the app container's
+`Library/Caches/MobileInstallation.json`, not Documents, bundle resources, iCloud,
+preferences or a URL. Back up existing app data without exporting Keychain before
+updating the app. Keep the app terminated throughout USB transfer; finish the
+complete private package before launching/unlocking. Do not replace a package while
+the app is importing it. The reader atomically claims the pathname and preserves
+unexpected replacement bytes under a private, non-imported recovery directory
+rather than deleting a newer USB file. Inspect and resolve any such recovery files
+with the app quiescent; never copy them back automatically. A retained
+.MobileInstallationRecovery directory blocks further automatic imports until the
+operator preserves/inspects its contents and resolves the interrupted installation.
+No package is issued
+while the target phone is unavailable.
+
+Launch/unlock the app, inspect the secret-free installation receipt and verify
+service capabilities. A success string alone is insufficient: the source
+MobileInstallation.json must be absent and the current issuance's device ID must
+match either used_device_id or unused_provisioned_device_id in the new receipt.
+The app invalidates the previous receipt before processing a new package. Missing
+receipts cannot establish success, even if the working credential was updated.
+Existing credentials are retained across origin migration;
+revoke any `unused_provisioned_device_id` with the existing operator command. A
+missing/error receipt or failed Keychain update requires inspection and a fresh
+package after revoking unused issuance; do not replay a consumed package. Verify
+relaunch, foreground, mentor/memory reads, offline diary independence and explicit
+revocation on the phone separately. Synthetic tests are not this phone evidence.
+
+The public command explicitly selects standard Uvicorn h11 with a 16 KiB
+incomplete-header limit, an application-level 16 KiB total-header check and the
+existing 32-connection cap. Application responses, including unsupported methods
+and routes, carry Cache-Control: no-store. Uvicorn default headers also mark its
+transport-overload 503 non-cacheable; that response can be plain text. Pre-ASGI
+malformed/incomplete HTTP parsing responses can likewise be non-JSON and do not
+guarantee application headers. They contain no personal response content. The
+mobile client treats these as failed service requests, never successful empty
+data. Standard Uvicorn retains ownership of transport parsing and overload.
+
+Rollback stops only this deployment's exact new public service and removes only its
+new 10000 mapping. Keep all previous services/mappings and the original client
+archives. Reverting an installed phone origin requires a fresh package bound to its
+current endpoint; never overwrite device identity or erase drafts to force rollback.
+The retained destination archive may now differ from drafts or pending operations
+created at the current origin. Preserve/export both archives, inspect their
+operation IDs and explicitly resolve the conflicting local data before retrying
+the origin transition. An unresolved difference remains a rejected migration;
+rollback must not auto-overwrite either archive or replay pending operations.
+Do not restore database backups over current data or restart shared Colima.

@@ -5,8 +5,8 @@ import RijiCore
 struct WorkflowNotice: View {
     @ObservedObject var model: WorkflowViewModel
     var body: some View {
-        if let error = model.error { Text(error).foregroundStyle(.red).accessibilityIdentifier("workflowError") }
-        if !model.status.isEmpty { Text(model.status).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("workflowStatus") }
+        if let error = model.error { Text(error).foregroundStyle(Color(uiColor: RijiPalette.error)).accessibilityIdentifier("workflowError") }
+        if !model.status.isEmpty { Text(model.status).font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary)).accessibilityIdentifier("workflowStatus") }
     }
 }
 
@@ -19,7 +19,7 @@ struct TemplatesView: View {
     @State private var selection: TemplateVersion?
     @State private var sampleDocument = WorkflowMarkdownDocument(data: Data(WorkflowSamples.template.utf8))
     var body: some View {
-        Form {
+        RijiForm {
             Section {
                 Picker("模板类型", selection: $kind) { ForEach(TemplateKind.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
                 ForEach(model.templateVersions) { version in
@@ -35,12 +35,12 @@ struct TemplatesView: View {
                     ForEach(WeekdayLanguage.allCases) { Text($0.label).tag($0) }
                 }.accessibilityIdentifier("weekdayLanguage")
                 Text("默认中文。只用于新日期和新准备的复盘；已保存内容与待确认草稿保持原文。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
             }
             Section("导入 Markdown") {
                 Button("从文件选择模板") { showImporter = true }.accessibilityIdentifier("importTemplateFile")
                 Text("先查看原文，再确认复制。支持 {{date}}、{{title}}、{{date:YYYY-MM-DD}} 和 {{date:dddd}}；其他宏保留为原文。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
                 TextEditor(text: $pasted).frame(minHeight: 130).accessibilityIdentifier("templateSourceInput")
                 Button("预览粘贴的模板") { model.previewImport(Data(pasted.utf8), kind: kind) }
                     .disabled(pasted.isEmpty).accessibilityIdentifier("previewTemplate")
@@ -49,7 +49,7 @@ struct TemplatesView: View {
                     Button("预览合成示例") { model.previewImport(Data(WorkflowSamples.template.utf8), kind: kind) }
                         .accessibilityIdentifier("previewSampleTemplate")
                     Text("合成验收示例，不是个人模板。先导出到系统“文件”，再用上方入口导入。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
                 }
             }
             WorkflowNotice(model: model)
@@ -75,10 +75,10 @@ struct TemplatesView: View {
             NavigationStack {
                 ScrollView { VStack(alignment: .leading, spacing: 16) {
                     Text("原始模板 · \(version.raw.count) 字节").font(.headline)
-                    ForEach(version.warnings, id: \.self) { Text($0).foregroundStyle(.orange) }
+                    ForEach(version.warnings, id: \.self) { Text($0).foregroundStyle(Color(uiColor: RijiPalette.warning)) }
                     Text(version.source).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                     WorkflowNotice(model: model)
-                }.padding() }
+                }.padding() }.rijiPage()
                 .navigationTitle("核对模板原文")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("取消") { model.importPreview = nil } }
@@ -90,9 +90,9 @@ struct TemplatesView: View {
             NavigationStack {
                 ScrollView { VStack(alignment: .leading, spacing: 16) {
                     Text(version.source).font(.system(.body, design: .monospaced))
-                    ForEach(version.warnings, id: \.self) { Text($0).foregroundStyle(.orange) }
+                    ForEach(version.warnings, id: \.self) { Text($0).foregroundStyle(Color(uiColor: RijiPalette.warning)) }
                     WorkflowNotice(model: model)
-                }.padding() }
+                }.padding() }.rijiPage()
                 .navigationTitle("模板版本")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("关闭") { selection = nil } }
@@ -107,20 +107,22 @@ struct BlankDayView: View {
     @ObservedObject var model: WorkflowViewModel
     @ObservedObject var diary: DiaryViewModel
     @State private var date: Date
+    private let pickerTimeZone = TimeZone(secondsFromGMT: 0)!
     init(model: WorkflowViewModel, diary: DiaryViewModel) {
-        self.model = model; self.diary = diary; _date = State(initialValue: diary.selectedDay.date(in: diary.timeZone))
+        self.model = model; self.diary = diary
+        _date = State(initialValue: diary.selectedDay.date(in: TimeZone(secondsFromGMT: 0)!))
     }
     var body: some View {
-        Form {
-            DatePicker("日记日期", selection: $date, displayedComponents: .date).environment(\.timeZone, diary.timeZone)
+        RijiForm {
+            DatePicker("日记日期", selection: $date, displayedComponents: .date).environment(\.timeZone, pickerTimeZone)
             Text("按选定模板保留空白日记；已有日记会保持原文。")
-            Button("预览空白日记") { Task { await model.prepareBlank(JournalDay(date: date, timeZone: diary.timeZone)) } }.accessibilityIdentifier("previewBlankDay")
+            Button("预览空白日记") { Task { await model.prepareBlank(JournalDay(date: date, timeZone: pickerTimeZone)) } }.accessibilityIdentifier("previewBlankDay")
             if let blank = model.blank {
                 Section("\(blank.day.value) · 已固定的日记预览") {
                     Text("这是已固定的预览；仍显示的变量会按原文保存，不再替换。")
-                        .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("fixedPreviewNotice")
+                        .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary)).accessibilityIdentifier("fixedPreviewNotice")
                     Text(blank.preview).accessibilityIdentifier("blankDayPreview").font(.system(.body, design: .monospaced))
-                    ForEach(TemplateVersion.warnings(in: blank.preview), id: \.self) { Text($0).foregroundStyle(.orange) }
+                    ForEach(TemplateVersion.warnings(in: blank.preview), id: \.self) { Text($0).foregroundStyle(Color(uiColor: RijiPalette.warning)) }
                     Button("确认保留空白日记") { Task { if await model.confirmBlank() { _ = await diary.navigate(to: blank.day) } } }.accessibilityIdentifier("confirmBlankDay")
                 }
             }
@@ -134,15 +136,17 @@ struct JournalSearchView: View {
     @ObservedObject var diary: DiaryViewModel
     @State private var query = ""
     var body: some View {
-        List {
+        RijiList {
+            Text("搜索范围：" + diary.sourceLabel + "中的已保存日记、周记与月记。当前文件树中其他文件夹不在此范围。")
+                .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary)).accessibilityIdentifier("searchActiveScope")
             TextField("文字或日期", text: $query).accessibilityIdentifier("searchInput")
                 .onSubmit { Task { await model.search(query) } }
             Button("搜索本地文件") { Task { await model.search(query) } }.accessibilityIdentifier("searchSaved")
-            Text(model.searchSummary).font(.caption).foregroundStyle(.secondary)
+            Text(model.searchSummary).font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
             ForEach(model.matches) { match in
                 NavigationLink {
                     SavedWorkflowFileView(model: model, diary: diary, file: match.file)
-                } label: { VStack(alignment: .leading) { Text("\(match.file.label) · \(match.file.title)"); Text(match.snippet).font(.caption).lineLimit(3).foregroundStyle(.secondary) } }
+                } label: { VStack(alignment: .leading) { Text("\(match.file.label) · \(match.file.title)"); Text(match.snippet).font(.caption).lineLimit(3).foregroundStyle(Color(uiColor: RijiPalette.secondary)) } }
                 .accessibilityIdentifier("search-\(match.id)")
             }
             WorkflowNotice(model: model)
@@ -159,13 +163,13 @@ struct SavedWorkflowFileView: View {
     @State private var showExport = false
     var body: some View {
         ScrollView { VStack(alignment: .leading, spacing: 20) {
-            Text(WorkflowSamples.visible(text)).textSelection(.enabled)
+            DiffMarkdownReader(text: WorkflowSamples.visible(text)).accessibilityIdentifier("savedWorkflowReader")
             if case .daily(let day) = file {
                 Button("切换日记到此日期") { Task { _ = await diary.navigate(to: day); model.status = "关闭目录即可继续记录这一天。" } }
             }
             Button("导出 Markdown") { exportDocument = WorkflowMarkdownDocument(data: Data(text.utf8)); showExport = true }
             WorkflowNotice(model: model)
-        }.padding() }.navigationTitle(file.label)
+        }.padding() }.rijiPage().navigationTitle(file.label)
             .task { text = await model.savedText(file) }
             .fileExporter(isPresented: $showExport, document: exportDocument, contentType: .plainText, defaultFilename: file.id + ".md") { result in
                 if case .failure = result { model.error = "导出未完成，原文件仍保留。" }
@@ -177,7 +181,7 @@ struct NorthStarsView: View {
     @ObservedObject var model: WorkflowViewModel
     let day: JournalDay
     var body: some View {
-        Form {
+        RijiForm {
             Section("已确认指标（当前测量缺失时不计为 0）") {
                 if model.goals.isEmpty { Text("尚未录入北极星，可手动填写；不会自动定义目标。") }
                 ForEach(model.goals) { goal in
@@ -203,7 +207,7 @@ struct NorthStarsView: View {
             .task { await model.loadGoals() }
             .sheet(item: $model.goalPreview) { goal in
                 NavigationStack {
-                    Form {
+                    RijiForm {
                         Text("\(goal.name)\n\(goal.definition)\n单位：\(goal.unit)\n目标：\(goal.target)\n周期：\(goal.period)\n阶段：\(goal.stage)\n测量：\(goal.measurement ?? "尚未记录")\n来源及截止：\(goal.measurementSource ?? "尚未记录")")
                         Text("确认后保存不可变的新版本，历史 MIT 的引用保持原版本。")
                         Button("确认北极星版本") { Task { await model.confirmGoal() } }.accessibilityIdentifier("confirmNorthStar")
@@ -222,16 +226,23 @@ struct MITView: View {
     @ObservedObject var diary: DiaryViewModel
     @State private var feedback = false
     var body: some View {
-        Form {
-            Section("\(diary.selectedDay.value) · 当前 MIT") {
+        RijiForm {
+            Section("\(diary.selectedDay.value) · \(model.mitBodyChanged ? "此前确认的 MIT" : "当前 MIT")") {
                 if let mit = model.mit {
                     Text(mit.action).font(.headline).accessibilityIdentifier("currentMIT")
                     Text("完成标准：\(mit.criterion)\n确认计划不代表已完成。")
                 } else { Text("尚未确认 MIT，可先填写一个手动计划。") }
+                if model.mitBodyChanged {
+                    Text("正文中的 MIT 已手动修改，与以上确认记录不同。原计划仍保留在历史中；请确认新计划后再记录实际反馈。")
+                        .foregroundStyle(Color(uiColor: RijiPalette.warning)).accessibilityIdentifier("mitBodyMismatch")
+                    Button("填写并确认新计划") { feedback = false; model.reconcileMITBody() }
+                        .disabled(model.pendingCandidate).accessibilityIdentifier("reconcileMITBody")
+                }
             }
             Section(feedback ? "实际反馈" : "手动计划") {
                 if model.mit != nil {
                     Toggle("记录实际反馈", isOn: $feedback).accessibilityIdentifier("mitFeedbackMode")
+                        .disabled(model.mitBodyChanged)
                         .onChange(of: feedback) { _, value in model.updateField("mode", value ? "feedback" : "plan") }
                 }
                 if feedback {
@@ -256,21 +267,29 @@ struct MITView: View {
                     ForEach(model.mitSections, id: \.self) { Text($0).tag($0) }
                 }.pickerStyle(.menu).accessibilityIdentifier("mitSection")
                 Text("有 MIT 或反馈专属标题时请选择该区块；自定义模板请核对实际位置。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
                 Button("预览 MIT 记录") {
                     Task { await model.previewMIT(day: diary.selectedDay, section: model.fields["section"] ?? "", feedback: feedback) }
                 }.accessibilityIdentifier("previewMIT")
             }
             DisclosureGroup("计划与反馈历史（\(model.mitHistory.count)）") {
-                ForEach(model.mitHistory) { item in Text(item.feedbackFor == nil ? "计划：\(item.action)" : "\(item.status?.rawValue ?? "")：\(item.result)") }
+                ForEach(model.mitHistory) { item in
+                    VStack(alignment: .leading) {
+                        Text(item.feedbackFor == nil ? "计划：\(item.action)" : "\(item.status?.rawValue ?? "")：\(item.result)")
+                        if model.mitBodyMismatches.contains(item.id) {
+                            Text("以上为原确认记录；对应正文已手动修改，内容存在差异。")
+                                .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.warning)).accessibilityIdentifier("mitHistoryMismatch-\(item.id)")
+                        }
+                    }
+                }
             }
             WorkflowNotice(model: model)
         }.navigationTitle("最重要的一件事").disabled(model.busy)
-            .task { await diary.flushDraft(); await model.loadMIT(diary.selectedDay); feedback = model.fields["mode"] == "feedback" }
+            .task { await diary.flushDraft(); await model.loadMIT(diary.selectedDay); feedback = !model.mitBodyChanged && model.fields["mode"] == "feedback" }
             .sheet(isPresented: Binding(get: { model.mitPreview != nil }, set: { if !$0 { model.mitPreview = nil } })) {
                 if let draft = model.mitPreview {
                     NavigationStack {
-                        Form {
+                        RijiForm {
                             Text("\(draft.event.day.value) → \(draft.section)")
                             Text(draft.event.feedbackFor == nil ? "行动：\(draft.event.action)\n完成标准：\(draft.event.criterion)\n原因：\(draft.event.rationale)\n投入：\(draft.event.effort)" : "\(draft.event.status?.rawValue ?? "请选择完成情况")\n\(draft.event.result)")
                             if draft.event.replaces != nil { Text("更换当前 MIT，保留之前的计划及反馈。") }
@@ -301,9 +320,12 @@ struct ReviewsView: View {
         _date = State(initialValue: calendar.date(byAdding: .day, value: -7, to: diary.today.date(in: diary.timeZone))!)
     }
     var body: some View {
-        Form {
+        RijiForm {
+            Section {
+                RijiUnavailable(title: "AI 生成日记复盘尚未接入", detail: "可打开原周月文件，或按原模板填写本人手动复盘；核对来源和缺口后确认保存。")
+            }
             Section("选择周期") {
-                Picker("复盘类型", selection: $kind) { Text("周报").tag(TemplateKind.weekly); Text("月报").tag(TemplateKind.monthly) }.pickerStyle(.segmented)
+                Picker("复盘类型", selection: $kind) { Text("周记").tag(TemplateKind.weekly); Text("月记").tag(TemplateKind.monthly) }.pickerStyle(.segmented)
                     .onChange(of: kind) { _, value in
                         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = diary.timeZone
                         date = calendar.date(byAdding: value == .monthly ? .month : .day, value: value == .monthly ? -1 : -7, to: diary.today.date(in: diary.timeZone))!
@@ -315,7 +337,7 @@ struct ReviewsView: View {
                 Section(period.title) {
                     Text("日记时区：\(diary.timeZone.identifier)")
                     if let draft = model.review {
-                        Text("\(draft.phase.rawValue) · 截止 \(draft.asOf.value)").foregroundStyle(.secondary)
+                        Text("\(draft.phase.rawValue) · 截止 \(draft.asOf.value)").foregroundStyle(Color(uiColor: RijiPalette.secondary))
                         Text("可用日记 \(draft.sources.count) 篇 · 缺少 \(draft.missingDays.count) 天")
                         Text("缺少日期：\(draft.missingDays.map(\.value).joined(separator: "、"))").font(.caption)
                         if draft.sources.isEmpty { Text("本周期没有已保存日记。可以手动复盘，不会生成经历或指标数值。") }
@@ -323,21 +345,21 @@ struct ReviewsView: View {
                             NavigationLink(source.day.value) { SavedWorkflowFileView(model: model, diary: diary, file: .daily(source.day)) }
                         }
                         Text("\(draft.template.label) · 本人手动复盘").font(.caption)
-                        ForEach(draft.template.warnings, id: \.self) { Text($0).foregroundStyle(.orange) }
+                        ForEach(draft.template.warnings, id: \.self) { Text($0).foregroundStyle(Color(uiColor: RijiPalette.warning)) }
                         TextEditor(text: Binding(get: { model.review?.text ?? "" }, set: model.updateReview))
                             .frame(minHeight: 220).accessibilityIdentifier("reviewEditor").disabled(model.pendingReview)
                         Button("预览确认复盘") { Task { if await model.flush() { model.showReviewConfirmation = true } } }.accessibilityIdentifier("previewReview")
                         Button("重新核对来源（保留编辑）") { Task { await model.reviseReview(period, now: diary.today.date(in: diary.timeZone)) } }.disabled(model.pendingReview)
-                        if model.pendingReview { Text("上次保存尚待核对；请用原预览重试确认。输入暂时保持原确认内容。").foregroundStyle(.orange) }
+                        if model.pendingReview { Text("上次保存尚待核对；请用原预览重试确认。输入暂时保持原确认内容。").foregroundStyle(Color(uiColor: RijiPalette.warning)) }
                     } else {
-                        Text(WorkflowSamples.visible(model.savedReview)).textSelection(.enabled).accessibilityIdentifier("savedReview")
+                        DiffMarkdownReader(text: WorkflowSamples.visible(model.savedReview)).accessibilityIdentifier("savedReview")
                         Button("追加新的复盘版本") { Task { await model.reviseReview(period, now: diary.today.date(in: diary.timeZone)) } }.accessibilityIdentifier("reviseReview")
                         NavigationLink("打开并导出已保存复盘") { SavedWorkflowFileView(model: model, diary: diary, file: .review(period)) }
                     }
                 }
             }
             WorkflowNotice(model: model)
-        }.navigationTitle("周报 / 月报").disabled(model.busy)
+        }.navigationTitle("周记与月记").disabled(model.busy)
             .sheet(isPresented: $model.showReviewConfirmation) {
                 if let draft = model.review {
                     NavigationStack {
@@ -347,7 +369,7 @@ struct ReviewsView: View {
                             Text(draft.text).textSelection(.enabled)
                             Button("确认保存复盘") { Task { await model.confirmReview() } }.accessibilityIdentifier("confirmReview")
                             WorkflowNotice(model: model)
-                        }.padding() }.navigationTitle("核对复盘").toolbar { Button("关闭") { model.showReviewConfirmation = false } }.disabled(model.busy)
+                        }.padding() }.rijiPage().navigationTitle("核对复盘").toolbar { Button("关闭") { model.showReviewConfirmation = false } }.disabled(model.busy)
                     }
                 }
             }
@@ -380,5 +402,61 @@ enum WorkflowSamples {
     static let template = "---\nfixture: synthetic-manual-acceptance\ndate: '{{date:YYYY-MM-DD}}'\nweekday: '{{date:dddd}}'\nunknown: keep-this-field\n---\n# {{title}}\n\n## 🎯 Most Important Task (MIT)\n\n## 🌆 Evening\n\n## 🧠  **Notes**\n\nWeather: {{weather}}\n<% unsupported_synthetic_macro %>\n"
     static func visible(_ markdown: String) -> String {
         markdown.components(separatedBy: "\n").filter { !$0.hasPrefix("<!-- riji-record:") }.joined(separator: "\n")
+    }
+}
+
+struct DirectionAndTodayView: View {
+    @ObservedObject var model: WorkflowViewModel
+    @ObservedObject var diary: DiaryViewModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                Text("本人确认的方向").font(.subheadline.weight(.medium)).foregroundStyle(Color(uiColor: RijiPalette.secondary))
+                    .accessibilityAddTraits(.isHeader)
+                if model.goals.isEmpty { Text("尚未录入本人定义；可先打开原目录核对方向，再确认目标。") }
+                ForEach(model.goals) { goal in
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(goal.stage + " · " + goal.period).font(.subheadline)
+                            .foregroundStyle(Color(uiColor: RijiPalette.secondary))
+                        Image(systemName: "sparkle").font(.system(size: 30, weight: .light))
+                            .foregroundStyle(Color(uiColor: RijiPalette.brand)).accessibilityHidden(true)
+                        Text(goal.name).font(.title.weight(.semibold)).accessibilityIdentifier("directionGoalTitle")
+                        Text(goal.definition).font(.body).lineSpacing(7).accessibilityIdentifier("directionGoalDefinition")
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("目标：" + goal.target + " " + goal.unit)
+                            Text("当前测量：" + (goal.measurement ?? "尚未记录"))
+                            if let source = goal.measurementSource, !source.isEmpty { Text("测量来源与截止：" + source) }
+                        }.font(.subheadline).foregroundStyle(Color(uiColor: RijiPalette.secondary)).padding(.top, 4)
+                        Rectangle().fill(Color(uiColor: RijiPalette.border)).frame(height: 0.5).padding(.top, 4)
+                    }.fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    NavigationLink("查看原定义与版本") { NorthStarsView(model: model, day: diary.selectedDay) }
+                        .frame(minHeight: 44, alignment: .leading).accessibilityIdentifier("northStarDefinitions")
+                    Text("这里显示日记工作流的目标版本。导师页关联的原文段落单独管理，不会自动替换这里的定义。")
+                        .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(diary.selectedDay.value).font(.caption.monospacedDigit()).foregroundStyle(Color(uiColor: RijiPalette.secondary))
+                    Text(model.mitBodyChanged ? "此前确认的 MIT" : "最重要的一件事").font(.title2.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    if model.mitBodyChanged {
+                        Text("正文中的 MIT 已手动修改，与此前确认记录不同。请先核对并确认新计划，再记录反馈。")
+                            .foregroundStyle(Color(uiColor: RijiPalette.warning)).accessibilityIdentifier("directionMITBodyMismatch")
+                    }
+                    if let mit = model.mit {
+                        Text(mit.action).font(.headline).accessibilityIdentifier("directionMITAction")
+                        Text("理由：" + mit.rationale)
+                        Text("完成标准：" + mit.criterion)
+                        Text("确认计划不代表实际完成。反馈在核对后单独记录。")
+                            .font(.caption).foregroundStyle(Color(uiColor: RijiPalette.secondary))
+                    } else { Text("尚未确认今天的 MIT。可以填写一个具体行动，再核对完成标准。") }
+                    NavigationLink(model.mitBodyChanged ? "核对修改并确认新计划" : "确认计划或记录反馈") { MITView(model: model, diary: diary) }
+                        .buttonStyle(RijiPrimaryButtonStyle()).accessibilityIdentifier("directionMIT")
+                }.lineSpacing(4).fixedSize(horizontal: false, vertical: true).rijiEmphasisSurface()
+                WorkflowNotice(model: model)
+            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        }.rijiPage().navigationTitle("北极星与 MIT").navigationBarTitleDisplayMode(.inline)
+            .task { await model.loadGoals(); await model.loadMIT(diary.selectedDay) }
     }
 }

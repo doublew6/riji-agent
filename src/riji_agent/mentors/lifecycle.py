@@ -170,6 +170,10 @@ class ProblemLifecycle:
             self.service.budgets.activate(db, current)
 
     def _reconciled(self, db, current: Conversation) -> None:
+        if current.chat_kind == "group":
+            from riji_agent.mentors.group_chat import check_group_unresolved
+            check_group_unresolved(self.service, db, current)
+            return
         rows = db.execute("SELECT 1 FROM mentor_steps WHERE conversation_id=? AND status IN ('unknown','call_sent')",
                           (current.id,)).fetchone()
         deliveries = self.store.records(db, "delivery", current.id, Delivery)

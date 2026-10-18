@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from riji_agent.mobile.memory import memory_view
 from riji_agent.mobile.store import MobileError
+from riji_agent.mentors.models import MentorError
 
 ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
 MAX_REQUEST_BYTES = 65536
@@ -34,6 +35,8 @@ class MobileRoute(APIRoute):
                 response = await original(request)
             except RequestValidationError:
                 response = JSONResponse({"detail": "mobile_request_invalid"}, status_code=422)
+            except MentorError as exc:
+                response = JSONResponse({"detail": exc.code}, status_code=409)
             except MobileError as exc:
                 response = JSONResponse({"detail": exc.code}, status_code=exc.status)
             except HTTPException as exc:
@@ -82,6 +85,13 @@ class PrivacyInput(OperationInput):
     permissions: dict[str, StrictBool] = Field(default_factory=dict, max_length=4)
 
 
+class OrganizeInput(OperationInput):
+    action: Literal["organize"]
+    expected_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    binding: str = Field(pattern=r"^[a-f0-9]{64}$")
+    acknowledged: StrictBool
+
+
 def build_router(service) -> APIRouter:
     router = APIRouter(prefix="/mobile/v1", include_in_schema=False, route_class=MobileRoute)
 
@@ -106,10 +116,12 @@ def build_router(service) -> APIRouter:
 
     @router.get("/operations/{operation_id}")
     def operation(operation_id: Identifier, request: Request):
-        return service.store.receipt(device(request)["id"], operation_id)
+        return service.operation_receipt(device(request), operation_id)
 
     attach_mentor_routes(router, service, device)
     attach_memory_routes(router, service, device)
+    from riji_agent.mobile.roundtable_api import attach_roundtable_routes
+    attach_roundtable_routes(router, service, device)
     return router
 
 
@@ -137,6 +149,20 @@ def attach_mentor_routes(router, service, device) -> None:
 
 
 def attach_memory_routes(router, service, device) -> None:
+    @router.get("/memory-overview")
+    def overview(request: Request, cursor: str = Query(default="", max_length=512)):
+        current = device(request)
+        owner = service.principal(current).legacy_owner_key
+        result = service.overview.listing(owner, cursor)
+        service.principal(current)
+        return result
+
+    @router.post("/memory-overview/actions")
+    def organize(body: OrganizeInput, request: Request):
+        current, value = device(request), body.model_dump()
+        owner = service.principal(current).legacy_owner_key
+        return service.operate(current, "memory_organize", value, lambda: service.overview.organize(owner, value))
+
     @router.get("/memories")
     def memories(request: Request, cursor: str = Query(default="", max_length=512)):
         owner = service.principal(device(request)).legacy_owner_key

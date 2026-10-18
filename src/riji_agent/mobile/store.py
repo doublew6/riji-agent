@@ -49,6 +49,8 @@ class MobileStore:
                 CREATE TABLE IF NOT EXISTS operations (device TEXT NOT NULL, id TEXT NOT NULL,
                     fingerprint TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL,
                     result TEXT, error TEXT, PRIMARY KEY(device,id));
+                CREATE TABLE IF NOT EXISTS operation_protocols (device TEXT NOT NULL, id TEXT NOT NULL,
+                    protocol TEXT NOT NULL, PRIMARY KEY(device,id));
             """)
 
     @contextmanager
@@ -139,12 +141,14 @@ class MobileStore:
                     raise MobileError("operation_conflict")
                 return False, self._receipt(row)
             db.execute("INSERT INTO operations VALUES (?,?,?,?, 'pending',NULL,NULL)", (device, operation, value, kind))
+            if kind == 'roundtable_create' and body.get('chat_kind') == 'group':
+                db.execute("INSERT INTO operation_protocols VALUES (?,?,'atomic_group_create_v2')", (device, operation))
         return True, self.receipt(device, operation)
 
     def finish(self, device: str, operation: str, state: str, *, result: dict | None = None,
                error: str | None = None) -> dict:
         with self.transaction() as db:
-            db.execute("UPDATE operations SET state=?,result=?,error=? WHERE device=? AND id=?",
+            db.execute("UPDATE operations SET state=?,result=?,error=? WHERE device=? AND id=? AND state!='completed'",
                        (state, json.dumps(result) if result is not None else None, error, device, operation))
         return self.receipt(device, operation)
 
@@ -154,6 +158,24 @@ class MobileStore:
         if row is None:
             raise MobileError("operation_not_found", 404)
         return self._receipt(row)
+
+    def operation_fingerprint(self, device: str, operation: str) -> str:
+        with self.transaction() as db:
+            row = db.execute("SELECT fingerprint FROM operations WHERE device=? AND id=?", (device, operation)).fetchone()
+        if row is None:
+            raise MobileError("operation_not_found", 404)
+        return row[0]
+
+    def fail_uncommitted_group(self, device: str, operation: str) -> dict:
+        with self.transaction() as db:
+            row = db.execute("SELECT o.*,p.protocol FROM operations o LEFT JOIN operation_protocols p "
+                             "ON p.device=o.device AND p.id=o.id WHERE o.device=? AND o.id=?", (device, operation)).fetchone()
+            if row is None:
+                raise MobileError("operation_not_found", 404)
+            if row['state'] == 'unknown' and row['protocol'] == 'atomic_group_create_v2':
+                db.execute("UPDATE operations SET state='failed',error='group_creation_not_committed' "
+                           "WHERE device=? AND id=?", (device, operation))
+        return self.receipt(device, operation)
 
     def recover(self) -> None:
         with self.transaction() as db:

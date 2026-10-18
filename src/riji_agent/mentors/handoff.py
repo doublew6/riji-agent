@@ -205,7 +205,8 @@ def _artifact_hash(item: dict) -> str:
 
 def _selected_handoff(view: dict, chosen: list[dict], principal_id: str) -> Handoff:
     conversation = view["conversation"]
-    runs = {item.get("run_id") or conversation["run_id"] for item in chosen if item["kind"] != "user"}
+    runs = {item.get("run_id") or conversation["run_id"] for item in chosen
+            if item["kind"] != "user" or conversation.get("chat_kind") == "group"}
     runs = runs or {conversation["run_id"]}
     if len(runs) != 1:
         raise MentorError("handoff_single_discussion_required")
@@ -220,11 +221,21 @@ def _selected_handoff(view: dict, chosen: list[dict], principal_id: str) -> Hand
         artifact_ids=tuple(item["id"] for item in chosen), input_revision=max(item["input_revision"] for item in chosen),
         summary_version=run.get("summary_version", conversation.get("summary_version", 0)), correction_version=conversation.get("correction_version", 0),
         recorded_at=datetime.fromtimestamp(max(item["created_at"] for item in chosen), timezone.utc).isoformat(), mentors=tuple(run.get("personas", conversation["personas"])),
-        topic=conversation["question"][:200],
+        topic=_result_topic(view, run_id),
     )
     return Handoff(id=identifier, conversation_id=conversation["id"], principal_id=principal_id,
                    artifact_ids=provenance.artifact_ids, text=text, provenance=provenance,
                    artifact_hashes={item["id"]: _artifact_hash(item) for item in chosen})
+
+
+def _result_topic(view: dict, run_id: str) -> str:
+    if view["conversation"].get("chat_kind") != "group":
+        return view["conversation"]["question"][:200]
+    questions = [item["text"] for item in view["artifacts"] if item.get("run_id") == run_id
+                 and item["kind"] == "user" and not item.get("unavailable") and not item.get("superseded")]
+    if not questions:
+        raise MentorError("handoff_source_unavailable")
+    return "\n".join(questions)[:200]
 
 
 def _revision(old: Handoff, text: str | None, target_date: date | None, draft) -> Handoff:

@@ -21,6 +21,8 @@ final class WorkflowViewModel: ObservableObject {
     @Published private(set) var goals: [NorthStarDefinition] = []
     @Published private(set) var goalHistory: [NorthStarDefinition] = []
     @Published private(set) var mit: MITEvent?
+    @Published private(set) var mitBodyChanged = false
+    @Published private(set) var mitBodyMismatches: Set<UUID> = []
     @Published private(set) var mitHistory: [MITEvent] = []
     @Published private(set) var mitSections: [String] = []
     @Published private(set) var fields: [String: String] = [:]
@@ -243,12 +245,17 @@ final class WorkflowViewModel: ObservableObject {
         let headings = try MarkdownSectionAppender.headings(in: Data(snapshot.markdown.utf8))
         mitSections = Array(Set(headings.filter { $0.level > 1 }.map(\.title))).sorted()
         mit = try await store.currentMIT(day); mitHistory = try await store.mitHistory(day)
+        mitBodyChanged = try await !store.currentMITMatchesBody(day)
+        mitBodyMismatches = try await store.mitBodyMismatches(day)
         goals = try await store.currentNorthStars()
     }
 
     func previewMIT(day: JournalDay, section: String, feedback: Bool) async {
         await run {
             try await flushPersistence()
+            if feedback, try await !store.currentMITMatchesBody(day) {
+                mitBodyChanged = true; throw JournalError.mitBodyChanged
+            }
             if candidateMIT == nil, !feedback, requiresGoalReselection { throw JournalError.changedSource }
             let event = MITEvent(day: day, replaces: feedback ? nil : mit?.id,
                 goalID: fields["goal"].flatMap(UUID.init(uuidString:)), action: fields["action"] ?? "",
@@ -286,9 +293,18 @@ final class WorkflowViewModel: ObservableObject {
             fields = [:]; candidateMIT = nil; mitPreview = nil
             pendingCandidate = false
             mit = try await store.currentMIT(candidate.event.day); mitHistory = try await store.mitHistory(candidate.event.day)
+            mitBodyChanged = try await !store.currentMITMatchesBody(candidate.event.day)
+            mitBodyMismatches = try await store.mitBodyMismatches(candidate.event.day)
             status = "MIT 已保存在当天日记，历史记录已保留"
         }
         if error != nil { pendingCandidate = (try? await store.workflowHasOperation(candidate.operationID)) ?? true }
+    }
+
+    func reconcileMITBody() {
+        guard !busy, !pendingCandidate else { return }
+        // Keep user-entered form fields; the new explicit preview will replace the recorded plan.
+        updateField("mode", "plan")
+        mitPreview = nil
     }
 
     func openReview(_ period: ReviewPeriod, now: Date) async {

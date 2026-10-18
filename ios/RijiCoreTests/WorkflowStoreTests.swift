@@ -698,3 +698,57 @@ final class WorkflowStoreTests: XCTestCase {
     }
 
 }
+
+extension WorkflowStoreTests {
+    func testDirectMITChangesPreserveRecordsBlockFeedbackAndAllowExplicitReplacement() async throws {
+        let store = try self.store()
+        let event = MITEvent(day: day, action: "Recorded action", criterion: "Recorded criterion", rationale: "Recorded rationale", effort: "20 minutes")
+        try await store.commitMIT(store.prepareMIT(event, section: "🌅 Morning"))
+        let original = try await store.exportMarkdown(day)
+        let unchanged = try await store.currentMITMatchesBody(day); XCTAssertTrue(unchanged)
+        for old in ["Recorded action", "Recorded criterion", "Recorded rationale", "20 minutes", "确认 MIT"] {
+            let edited = Data(String(decoding: original, as: UTF8.self).replacingOccurrences(of: old, with: "Manual changed text").utf8)
+            try edited.write(to: root.appendingPathComponent("Journals/\(day.value).md"))
+            let matches = try await store.currentMITMatchesBody(day); XCTAssertFalse(matches, old)
+            let history = try await store.mitHistory(day); XCTAssertEqual(history, [event])
+            let feedback = MITEvent(day: day, feedbackFor: event.id, status: .completed, result: "Synthetic result")
+            let preview = try await store.prepareMIT(feedback, section: "🌆 Evening")
+            do { try await store.commitMIT(preview); XCTFail() } catch { XCTAssertEqual(error as? JournalError, .mitBodyChanged) }
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Journals/\(day.value).md")), edited)
+        }
+        let edited = try await store.exportMarkdown(day)
+        let replacement = MITEvent(day: day, replaces: event.id, action: "New explicitly confirmed action", criterion: "New result")
+        try await store.commitMIT(store.prepareMIT(replacement, section: "🌅 Morning"))
+        let consistent = try await store.currentMITMatchesBody(day); XCTAssertTrue(consistent)
+        let history = try await store.mitHistory(day); XCTAssertEqual(history, [event, replacement])
+        let content = try await store.exportMarkdown(day)
+        XCTAssertTrue(String(decoding: content, as: UTF8.self).contains("Manual changed text"))
+        XCTAssertTrue(content.count > edited.count)
+        let current = try await store.currentMIT(day); XCTAssertEqual(current?.id, replacement.id)
+        let feedback = MITEvent(day: day, feedbackFor: replacement.id, status: .partial, result: "Visible feedback text")
+        try await store.commitMIT(store.prepareMIT(feedback, section: "🌆 Evening"))
+        let withFeedback = try await store.exportMarkdown(day)
+        let changedFeedback = Data(String(decoding: withFeedback, as: UTF8.self).replacingOccurrences(of: "Visible feedback text", with: "Manually changed feedback").utf8)
+        try await store.commitBodyEdit(BodyEdit(day: day, before: withFeedback, content: changedFeedback))
+        let mismatches = try await store.mitBodyMismatches(day)
+        XCTAssertEqual(mismatches, [event.id, feedback.id])
+        let currentStillMatches = try await store.currentMITMatchesBody(day); XCTAssertTrue(currentStillMatches)
+        let intactHistory = try await store.mitHistory(day); XCTAssertEqual(intactHistory, [event, replacement, feedback])
+        let cold = try self.store(); let coldMismatches = try await cold.mitBodyMismatches(day)
+        XCTAssertEqual(coldMismatches, mismatches)
+    }
+
+    func testUnrelatedEditsAndLegacyCRLFPlanDoNotCauseMITMismatch() async throws {
+        let store = try self.store()
+        let event = MITEvent(day: day, action: "Legacy action", criterion: "One result")
+        try await store.commitMIT(store.prepareMIT(event, section: "🌅 Morning"))
+        let original = try await store.exportMarkdown(day)
+        let crlf = Data(String(decoding: original, as: UTF8.self).replacingOccurrences(of: "\n", with: "\r\n").utf8)
+        try crlf.write(to: root.appendingPathComponent("Journals/\(day.value).md"))
+        let matches = try await store.currentMITMatchesBody(day); XCTAssertTrue(matches)
+        let unrelated = crlf + Data("\r\nUnrelated diary change e\u{301}\r\n".utf8)
+        try await store.commitBodyEdit(BodyEdit(day: day, before: crlf, content: unrelated))
+        let stillMatches = try await store.currentMITMatchesBody(day); XCTAssertTrue(stillMatches)
+        let mismatches = try await store.mitBodyMismatches(day); XCTAssertTrue(mismatches.isEmpty)
+    }
+}

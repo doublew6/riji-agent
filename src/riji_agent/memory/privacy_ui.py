@@ -178,7 +178,7 @@ def memory_permission(item: Any, user_id: str) -> str:
 
 
 PRIVACY_CSS = """
-.privacy-banner{position:sticky;top:0;z-index:20;background:#fff3d6;border:1px solid #ba9454;border-left:5px solid #936018;padding:12px 20px;display:flex;gap:16px;align-items:center;justify-content:space-between;box-shadow:0 3px 12px #33221116}
+.privacy-banner{background:#fff3d6;border:1px solid #ba9454;border-left:5px solid #936018;padding:12px 20px;display:flex;gap:16px;align-items:center;justify-content:space-between;box-shadow:0 3px 12px #33221116}
 .privacy-banner strong{display:block;font-size:16px}.privacy-banner span{display:block;font-size:12px;line-height:1.6;margin-top:3px}.privacy-banner .actions{flex-shrink:0;margin:0}.privacy-form{display:grid;gap:14px;padding:20px;background:var(--inset);border-radius:8px}.privacy-form input{width:auto}.privacy-form label{line-height:1.6}.memory-permission{display:block;font-size:12px;margin:12px 0}.memory-permission select{margin-top:6px;max-width:100%}
 @media(max-width:900px){.privacy-banner{flex-direction:column;align-items:stretch;padding:10px 16px;gap:8px}.privacy-banner .actions{gap:8px}.privacy-banner span{font-size:11px}}
 """

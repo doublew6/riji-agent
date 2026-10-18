@@ -21,8 +21,14 @@ class BudgetService:
 
     def create(self, db, conversation: Conversation) -> None:
         single = conversation.kind == "private" or conversation.run_kind == "followup"
+        requests, seconds = (7, 120) if single else (24, 600)
+        if not single and conversation.mode == "debate" and conversation.rounds > 2:
+            actors = len(conversation.run_personas or conversation.personas)
+            stages = actors * (conversation.rounds + 1) + 2
+            requests = max(requests, 2 * stages)
+            seconds += 60 * actors * (conversation.rounds - 2)
         db.execute("INSERT OR IGNORE INTO mentor_budgets(id,conversation_id,request_limit,time_limit) VALUES (?,?,?,?)",
-                   (self.identifier(conversation), conversation.id, 7 if single else 24, 120 if single else 600))
+                   (self.identifier(conversation), conversation.id, requests, seconds))
 
     def activate(self, db, conversation: Conversation) -> None:
         self.create(db, conversation)

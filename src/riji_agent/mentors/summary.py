@@ -8,7 +8,7 @@ was explicitly supplied. No model calls or long-term-memory captures occur here.
 from __future__ import annotations
 
 from riji_agent.mentors.models import (
-    Artifact, Conversation, DiscussionRun, MentorError, Principal, Source,
+    Artifact, Conversation, Delivery, DiscussionRun, MentorError, Principal, Source,
     SummaryItem, WorkingSummary,
 )
 
@@ -29,7 +29,8 @@ class ProblemSummaries:
             personas=(conversation.followup_actor or "host",) if conversation.run_kind == "followup"
             else conversation.run_personas or conversation.personas,
             summary_version=previous.summary_version if previous else conversation.summary_version,
-            input_revision=conversation.input_revision, status=conversation.status,
+            input_revision=(previous.input_revision if previous and conversation.chat_kind == "group"
+                            else conversation.input_revision), status=conversation.status,
             reanalyze=conversation.reanalyze,
             created_at=previous.created_at if previous else self.service.now(),
             updated_at=self.service.now(),
@@ -57,15 +58,33 @@ class ProblemSummaries:
         if conversation.kind != "roundtable":
             return conversation
         artifacts = self.store.records(db, "artifact", conversation.id, Artifact)
+        if conversation.source_scope == "mobile_selected" and conversation.chat_kind != "group":
+            additions = tuple(item.id for item in artifacts if item.kind == "user"
+                              and item.input_revision == conversation.input_revision and item.run_id == conversation.run_id
+                              and item.input_revision > conversation.material_selection_revision)
+            conversation = conversation.model_copy(update={"selected_artifact_ids": tuple(dict.fromkeys(
+                (*conversation.selected_artifact_ids, *additions)))})
         invalid = self.superseded(db, conversation)
         active = tuple(item for item in artifacts if item.id not in invalid)
+        if conversation.source_scope == "mobile_selected" and conversation.chat_kind != "group":
+            from riji_agent.mentors.mobile_context import selected_artifacts
+            conversation = conversation.model_copy(update={"selected_artifact_ids": tuple(
+                identifier for identifier in conversation.selected_artifact_ids if identifier not in invalid)})
+            delivered = {item.artifact_id for item in self.store.records(db, "delivery", conversation.id, Delivery)
+                         if item.status == "sent"}
+            active = selected_artifacts(conversation, active, delivered=delivered)
         users = [self._item(item) for item in active if item.kind == "user"]
         conclusions = [item for item in active if item.kind in {"synthesis", "comparison", "followup"}]
         advice = [] if conversation.reanalyze or not conclusions else self._advice_items(conclusions[-1])
         items = tuple(users + advice)
+        if conversation.chat_kind == "group":
+            from riji_agent.mentors.group_chat import recent_group_items, visible_group_artifacts
+            active = visible_group_artifacts(self.store, conversation, active, db=db)
+            items = recent_group_items(tuple(self._item(item) for item in active))
         over = len(items) > MAX_CONTEXT_ITEMS or sum(len(item.text) for item in items) > MAX_CONTEXT_CHARS
         previous = self.store.get(db, "summary", conversation.summary_id, WorkingSummary)
-        covered = tuple(item.id for item in active)
+        covered = (tuple(identifier for item in items for identifier in item.artifact_ids)
+                   if conversation.chat_kind == "group" else tuple(item.id for item in active))
         if previous and previous.covered_artifact_ids == covered and previous.items == items:
             return conversation
         summary = WorkingSummary(
@@ -84,7 +103,7 @@ class ProblemSummaries:
     def _item(artifact: Artifact) -> SummaryItem:
         user = artifact.kind == "user"
         kind = artifact.origin_kind if user and artifact.origin_kind != "ai_discussion" else "user_statement" if user else "ai_advice"
-        return SummaryItem(kind=kind, text=artifact.text, artifact_ids=(artifact.id,),
+        return SummaryItem(kind=kind, actor=artifact.actor, text=artifact.text, artifact_ids=(artifact.id,),
                            source_refs=artifact.source_refs, dependencies=artifact.dependencies,
                            occurred_at=artifact.created_at)
 

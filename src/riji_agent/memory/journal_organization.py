@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from riji_agent.memory.backend import MemoryBackendError
@@ -59,6 +59,15 @@ def _eligible_seed(item: LongTermMemory) -> bool:
             and 0 < len(item.content) <= 2000 and not contains_credentials(item.content))
 
 
+def _canonical_report(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Normalize accepted reports to the persisted standard fields."""
+    return {"topics": [{key: entry[key] for key in ("category", "title", "summary", "evidence_ids")}
+                       for entry in parsed["topics"]],
+            "comparisons": [{key: entry[key] for key in ("kind", "evidence_ids", "reason")}
+                            for entry in parsed["comparisons"]],
+            "time_bound_ids": parsed["time_bound_ids"]}
+
+
 def _organization_schema(ids: Sequence[str],
                          independent_days: dict[str, Sequence[str]] | None = None) -> dict[str, Any]:
     days = independent_days or {}
@@ -92,6 +101,23 @@ def _organization_schema(ids: Sequence[str],
     })
 
 
+@dataclass
+class _OrganizationProgress:
+    records: Sequence[LongTermMemory]
+    covered: dict[str, str]
+    groups: list[dict[str, Any]]
+    stopped: dict[str, str]
+    candidates: Sequence[LongTermMemory]
+
+    def report(self, catalog_epoch: str | None) -> dict[str, Any]:
+        return {"fingerprint": memory_fingerprint(self.records), "total": len(self.records),
+                "processed": len(self.covered), "groups": self.groups,
+                "covered_seeds": self.covered, "stopped_seeds": self.stopped,
+                "remaining": sum(item.id not in self.covered for item in self.candidates),
+                "versions": {mid: version for group in self.groups for mid, version in group["versions"].items()},
+                "catalog_epoch": catalog_epoch, "review_after_days": 90}
+
+
 class JournalOrganization:
     def __init__(self, backend: Any, store: OrganizationStore, provider: LLMProvider) -> None:
         self.backend, self.store, self.provider = backend, store, provider
@@ -103,7 +129,7 @@ class JournalOrganization:
             self._check_enabled()
             records = [item for item in active_records(self.backend.export_memories(user_id=run["user_id"]), run["user_id"])
                        if self.engine.can_send(item, "organization")]
-            report = self._organize(records)
+            report = self._organize(records, run["id"])
             self.store.finish(run["id"], report)
             if report["remaining"]:
                 self.store.request_if_idle(run["user_id"])
@@ -143,29 +169,19 @@ class JournalOrganization:
         if not self.engine.policy.enabled or self.engine.store.get_control("paused") == "1":
             raise JournalMemoryError("journal_memory_paused")
 
-    def _organize(self, records: Sequence[LongTermMemory]) -> dict[str, Any]:
+    def _organize(self, records: Sequence[LongTermMemory], run_id: int | None = None) -> dict[str, Any]:
         known = {item.id: item for item in records}
         self.engine.store.exclude_initialization_seeds({item.id: memory_version(item) for item in records if _eligible_seed(item)})
-        latest = self.store.latest(self.engine.policy.user_id, ready_only=True)
-        previous = latest["report"] if latest else {}
-        covered = {mid: version for mid, version in (previous or {}).get("covered_seeds", {}).items()
-                   if mid in known and memory_version(known[mid]) == version}
+        covered, groups = self._restore_coverage(known)
         covered.update({item.id: memory_version(item) for item in records if not _eligible_seed(item)})
-        groups = [group for group in (previous or {}).get("groups", [])
-                  if all(mid in known and memory_version(known[mid]) == version
-                         for mid, version in group.get("versions", {}).items()) and group.get("versions")]
-        for row in self.engine.store.rows("SELECT id,version,report_json FROM initialization_seeds WHERE state IN ('done','retry_done') AND report_json IS NOT NULL"):
-            group = json.loads(row["report_json"])
-            if (row["id"] in known and memory_version(known[row["id"]]) == row["version"]
-                    and all(mid in known and memory_version(known[mid]) == version for mid, version in group["versions"].items())):
-                groups = [old for old in groups if old["versions"] != group["versions"]] + [group]
-                covered[row["id"]] = row["version"]
         self.engine.store.settle_initialization_coverage(covered)
         stopped = {row["id"]: row["version"] for row in self.engine.store.rows(
             "SELECT id,version FROM initialization_seeds WHERE state IN ('failed','spent','retry_failed','retry_spent')")
             if row["id"] in known and memory_version(known[row["id"]]) == row["version"]}
         candidates = sorted((item for item in records if item.id not in covered and item.id not in stopped
                              and _eligible_seed(item)), key=lambda item: item.id)
+        progress = _OrganizationProgress(records, covered, groups, stopped, candidates)
+        self._checkpoint(progress, run_id)
         pending = self._pending_initialization()
         initial = [item for item in candidates if self.engine.store.initialization_seed(
             self.engine.policy, item.id, memory_version(item))]
@@ -173,15 +189,51 @@ class JournalOrganization:
         seeds = (initial or recovering or candidates)[:5]
         for seed in seeds:
             batch = self._related(seed, known)
-            group = self._call(batch, initialization_seed=(seed.id, memory_version(seed)))
+            ref = (seed.id, memory_version(seed))
+            group = self._call(batch, initialization_seed=ref if ref in pending else None)
             ids = {item.id for item in batch}
-            groups = [old for old in groups if not set(old["versions"]).issubset(ids)] + [group]
+            progress.groups = [old for old in progress.groups if not set(old["versions"]).issubset(ids)] + [group]
             covered[seed.id] = memory_version(seed)
-        return {"fingerprint": memory_fingerprint(records), "total": len(records), "processed": len(covered),
-                "groups": groups, "covered_seeds": covered, "stopped_seeds": stopped,
-                "remaining": sum(item.id not in covered for item in candidates),
-                "versions": {mid: version for group in groups for mid, version in group["versions"].items()},
-                "catalog_epoch": self.engine.store.get_control("catalog_epoch"), "review_after_days": 90}
+            self._checkpoint(progress, run_id)
+        return progress.report(self.engine.store.get_control("catalog_epoch"))
+
+    def _checkpoint(self, progress: _OrganizationProgress, run_id: int | None) -> None:
+        if run_id is not None:
+            self.store.record_checkpoint(run_id, progress.report(self.engine.store.get_control("catalog_epoch")))
+
+    def _restore_coverage(self, known: dict[str, LongTermMemory]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+        latest = self.store.latest_report(self.engine.policy.user_id)
+        previous = latest["report"] if latest else {}
+        covered = {mid: version for mid, version in (previous or {}).get("covered_seeds", {}).items()
+                   if mid in known and memory_version(known[mid]) == version}
+        groups = [valid for group in (previous or {}).get("groups", [])
+                  if (valid := self._restore_group(group, known)) is not None]
+        for row in self.engine.store.rows("SELECT id,version,report_json FROM initialization_seeds WHERE state IN ('done','retry_done') AND report_json IS NOT NULL"):
+            group = self._restore_group(json.loads(row["report_json"]), known)
+            if (row["id"] in known and memory_version(known[row["id"]]) == row["version"]
+                    and group is not None):
+                groups = [old for old in groups if old["versions"] != group["versions"]] + [group]
+                covered[row["id"]] = row["version"]
+        grouped = {mid for group in groups for mid in group["versions"]}
+        return {mid: version for mid, version in covered.items() if mid in grouped}, groups
+
+    def _restore_group(self, group: Any, known: dict[str, LongTermMemory]) -> dict[str, Any] | None:
+        if (not isinstance(group, dict) or not isinstance(group.get("versions"), dict)
+                or not 0 < len(group["versions"]) <= 20):
+            return None
+        versions = group["versions"]
+        if not all(mid in known and memory_version(known[mid]) == version
+                   and known[mid].scope.value == group.get("scope") and known[mid].persona_id == group.get("persona_id")
+                   for mid, version in versions.items()):
+            return None
+        try:
+            parsed = _canonical_report(_parse_report(json.dumps({
+                key: group.get(key) for key in ("topics", "comparisons", "time_bound_ids")}), set(versions)))
+            observations = self._validate_observations(group.get("observations", []), [known[mid] for mid in versions])
+        except (ValueError, TypeError):
+            return None
+        return dict(parsed, observations=observations, scope=group["scope"],
+                    persona_id=group.get("persona_id"), versions=versions)
 
     def _related(self, seed: LongTermMemory, known: dict[str, LongTermMemory]) -> list[LongTermMemory]:
         matches = self.backend.search(seed.content, user_id=seed.user_id, scope=seed.scope,
@@ -230,7 +282,7 @@ class JournalOrganization:
             if "observations" not in result:
                 raise ValueError("invalid_observations")
             observations = result.pop("observations")
-            parsed = _parse_report(json.dumps(result), {item.id for item in batch})
+            parsed = _canonical_report(_parse_report(json.dumps(result), {item.id for item in batch}))
             parsed["observations"] = self._validate_observations(observations, batch)
             self._check_enabled()
             self._check_versions(batch)

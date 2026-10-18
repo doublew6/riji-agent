@@ -63,3 +63,20 @@ def test_oversized_response_is_rejected_without_truncating_json():
         lambda request: httpx.Response(200, json={"text": "x" * (4 * 1024 * 1024)}))))
     response = client.get("/mobile/v1/capabilities")
     assert response.status_code == 503 and response.json()["detail"] == "mobile_response_too_large"
+
+
+def test_roundtable_list_cursor_forwarding_keeps_fixed_upstream_and_auth():
+    calls = []
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(200, json={"items": [], "next_cursor": None})
+    client = TestClient(create_proxy_app(transport=httpx.MockTransport(upstream)))
+    response = client.get("/mobile/v1/roundtables?cursor=page_2-abc",
+                          headers={"Authorization": "Bearer synthetic-token"})
+    assert response.status_code == 200
+    assert str(calls[0].url) == "http://127.0.0.1:8765/mobile/v1/roundtables?cursor=page_2-abc"
+    assert calls[0].headers["authorization"] == "Bearer synthetic-token"
+    for query in ["cursor=a&cursor=b", "cursor=a&target=admin", "cursor=", "cursor=a%2Fb", "cursor=" + "x" * 513]:
+        assert client.get("/mobile/v1/roundtables?" + query).status_code == 404
+    assert client.post("/mobile/v1/roundtables?cursor=page_2-abc", json={}).status_code == 404
+    assert len(calls) == 1

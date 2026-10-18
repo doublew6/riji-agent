@@ -13,7 +13,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/run_ios_simulator.sh"
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="Mac-only launcher")
 
 
-def run_launcher(tmp_path, *, devices=None, runtime=True, xcode=True, args=(), device_types=None, device_hub=False):
+def run_launcher(tmp_path, *, devices=None, runtime=True, xcode=True, args=(), device_types=None,
+                 device_hub=False, build_success=False, inherited=None):
     """Supply a temporary tool environment and record every attempted mutation."""
     tools = tmp_path / "bin"
     tools.mkdir()
@@ -38,7 +39,7 @@ def run_launcher(tmp_path, *, devices=None, runtime=True, xcode=True, args=(), d
     scripts = {
         "xcode-select": 'printf "%s\\n" "$LAUNCHER_TEST_DEVELOPER"',
         "xcodebuild": 'if [ "$1" = -version ]; then exit 0; fi\n'
-        'echo build >> "$LAUNCHER_TEST_CALLS"\nexit 9',
+        'echo build >> "$LAUNCHER_TEST_CALLS"\nexit "$LAUNCHER_TEST_BUILD_EXIT"',
         "open": '[ "$2" = "$LAUNCHER_TEST_APPLICATION" ]\necho open >> "$LAUNCHER_TEST_CALLS"',
         "xcrun": '''if [ "$1" = --find ]; then exit 0; fi
 if [ "$2" = list ]; then
@@ -51,6 +52,9 @@ if [ "$2" = list ]; then
     exit 0
 fi
 echo "$*" >> "$LAUNCHER_TEST_CALLS"
+if [ "$2" = launch ]; then
+    "$LAUNCHER_TEST_PYTHON" -c 'import json, os, pathlib; pathlib.Path(os.environ["LAUNCHER_TEST_ENVIRONMENT"]).write_text(json.dumps({k: v for k, v in os.environ.items() if k.startswith("SIMCTL_CHILD_RIJI_")}))'
+fi
 case "$2" in create) echo synthetic-device ;; esac
 ''',
     }
@@ -63,7 +67,10 @@ case "$2" in create) echo synthetic-device ;; esac
                        LAUNCHER_TEST_DEVELOPER=str(developer),
                        LAUNCHER_TEST_APPLICATION=str(application),
                        LAUNCHER_TEST_CALLS=str(calls), LAUNCHER_TEST_FIXTURES=str(fixture),
-                       LAUNCHER_TEST_PYTHON=sys.executable)
+                       LAUNCHER_TEST_PYTHON=sys.executable,
+                       LAUNCHER_TEST_BUILD_EXIT="0" if build_success else "9",
+                       LAUNCHER_TEST_ENVIRONMENT=str(tmp_path / "launch.json"))
+    environment.update(inherited or {})
     # The system Python shim can require Xcode setup. These tests exercise only
     # synthetic discovery and must use their already-running Python interpreter.
     source = SCRIPT.read_text()
@@ -150,3 +157,39 @@ def test_no_compatible_type_stops_before_creating_device(tmp_path):
     assert result.returncode != 0
     assert "No compatible iPhone Simulator device type" in result.stderr
     assert calls == []
+
+
+@pytest.mark.parametrize("mode,namespace,mobile", [
+    ("--sample", "743D25D2-4E3E-4B8B-A8DC-70D8A4A59B12", ""),
+    ("--memory-overview", "49D7B824-A7B7-4F53-A612-7A983264523E", "overview"),
+    ("--roundtable", "6938B15E-4F63-4E93-B1E7-2C08587939D4", "roundtable"),
+    ("--normal", "", ""),
+])
+def test_launch_modes_isolate_data_and_clear_inherited_fixture_flags(tmp_path, mode, namespace, mobile):
+    device = {"name": "Riji Development iPhone", "state": "Booted", "udid": "kept-device", "isAvailable": True}
+    inherited = {"SIMCTL_CHILD_RIJI_TEST_CONTAINER": "wrong-namespace",
+                 "SIMCTL_CHILD_RIJI_TEST_MOBILE": "refused",
+                 "SIMCTL_CHILD_RIJI_TEST_DATE": "2000-01-01T00:00:00Z",
+                 "SIMCTL_CHILD_RIJI_SAMPLE_MODE": "1",
+                 "SIMCTL_CHILD_RIJI_TEST_CLOUD_CONFLICT": "1",
+                 "SIMCTL_CHILD_RIJI_TEST_FUTURE_FLAG": "1"}
+    result, calls = run_launcher(tmp_path, devices=[device], args=(mode,),
+                                 build_success=True, inherited=inherited)
+    assert result.returncode == 0, result.stderr
+    actual = json.loads((tmp_path / "launch.json").read_text())
+    assert actual["SIMCTL_CHILD_RIJI_TEST_CONTAINER"] == namespace
+    assert actual["SIMCTL_CHILD_RIJI_TEST_MOBILE"] == mobile
+    assert actual["SIMCTL_CHILD_RIJI_SAMPLE_MODE"] == ("" if mode == "--normal" else "1")
+    assert actual["SIMCTL_CHILD_RIJI_TEST_DATE"] == ""
+    assert "SIMCTL_CHILD_RIJI_TEST_CLOUD_CONFLICT" not in actual
+    assert "SIMCTL_CHILD_RIJI_TEST_FUTURE_FLAG" not in actual
+    assert calls[-1] == "simctl launch --terminate-running-process kept-device com.riji.local"
+    assert sum(call.startswith("simctl install kept-device ") for call in calls) == 1
+    assert not any(token in call for call in calls for token in ("erase", "uninstall", "simctl create", "kill"))
+
+
+def test_feature_shortcuts_select_their_explicit_mode():
+    for name, mode in (("Memory", "--memory-overview"), ("Roundtable", "--roundtable")):
+        shortcut = SCRIPT.parents[1] / f"Run Riji {name} Demo.command"
+        assert os.access(shortcut, os.X_OK)
+        assert f"exec './Run Riji Simulator.command' {mode}" in shortcut.read_text()

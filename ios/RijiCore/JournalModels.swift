@@ -2,11 +2,14 @@ import Foundation
 import CryptoKit
 
 public enum JournalError: Error, LocalizedError, Equatable {
+    case protectedMetadata, mitBodyChanged
     case invalidDay, invalidTemplate, invalidMarkdown, missingSection, ambiguousSection
     case changedSource, operationMismatch, pendingOperation, storage, noDiary, invalidDefinition, scanLimit
 
     public var errorDescription: String? {
         switch self {
+        case .mitBodyChanged: return "MIT 正文已手动修改，与原确认记录不同。请先预览并确认新的计划，再记录实际反馈。原计划与正文均保留。"
+        case .protectedMetadata: return "文档属性与来源标记需要保留。请在正文中编辑；双方版本均已保留。"
         case .scanLimit: return "文件超过本次本地扫描的大小上限。原文件保持不变，请缩小资料范围。"
         case .invalidDefinition: return "请补齐定义、完成标准或实际反馈；测量值需要注明来源和截止时间。输入已保留。"
         case .invalidDay: return "日期无效，请重新选择日期。"
@@ -78,6 +81,7 @@ public struct JournalDraft: Codable, Equatable, Sendable {
     public let sourceHash: String?
     public let effectiveTemplate: String
     public let templateHash: String
+    public var voiceInsertions: [VoiceInsertionStamp]?
 
     public init(day: JournalDay, section: String, text: String = "", sourceHash: String?,
                 effectiveTemplate: String) {
@@ -92,7 +96,7 @@ public struct JournalDraft: Codable, Equatable, Sendable {
 
     public static func == (lhs: JournalDraft, rhs: JournalDraft) -> Bool {
         lhs.operationID == rhs.operationID && lhs.day == rhs.day && lhs.sourceHash == rhs.sourceHash &&
-            lhs.templateHash == rhs.templateHash && lhs.text.utf8.elementsEqual(rhs.text.utf8) &&
+            lhs.voiceInsertions == rhs.voiceInsertions && lhs.templateHash == rhs.templateHash && lhs.text.utf8.elementsEqual(rhs.text.utf8) &&
             lhs.section.utf8.elementsEqual(rhs.section.utf8) &&
             lhs.effectiveTemplate.utf8.elementsEqual(rhs.effectiveTemplate.utf8)
     }
@@ -100,8 +104,10 @@ public struct JournalDraft: Codable, Equatable, Sendable {
     /// Editing creates a new candidate operation; an unchanged retry keeps its identity.
     public func updating(text: String, section: String) -> JournalDraft {
         guard !self.text.utf8.elementsEqual(text.utf8) || !self.section.utf8.elementsEqual(section.utf8) else { return self }
-        return JournalDraft(day: day, section: section, text: text, sourceHash: sourceHash,
-                            effectiveTemplate: effectiveTemplate)
+        var updated = JournalDraft(day: day, section: section, text: text, sourceHash: sourceHash,
+                                   effectiveTemplate: effectiveTemplate)
+        updated.voiceInsertions = voiceInsertions
+        return updated
     }
 }
 
@@ -110,6 +116,7 @@ public struct JournalReceipt: Codable, Equatable, Sendable {
     public let payloadHash: String
     public let day: JournalDay
     public let afterHash: String
+    public var voiceInsertions: [VoiceInsertionStamp]?
 }
 
 struct JournalTransaction: Codable, Sendable {
@@ -126,6 +133,8 @@ public struct JournalSnapshot: Sendable {
     public let sourceHash: String?
     public let draft: JournalDraft?
     public let isPending: Bool
+    public var cloudConflict: CloudReview? = nil
+    public var cloudHoldFailed = false
     public var isSaved: Bool { sourceHash != nil }
 }
 

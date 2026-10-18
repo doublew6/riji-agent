@@ -9,9 +9,10 @@ import threading
 from typing import Callable
 
 from riji_agent.mentors.local_channel import LocalChannel
-from riji_agent.mentors.models import Application, ChatBinding, Command, Conversation, Delivery, MentorError, Principal, Source
+from riji_agent.mentors.models import Application, ChatBinding, Command, Conversation, Delivery, MentorError, Principal, Source, RoomSnapshot
 from riji_agent.mentors.store import key
 from riji_agent.mobile.memory import MobileMemory
+from riji_agent.mobile.overview import MobileOverview
 from riji_agent.mobile.store import MobileError, MobileStore
 
 MENTORS = {"gentle_reviewer": "温柔回顾者", "blunt_coach": "直率教练",
@@ -62,6 +63,27 @@ class MobileChannel(LocalChannel):
         super().__init__(runtime.store)
         self.runtime = runtime
 
+    def create_room(self, principal, applications, operation_id):
+        snapshot = self.prepare_room(principal, applications, operation_id)
+        with self.store.transaction() as db:
+            self.store.put(db, "mobile_room", snapshot, operation_id, snapshot.room_id)
+        return snapshot.room_id
+
+    @staticmethod
+    def prepare_room(principal, applications, operation_id) -> RoomSnapshot:
+        return RoomSnapshot(room_id="mobile-" + operation_id, human_subjects=(principal.account.subject,),
+            application_ids=applications, private=True, complete=True, management_restricted=True,
+            history_restricted=True, configuration_version=operation_id)
+
+    def inspect_room(self, room_id):
+        conversation = self.store.read("conversation", room_id.removeprefix("mobile-"), Conversation)
+        if conversation is not None:
+            self.runtime.service.policy.check_device(conversation)
+        snapshot = self.store.read("mobile_room", room_id, RoomSnapshot)
+        if snapshot is None:
+            raise MentorError("mobile_room_unavailable")
+        return snapshot
+
     def send(self, delivery, text):
         conversation = self.store.read("conversation", delivery.conversation_id, Conversation)
         if conversation is None:
@@ -74,6 +96,9 @@ class MobileService:
     def __init__(self, store: MobileStore, runtime, memory_service) -> None:
         self.store, self.runtime = store, runtime
         self.memory = MobileMemory(memory_service)
+        self.overview = MobileOverview(self.memory)
+        from riji_agent.mobile.roundtables import MobileRoundtables
+        self.roundtables = MobileRoundtables(self)
         self.lock = threading.RLock()
         self.store.recover()
         self.runtime.service.policy.device_guard = self.check_conversation
@@ -109,15 +134,23 @@ class MobileService:
         return {"api_version": 1, "device": {"id": device["id"], "name": device["name"]},
                 "capabilities": {"mentors": True, "memory": self.memory.service is not None,
                                  "privacy": self.memory._engine(owner, required=False) is not None,
-                                 "roundtable": False, "workflows": False, "diary_upload": False},
-                "mentors": [{"id": identifier, "name": name} for identifier, name in MENTORS.items()]}
+                                 "memory_overview": self.memory.service is not None,
+                                 "roundtable": True, "group_chat": True, "workflows": False, "diary_upload": False},
+                "mentors": [{"id": identifier, "name": name, "last_reply_id": self._mentor_last_reply(device, identifier)}
+                            for identifier, name in MENTORS.items()]}
+
+    def _mentor_last_reply(self, device: dict, persona: str) -> str:
+        from riji_agent.mobile.replies import last_reply_id
+        binding = self._binding(device, persona)
+        identifier = self.runtime.identity.current_conversation(binding, persona) if binding else None
+        return last_reply_id(self.runtime.store, identifier, binding.external_chat_id) if identifier else ''
 
     def operate(self, device: dict, kind: str, body: dict, effect: Callable[[], dict]) -> dict:
         with self.lock:
             self.principal(device)
             created, receipt = self.store.begin(device["id"], body["operation_id"], kind, body)
             if not created:
-                return receipt
+                return self.operation_receipt(device, body["operation_id"])
             try:
                 result = effect()
             except MobileError as exc:
@@ -126,6 +159,13 @@ class MobileService:
                 # Services can fail after a durable side effect. Never infer rollback.
                 return self.store.finish(device["id"], body["operation_id"], "unknown", error="operation_outcome_unknown")
             return self.store.finish(device["id"], body["operation_id"], "completed", result=result)
+
+    def operation_receipt(self, device: dict, operation: str) -> dict:
+        from riji_agent.mobile.group_chats import recover_group_creation
+        with self.lock:
+            self.principal(device)
+            receipt = self.store.receipt(device['id'], operation)
+            return recover_group_creation(self.roundtables, device, operation, receipt)
 
     def _binding(self, device: dict, persona: str, *, create: bool = False) -> ChatBinding | None:
         self._persona(persona)
@@ -160,8 +200,17 @@ class MobileService:
             principal = self.principal(device)
             app = self.runtime.store.read("application", binding.application_id, Application)
             if (principal.id != conversation.owner_id or app is None or app.platform != "mobile"
-                    or conversation.kind != "private" or conversation.personas != (app.persona_id,)
                     or self.store.binding(device["id"], app.persona_id) != binding.id):
+                raise MobileError("mobile_binding_unavailable")
+            if conversation.kind == "roundtable":
+                valid_members = (2 <= len(set(conversation.personas)) == len(conversation.personas) <= 4
+                                 and set(conversation.personas).issubset(MENTORS))
+                if (app.role != "host" or app.persona_id != "host"
+                        or conversation.source_scope != "mobile_selected"
+                        or (not valid_members if conversation.chat_kind == "group"
+                            else conversation.personas != tuple(MENTORS))):
+                    raise MobileError("mobile_binding_unavailable")
+            elif conversation.personas != (app.persona_id,):
                 raise MobileError("mobile_binding_unavailable")
         except MobileError:
             raise MentorError("mobile_device_unavailable") from None
@@ -208,7 +257,7 @@ class MobileService:
         identifier = self.runtime.identity.current_conversation(binding, persona) if binding else None
         if identifier is None:
             return history_page({"conversation_id": None, "status": "empty", "revision": 0,
-                                 "messages": [], "notice": None}, (device["id"], persona), cursor)
+                                 "messages": [], "notice": None, "last_reply_id": ''}, (device["id"], persona), cursor)
         view = self.runtime.history.read(identifier, device["principal"])
         self.check_conversation(self.runtime.service.get(identifier, device["principal"]), binding)
         sent = {item.artifact_id for item in self.runtime.store.list("delivery", identifier, Delivery)
@@ -229,7 +278,7 @@ class MobileService:
                              "unavailable": item.get("unavailable")})
         return history_page({"conversation_id": identifier, "status": view["conversation"]["status"],
                              "revision": view["conversation"]["input_revision"], "messages": messages,
-                             "notice": view["notice"]}, (device["id"], persona), cursor)
+                             "notice": view["notice"], "last_reply_id": self._mentor_last_reply(device, persona)}, (device["id"], persona), cursor)
 
     def revoke(self, device: dict) -> dict:
         self.store.revoke(device["id"])

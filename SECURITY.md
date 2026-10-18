@@ -46,23 +46,37 @@ synthetic regression tests; do not use real journals as test fixtures.
 
 ## Release Checklist
 
-Run these checks before making the repository public or tagging a release:
+Run these checks on the exact publication candidate before tagging a release.
+The working-file audit includes non-ignored new files; a tracked-only scan does
+not cover them. Create an ignored local report directory first.
 
 ```bash
 git status --short
-python scripts/privacy_scan.py --tracked
-git log --all --name-only --pretty=format: | sort -u | rg '(^|/)(\\.env|.*\\.sqlite3|riji/|journals/|data/|.*\\.db$|.*\\.pem$|.*key.*|.*secret.*)' | rg -v '(^\\.env\\.example$|^examples/sample-vault/)' || true
-git ls-files | rg '(__pycache__|\\.pyc$|\\.env$|\\.sqlite3$|^data/|^riji/|^journals/|\\.png$|\\.jpg$|\\.jpeg$)' | rg -v '^examples/sample-vault/' || true
+mkdir -p output/publication-audit
+python scripts/privacy_scan.py --all-files --report output/publication-audit/working.json
+python scripts/privacy_scan.py --history --head HEAD --report output/publication-audit/history.json
+python scripts/privacy_scan.py --staged
 uv run pytest
 ```
 
 Expected results:
 
-- only intentional source files are modified;
+- only reviewed files are staged for publication;
 - no `.env`, SQLite, real vault, audit log, pycache, or personal image is
   tracked;
-- `python scripts/privacy_scan.py --tracked` reports no private paths, secrets,
-  local database files, or real incident details;
+- the reports have no unresolved text findings; review images, binary files,
+  size-limit entries and commit identities separately, recording the reviewed
+  hashes (exit status 2 can mean manual review is required);
+- each public branch and tag is checked at a frozen commit when auditing existing
+  publication history; `HEAD` alone does not cover other branches;
+- public image hashes match the reviewed [asset inventory](assets/PUBLICATION.md);
+- public iOS binaries are built from a clean source export without the optional
+  personal portrait overlay, then their compiled resource catalog is inspected;
 - `PRIVATE_DEMO_SENTINEL` appears only in the fictional private demo note and
   tests that prove it does not leave the demo;
 - all tests pass.
+
+Keep raw audit inputs and private backups in ignored local storage. They may
+contain the very data being removed. A clean source scan is neither permission
+to publish those backups nor proof that a binary built in a personal working
+directory excludes ignored resources.

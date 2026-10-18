@@ -20,6 +20,7 @@ extension LocalJournalStore {
     }
 
     public func saveNorthStar(_ goal: NorthStarDefinition) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         let hash = try workflowHash(goal)
         if try retryWorkflow(id: goal.id, payloadHash: hash) { return }
         let required = [goal.name, goal.definition, goal.unit, goal.target, goal.period, goal.stage]
@@ -51,6 +52,34 @@ extension LocalJournalStore {
         return current.first
     }
 
+    /// Provenance remains immutable; only the current plan's rendered block is compared.
+    /// No structured fields are inferred from manually edited prose.
+    public func currentMITMatchesBody(_ day: JournalDay) throws -> Bool {
+        guard let current = try currentMIT(day) else { return true }
+        return try !mitBodyMismatches(day).contains(current.id)
+    }
+
+    public func mitBodyMismatches(_ day: JournalDay) throws -> Set<UUID> {
+        guard let data = try files.read(workflowURL(.daily(day))) else { return [] }
+        var preceding = Data()
+        var mismatches = Set<UUID>()
+        for raw in String(decoding: data, as: UTF8.self).components(separatedBy: "\n") {
+            let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : raw
+            if line.hasPrefix("<!-- riji-record:mit:"), line.hasSuffix(" -->") {
+                let events: [MITEvent] = try records(Data(line.utf8), type: "mit")
+                if let event = events.first {
+                    let expected = Data((renderMIT(event).replacingOccurrences(of: "\r\n", with: "\n") + "\n").utf8)
+                    let start = preceding.count - expected.count
+                    if start < 0 || preceding.suffix(expected.count) != expected || (start > 0 && preceding[start - 1] != 10) {
+                        mismatches.insert(event.id)
+                    }
+                }
+            }
+            preceding.append(contentsOf: line.utf8); preceding.append(10)
+        }
+        return mismatches
+    }
+
     public func prepareMIT(_ event: MITEvent, section: String) throws -> MITDraft {
         let snapshot = try open(event.day)
         return MITDraft(event: event, section: section, sourceHash: snapshot.sourceHash,
@@ -58,10 +87,12 @@ extension LocalJournalStore {
     }
 
     public func commitMIT(_ draft: MITDraft) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         let event = draft.event; let hash = try workflowHash(draft)
         if try retryWorkflow(id: event.id, payloadHash: hash) { return }
         let current = try currentMIT(event.day)
         if let feedback = event.feedbackFor {
+            guard try currentMITMatchesBody(event.day) else { throw JournalError.mitBodyChanged }
             guard feedback == current?.id, event.status != nil, !event.result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw JournalError.invalidDefinition }
         } else {
             guard event.replaces == current?.id else { throw JournalError.changedSource }
@@ -75,15 +106,17 @@ extension LocalJournalStore {
         guard userValues.allSatisfy({ $0.utf8.count <= 16_000 && !$0.contains("<!-- riji-record:") }) else { throw JournalError.invalidDefinition }
         let before = try files.read(workflowURL(.daily(event.day)))
         guard before.map(SourceHash.digest) == draft.sourceHash else { throw JournalError.changedSource }
-        let content: String
-        if event.feedbackFor != nil {
-            content = "**MIT 实际反馈 · \(event.day.value) · \(event.status!.rawValue)**\n\(event.result)\n计划版本：\(event.feedbackFor!.uuidString)"
-        } else {
-            content = "**\(event.replaces == nil ? "确认 MIT" : "更换 MIT（保留旧计划）") · \(event.day.value)**\n行动：\(event.action)\n完成标准：\(event.criterion)\n原因：\(event.rationale.isEmpty ? "手动计划" : event.rationale)\n建议投入：\(event.effort.isEmpty ? "尚未填写" : event.effort)\n北极星版本：\(event.goalID?.uuidString ?? "未关联，手动计划")\n计划版本：\(event.id.uuidString)"
-        }
+        let content = renderMIT(event)
         let after = try MarkdownSectionAppender.append(text: content + "\n" + record(event, type: "mit"), to: draft.section,
                                                       in: before ?? Data(draft.effectiveTemplate.utf8))
         try commitWorkflow(id: event.id, payloadHash: hash, target: .daily(event.day), beforeHash: draft.sourceHash, after: after)
+    }
+
+    private func renderMIT(_ event: MITEvent) -> String {
+        if let feedback = event.feedbackFor {
+            return "**MIT 实际反馈 · \(event.day.value) · \(event.status?.rawValue ?? "")**\n\(event.result)\n计划版本：\(feedback.uuidString)"
+        }
+        return "**\(event.replaces == nil ? "确认 MIT" : "更换 MIT（保留旧计划）") · \(event.day.value)**\n行动：\(event.action)\n完成标准：\(event.criterion)\n原因：\(event.rationale.isEmpty ? "手动计划" : event.rationale)\n建议投入：\(event.effort.isEmpty ? "尚未填写" : event.effort)\n北极星版本：\(event.goalID?.uuidString ?? "未关联，手动计划")\n计划版本：\(event.id.uuidString)"
     }
 
     public func periodSources(_ period: ReviewPeriod) throws -> (sources: [ReviewSource], missing: [JournalDay]) {
@@ -131,6 +164,7 @@ extension LocalJournalStore {
     }
 
     public func commitReview(_ draft: ReviewDraft) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         let hash = try workflowHash(draft)
         if try retryWorkflow(id: draft.operationID, payloadHash: hash) {
             try cleanupReview(draft); return

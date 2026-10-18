@@ -5,12 +5,16 @@ mode="${1:-normal}"
 case "$mode" in
     normal|--normal) mode=normal ;;
     --sample) mode=sample ;;
-    *) echo "Usage: scripts/run_ios_simulator.sh [--normal|--sample]" >&2; exit 2 ;;
+    --memory-overview) mode=memory-overview ;;
+    --roundtable) mode=roundtable ;;
+    *) echo "Usage: scripts/run_ios_simulator.sh [--normal|--sample|--memory-overview|--roundtable]" >&2; exit 2 ;;
 esac
 if [ "$#" -gt 1 ]; then echo "Unexpected arguments." >&2; exit 2; fi
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 simulator_name='Riji Development iPhone'
 sample_namespace='743D25D2-4E3E-4B8B-A8DC-70D8A4A59B12'
+memory_namespace='49D7B824-A7B7-4F53-A612-7A983264523E'
+roundtable_namespace='6938B15E-4F63-4E93-B1E7-2C08587939D4'
 bundle_id='com.riji.local'
 derived_directory="${TMPDIR:-/tmp}/riji-ios-manual-derived"
 if ! developer_directory="$(xcode-select -p 2>/dev/null)"; then
@@ -99,22 +103,41 @@ fi
 xcrun simctl bootstatus "$simulator_id" -b
 mkdir -p "$derived_directory"
 echo "Building Riji for $simulator_name. Existing app records are preserved."
+# Xcode must embed simulator entitlements for the normal app's Keychain access.
 if ! xcodebuild -project "$project_root/ios/Riji.xcodeproj" -scheme Riji -configuration Debug \
     -destination "platform=iOS Simulator,id=$simulator_id" -derivedDataPath "$derived_directory" \
-    CODE_SIGNING_ALLOWED=NO build > "$derived_directory/manual-build.log" 2>&1; then
+    CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build > "$derived_directory/manual-build.log" 2>&1; then
     tail -60 "$derived_directory/manual-build.log" >&2
     echo "Build failed. The existing app and its data were not replaced." >&2
     exit 1
 fi
 xcrun simctl install "$simulator_id" "$derived_directory/Build/Products/Debug-iphonesimulator/Riji.app"
 # Restart only this app to select the requested namespace; never reset/uninstall/erase.
+# Discard inherited fixture settings, including flags introduced by later tests.
+while IFS= read -r variable; do
+    case "$variable" in
+        SIMCTL_CHILD_RIJI_TEST_*|SIMCTL_CHILD_RIJI_SAMPLE_MODE) unset "$variable" ;;
+    esac
+done < <(compgen -e)
+export SIMCTL_CHILD_RIJI_TEST_CONTAINER='' SIMCTL_CHILD_RIJI_TEST_DATE='' SIMCTL_CHILD_RIJI_TEST_MOBILE=''
+export SIMCTL_CHILD_RIJI_SAMPLE_MODE=''
+case "$mode" in
+    sample) export SIMCTL_CHILD_RIJI_TEST_CONTAINER="$sample_namespace" SIMCTL_CHILD_RIJI_SAMPLE_MODE=1 ;;
+    memory-overview)
+        export SIMCTL_CHILD_RIJI_TEST_CONTAINER="$memory_namespace" SIMCTL_CHILD_RIJI_SAMPLE_MODE=1
+        export SIMCTL_CHILD_RIJI_TEST_MOBILE=overview ;;
+    roundtable)
+        export SIMCTL_CHILD_RIJI_TEST_CONTAINER="$roundtable_namespace" SIMCTL_CHILD_RIJI_SAMPLE_MODE=1
+        export SIMCTL_CHILD_RIJI_TEST_MOBILE=roundtable ;;
+esac
+xcrun simctl launch --terminate-running-process "$simulator_id" "$bundle_id"
+case "$mode" in
+    normal) echo "Normal mode: local diary records are preserved; all inherited fixture flags are cleared." ;;
+    sample) echo "SAMPLE mode: synthetic-only stable namespace UITests-$sample_namespace. Repeated sample launches reuse its records." ;;
+    memory-overview) echo "MEMORY OVERVIEW demo: open the Memory tab. Synthetic service only; no Air connection or real memory changes." ;;
+    roundtable) echo "ROUNDTABLE demo: open Mentors > Roundtable. Synthetic service only; no Air connection or real model calls." ;;
+esac
+echo "Riji is open. Feature demos and normal records use separate stable namespaces; no Simulator data was erased."
 if [ "$mode" = sample ]; then
-    SIMCTL_CHILD_RIJI_TEST_CONTAINER="$sample_namespace" SIMCTL_CHILD_RIJI_SAMPLE_MODE=1 \
-    SIMCTL_CHILD_RIJI_TEST_DATE='' xcrun simctl launch --terminate-running-process "$simulator_id" "$bundle_id"
-    echo "SAMPLE mode: synthetic-only stable namespace UITests-$sample_namespace. Repeated sample launches reuse its records."
-else
-    SIMCTL_CHILD_RIJI_TEST_CONTAINER='' SIMCTL_CHILD_RIJI_SAMPLE_MODE='' SIMCTL_CHILD_RIJI_TEST_DATE='' \
-    xcrun simctl launch --terminate-running-process "$simulator_id" "$bundle_id"
-    echo "Normal mode: local diary records are preserved."
+    echo "For sample import use Directory > Templates > Export synthetic sample to Files, then import that saved file."
 fi
-echo "Riji is open. For sample import use Directory > Templates > Export synthetic sample to Files, then import that saved file."

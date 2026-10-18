@@ -128,4 +128,4 @@ Executed on the development Mac, 2026-09-13:
 
 - `swift test --package-path ios --scratch-path /tmp/riji-ios-workflow-swift` -- all Core/State tests pass.
 - `xcodebuild -project ios/Riji.xcodeproj -scheme Riji -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/riji-ios-workflow-derived CODE_SIGNING_ALLOWED=NO build` -- successful Simulator build.
-- `xcodebuild -project ios/Riji.xcodeproj -scheme Riji -destination 'platform=iOS Simulator,id=9F8C8E6C-23E3-47F8-8298-A4937E8A325D' -derivedDataPath /tmp/riji-ios-workflow-derived CODE_SIGNING_ALLOWED=NO test` -- existing plus new UI tests run and pass. Use host permissions for Xcode/Simulator.
+- `xcodebuild -project ios/Riji.xcodeproj -scheme Riji -destination 'platform=iOS Simulator,id=<SIMULATOR_UDID>' -derivedDataPath /tmp/riji-ios-workflow-derived CODE_SIGNING_ALLOWED=NO test` -- existing plus new UI tests run and pass. Use host permissions for Xcode/Simulator.

@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UIKit
 
 @main
 struct RijiApp: App {
@@ -12,19 +13,39 @@ struct RijiApp: App {
         if let value = ProcessInfo.processInfo.environment["RIJI_TEST_DATE"],
            let date = ISO8601DateFormatter().date(from: value) { clock = { date } }
         #endif
-        _model = StateObject(wrappedValue: DiaryViewModel(now: clock))
+        var original = true
+        #if DEBUG
+        // Existing isolated regression fixtures explicitly exercise old sandbox diaries.
+        if ProcessInfo.processInfo.environment["RIJI_TEST_CONTAINER"].flatMap(UUID.init(uuidString:)) != nil {
+            original = ProcessInfo.processInfo.environment["RIJI_TEST_ORIGINAL_VAULT"] == "1"
+        }
+        #endif
+        _model = StateObject(wrappedValue: DiaryViewModel(now: clock, useOriginalCollection: original))
     }
 
     var body: some Scene {
         WindowGroup {
-            TodayDiaryView(model: model)
+            RijiNavigationView(model: model)
                 .task { model.observeDayChanges(); await model.start() }
-                .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in
+                .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
                     model.foregroundTick(isActive: scenePhase == .active)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { model.resume() }
+                    handleScenePhase(phase)
                 }
+        }
+    }
+
+    private func handleScenePhase(_ phase: ScenePhase) {
+        if phase == .active { model.resume(); return }
+        var background = UIBackgroundTaskIdentifier.invalid
+        background = UIApplication.shared.beginBackgroundTask(withName: "Preserve diary input") {
+            if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
+        }
+        let flush = model.scenePhaseChanged(phase, commitEditing: TodayDiaryView.commitVisibleInput)
+        Task { @MainActor in
+            await flush?.value
+            if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
         }
     }
 }

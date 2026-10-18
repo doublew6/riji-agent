@@ -2,6 +2,7 @@ import Foundation
 
 extension LocalJournalStore {
     func workflowURL(_ target: WorkflowTarget) throws -> URL {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         let root = journals.deletingLastPathComponent()
         switch target {
         case .daily(let day): return journals.appendingPathComponent("\(day.value).md")
@@ -44,7 +45,11 @@ extension LocalJournalStore {
     func commitWorkflow(id: UUID, payloadHash: String, target: WorkflowTarget, beforeHash: String?, after: Data) throws {
         if try retryWorkflow(id: id, payloadHash: payloadHash) { return }
         try assertNoWorkflowPending(target)
-        if case .daily(let day) = target, try open(day).isPending { throw JournalError.pendingOperation }
+        if case .daily(let day) = target {
+            try assertNoVoiceInsertion(day)
+            try assertNoBodyPending(day)
+            if try open(day).isPending || pendingTransaction(for: day) != nil { throw JournalError.pendingOperation }
+        }
         let url = try workflowURL(target)
         guard try files.read(url).map(SourceHash.digest) == beforeHash else { throw JournalError.changedSource }
         let transaction = WorkflowTransaction(id: id, payloadHash: payloadHash, target: target, beforeHash: beforeHash,
@@ -104,6 +109,7 @@ extension LocalJournalStore {
 
     /// Caller has already displayed raw preview. Import does not silently change the selection.
     public func importTemplate(_ version: TemplateVersion, operationID: UUID) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         let validated = try TemplateVersion(kind: version.kind, raw: version.raw)
         let target = WorkflowTarget.template(validated.kind, SourceHash.digest(validated.raw))
         let hash = try workflowHash(validated)
@@ -123,6 +129,7 @@ extension LocalJournalStore {
     }
 
     public func selectTemplate(_ version: TemplateVersion) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         guard try templates(version.kind).contains(where: { $0.id == version.id }) else { throw JournalError.invalidTemplate }
         try files.write(encoder.encode(version.id), to: state.appendingPathComponent("template-\(version.kind.rawValue).json"), purpose: .metadata)
     }
@@ -136,6 +143,7 @@ extension LocalJournalStore {
     }
 
     public func createBlankDay(_ draft: BlankDayDraft) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
         guard draft.template.kind == .daily else { throw JournalError.invalidTemplate }
         let hash = try workflowHash(draft)
         if try retryWorkflow(id: draft.operationID, payloadHash: hash) { return }

@@ -1,0 +1,561 @@
+{
+  "artifact": "visual-prd.html",
+  "source": {
+    "path": "prd.md",
+    "title": "导师长期聊天与话题圆桌 PRD",
+    "version": "0.2-discussion",
+    "date": "2026-10-15"
+  },
+  "status": "core-model-confirmed-details-for-discussion",
+  "implementation": "not-authorized",
+  "scope": "Offline low-fidelity visual discussion with synthetic in-memory demos; no application implementation, model calls, or persistence.",
+  "groups": [
+    {
+      "id": "g1",
+      "title": "看见谁，就找谁聊",
+      "screens": [
+        "s01",
+        "s02"
+      ]
+    },
+    {
+      "id": "g2",
+      "title": "两条路，都只需说清这件事",
+      "screens": [
+        "s03",
+        "s04",
+        "s05",
+        "s06"
+      ]
+    },
+    {
+      "id": "g3",
+      "title": "找人继续聊，找事继续开会",
+      "screens": [
+        "s07",
+        "s08"
+      ]
+    },
+    {
+      "id": "g4",
+      "title": "不顺利时，也知道发生了什么",
+      "screens": [
+        "s09",
+        "s10"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "s01",
+      "title": "导师首页",
+      "state": "尚未打开聊天",
+      "entry": "进入导师页",
+      "requirements": [
+        "C1",
+        "B2",
+        "FR-01",
+        "FR-02",
+        "FR-06",
+        "NFR-01",
+        "NFR-02"
+      ],
+      "actions": [
+        [
+          "点导师",
+          "s02"
+        ],
+        [
+          "发起圆桌",
+          "s04"
+        ],
+        [
+          "圆桌记录",
+          "s07"
+        ]
+      ]
+    },
+    {
+      "id": "s02",
+      "title": "任何话题，都在这里继续",
+      "state": "该导师原有聊天",
+      "entry": "点一位导师",
+      "requirements": [
+        "C1",
+        "B2",
+        "FR-02",
+        "FR-03",
+        "FR-04",
+        "FR-11",
+        "NFR-01"
+      ],
+      "actions": [
+        [
+          "发送演示",
+          "s02"
+        ],
+        [
+          "切换导师",
+          "s02"
+        ],
+        [
+          "请当前导师召集",
+          "s03"
+        ]
+      ]
+    },
+    {
+      "id": "s03",
+      "title": "让当前导师帮忙召集",
+      "state": "尚未开圆桌",
+      "entry": "与导师聊到具体问题",
+      "requirements": [
+        "C3",
+        "B1",
+        "FR-05",
+        "FR-09"
+      ],
+      "actions": [
+        [
+          "看看开场卡",
+          "s05"
+        ],
+        [
+          "返回原聊天",
+          "s02"
+        ]
+      ]
+    },
+    {
+      "id": "s04",
+      "title": "我直接发起",
+      "state": "说出想讨论的事",
+      "entry": "首页发起圆桌",
+      "requirements": [
+        "C2",
+        "C3",
+        "B1",
+        "FR-06"
+      ],
+      "actions": [
+        [
+          "帮我准备",
+          "s05"
+        ],
+        [
+          "返回",
+          "s01"
+        ]
+      ]
+    },
+    {
+      "id": "s05",
+      "title": "一张卡，核对后开始",
+      "state": "开场准备中",
+      "entry": "导师召集或直接发起",
+      "requirements": [
+        "C3",
+        "B1",
+        "FR-05",
+        "FR-06",
+        "FR-07",
+        "FR-09",
+        "FR-11",
+        "FR-13",
+        "NFR-01"
+      ],
+      "actions": [
+        [
+          "修改成员与背景",
+          "s05"
+        ],
+        [
+          "还原这张卡",
+          "s05"
+        ],
+        [
+          "开始圆桌演示",
+          "s06"
+        ],
+        [
+          "导师路径取消",
+          "s02"
+        ],
+        [
+          "直接路径取消",
+          "s04"
+        ]
+      ]
+    },
+    {
+      "id": "s06",
+      "title": "围绕这件事一起聊",
+      "state": "该场圆桌",
+      "entry": "开场卡开始或恢复旧圆桌",
+      "requirements": [
+        "C2",
+        "B3",
+        "FR-02",
+        "FR-04",
+        "FR-08",
+        "FR-09",
+        "FR-13",
+        "NFR-01"
+      ],
+      "actions": [
+        [
+          "圆桌记录",
+          "s07"
+        ],
+        [
+          "回原导师",
+          "s08"
+        ],
+        [
+          "直接发起后找导师",
+          "s01"
+        ],
+        [
+          "停止和异常示意",
+          "s09"
+        ]
+      ]
+    },
+    {
+      "id": "s07",
+      "title": "找回一场圆桌",
+      "state": "最近圆桌",
+      "entry": "首页或圆桌的记录入口",
+      "requirements": [
+        "C2",
+        "FR-10",
+        "FR-11"
+      ],
+      "actions": [
+        [
+          "搜索圆桌",
+          "s07"
+        ],
+        [
+          "继续同一圆桌",
+          "s06"
+        ],
+        [
+          "查看另一场",
+          "s06"
+        ],
+        [
+          "发起新圆桌",
+          "s04"
+        ],
+        [
+          "找导师",
+          "s01"
+        ],
+        [
+          "整理记录",
+          "s10"
+        ]
+      ]
+    },
+    {
+      "id": "s08",
+      "title": "回到导师，还在原来的聊天里",
+      "state": "s02返回状态",
+      "entry": "导师召集的圆桌返回原导师",
+      "requirements": [
+        "C1",
+        "FR-03",
+        "FR-09",
+        "FR-11"
+      ],
+      "actions": [
+        [
+          "继续原导师聊天",
+          "s02"
+        ],
+        [
+          "回访原圆桌",
+          "s06"
+        ]
+      ]
+    },
+    {
+      "id": "s09",
+      "title": "发送、停止与离线",
+      "state": "并列异常状态示意",
+      "entry": "发生发送未知、停止、离线、保存失败或未加载历史",
+      "requirements": [
+        "FR-07",
+        "FR-08",
+        "FR-11",
+        "FR-12",
+        "NFR-02"
+      ],
+      "actions": [
+        [
+          "回原导师输入",
+          "s02"
+        ],
+        [
+          "回原圆桌",
+          "s06"
+        ]
+      ]
+    },
+    {
+      "id": "s10",
+      "title": "记录、归档与留进日记",
+      "state": "并列整理动作示意",
+      "entry": "圆桌记录或选中讨论内容",
+      "requirements": [
+        "FR-14"
+      ],
+      "actions": [
+        [
+          "恢复后的圆桌列表",
+          "s07"
+        ]
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "C1",
+      "screens": [
+        "s01",
+        "s02",
+        "s08"
+      ],
+      "check": "每位导师唯一长期入口，换事情不创建私聊话题"
+    },
+    {
+      "id": "C2",
+      "screens": [
+        "s04",
+        "s06",
+        "s07"
+      ],
+      "check": "圆桌按具体事情独立保留"
+    },
+    {
+      "id": "C3",
+      "screens": [
+        "s03",
+        "s04",
+        "s05"
+      ],
+      "check": "导师召集与直接发起汇合到同一开场卡"
+    },
+    {
+      "id": "B1",
+      "screens": [
+        "s03",
+        "s04",
+        "s05"
+      ],
+      "check": "待讨论：系统先准备，一张卡核对后开始"
+    },
+    {
+      "id": "B2",
+      "screens": [
+        "s01",
+        "s02"
+      ],
+      "check": "待讨论：悬停只反馈，点击打开原聊天"
+    },
+    {
+      "id": "B3",
+      "screens": [
+        "s06"
+      ],
+      "check": "待讨论：中途加人看必要背景，下一轮生效"
+    },
+    {
+      "id": "FR-01",
+      "screens": [
+        "s01"
+      ],
+      "check": "清楚的人物占位与姓名；真实暖光留待视觉验收"
+    },
+    {
+      "id": "FR-02",
+      "screens": [
+        "s01",
+        "s02",
+        "s06"
+      ],
+      "check": "聚焦、当前导师、发言示意分别表达"
+    },
+    {
+      "id": "FR-03",
+      "screens": [
+        "s02",
+        "s08"
+      ],
+      "check": "不同话题在同一导师聊天继续"
+    },
+    {
+      "id": "FR-04",
+      "screens": [
+        "s02",
+        "s06"
+      ],
+      "check": "输入与返回可达；键盘时舞台收起为文字旁注，非键盘实测"
+    },
+    {
+      "id": "FR-05",
+      "screens": [
+        "s03",
+        "s05"
+      ],
+      "check": "从当前导师准备议题、背景、人选"
+    },
+    {
+      "id": "FR-06",
+      "screens": [
+        "s01",
+        "s04",
+        "s05"
+      ],
+      "check": "首页直接发起；已有指定人选可带入；两至四位"
+    },
+    {
+      "id": "FR-07",
+      "screens": [
+        "s05",
+        "s09"
+      ],
+      "check": "背景和成员可改；少于两位禁用开始；取消回原入口"
+    },
+    {
+      "id": "FR-08",
+      "screens": [
+        "s06",
+        "s09"
+      ],
+      "check": "独立圆桌与发言人；停止保留部分结果；B3 成员变更边界"
+    },
+    {
+      "id": "FR-09",
+      "screens": [
+        "s03",
+        "s05",
+        "s06",
+        "s08"
+      ],
+      "check": "导师召集后互达；直接发起不虚构原私聊；去重留待真实实现"
+    },
+    {
+      "id": "FR-10",
+      "screens": [
+        "s07"
+      ],
+      "check": "按事查找、续聊与新发起；同成员不同记录"
+    },
+    {
+      "id": "FR-11",
+      "screens": [
+        "s02",
+        "s05",
+        "s07",
+        "s08",
+        "s09"
+      ],
+      "check": "本页演示草稿按导师保留；真实持久化和阅读位置尚未实现或验证"
+    },
+    {
+      "id": "FR-12",
+      "screens": [
+        "s09"
+      ],
+      "check": "未知、停止、离线、保存失败分开；迟到回复归原处"
+    },
+    {
+      "id": "FR-13",
+      "screens": [
+        "s05",
+        "s06"
+      ],
+      "check": "卡上背景等于所示范围；来源与 AI 建议有区分"
+    },
+    {
+      "id": "FR-14",
+      "screens": [
+        "s10"
+      ],
+      "check": "圆桌整理与日记写入分开；导师入口常驻"
+    },
+    {
+      "id": "NFR-01",
+      "screens": [
+        "s01",
+        "s02",
+        "s05",
+        "s06"
+      ],
+      "check": "原生按钮/标签/状态；触屏与大字号须后续真实设备验收"
+    },
+    {
+      "id": "NFR-02",
+      "screens": [
+        "s01",
+        "s09"
+      ],
+      "check": "本地即时反馈；减少动态效果；未加载与无记录区分"
+    }
+  ],
+  "local_interactions": [
+    "Mentor switching retains separate synthetic chat histories and drafts in page memory",
+    "Two roundtable preparation routes",
+    "Editable meeting title/background and 0–4 direct-route member selection; fewer than 2 disables start",
+    "Original convening mentor remains a participant",
+    "Start opens a local meeting view, and cancel returns to the origin",
+    "Two separate roundtable records, local title search and return links",
+    "Default meeting card previews all content; Adjust opens inline editing and Done collapses it"
+  ],
+  "limits": [
+    "All input disappears on refresh",
+    "No model or service integration",
+    "No persistent drafts, real recovery, or duplicate-request validation",
+    "Keyboard collapse, VoiceOver, dynamic type, warm portraits and device interaction are requirements, not validated implementations",
+    "Archived and journal actions are static states; existing journal confirmation flow is referenced"
+  ],
+  "validation": {
+    "static": {
+      "status": "passed",
+      "date": "2026-10-15",
+      "screens": 10,
+      "requirements": 22,
+      "unique_html_ids": 59,
+      "valid_fragment_targets": 48,
+      "input_labels": 5,
+      "external_resource_dependencies": 0,
+      "network_or_persistent_storage_apis": 0,
+      "javascript_syntax": "Node --check passed",
+      "logical_interactions": {
+        "status": "passed",
+        "checks": 11,
+        "method": "Node VM with lightweight synthetic DOM; no browser, layout, accessibility, or real-service validation",
+        "covered": [
+          "Default card previews full proposed content before editing",
+          "Separate mentor drafts and local messages",
+          "Mentor route keeps convener as participant",
+          "Under-two member state disables Start including zero on direct route",
+          "Preview updates and reset",
+          "Cancellation returns original mentor or direct question",
+          "Direct route retains explicitly named participants",
+          "Start uses edited content",
+          "Distinct roundtable records",
+          "Return to exact convening mentor"
+        ]
+      }
+    },
+    "browser": {
+      "status": "not-run",
+      "date": "2026-10-15",
+      "reason": "The available browser tool rejected file:// preview access under its protocol policy. No alternate browser or indirect path was used. v0.1 screenshots are not v0.2 validation."
+    },
+    "artifact_sha256": "306c42407e306e7e312f780fd7192df5a5393b5d74ba5df3fa572ce35a201769"
+  }
+}
