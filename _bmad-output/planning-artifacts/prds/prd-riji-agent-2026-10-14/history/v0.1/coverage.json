@@ -1,0 +1,630 @@
+{
+  "artifact": "visual-prd.html",
+  "source": {
+    "path": "prd.md",
+    "title": "导师自然交互与话题连续性",
+    "version": "0.1-discussion",
+    "date": "2026-10-14"
+  },
+  "status": "discussion-not-approved",
+  "implementation": "not-authorized",
+  "scope": "Low-fidelity interaction wireframes with two local selection illustrations; not an application implementation or full prototype.",
+  "groups": [
+    {
+      "id": "g1",
+      "title": "先和一个人聊",
+      "screens": [
+        "s01",
+        "s02",
+        "s03"
+      ]
+    },
+    {
+      "id": "g2",
+      "title": "再邀请一个角度",
+      "screens": [
+        "s04",
+        "s05",
+        "s06"
+      ]
+    },
+    {
+      "id": "g3",
+      "title": "换话题，不丢掉上一次",
+      "screens": [
+        "s07",
+        "s08",
+        "s09"
+      ]
+    },
+    {
+      "id": "g4",
+      "title": "不顺利时，也能继续",
+      "screens": [
+        "s10",
+        "s11",
+        "s12"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "s01",
+      "title": "看见谁，就可以找谁聊",
+      "state": "尚未开始",
+      "entry": "进入导师页",
+      "requirements": [
+        "FR-01",
+        "FR-02",
+        "FR-03",
+        "A2"
+      ],
+      "actions": [
+        [
+          "点导师",
+          "s02"
+        ],
+        [
+          "打开话题",
+          "s07"
+        ]
+      ]
+    },
+    {
+      "id": "s02",
+      "title": "点选之后，发送之前",
+      "state": "选中一位 · 未发送",
+      "entry": "在 01 点“未来的我”",
+      "requirements": [
+        "FR-02",
+        "FR-03",
+        "FR-09",
+        "FR-11",
+        "A2"
+      ],
+      "actions": [
+        [
+          "发送（示意）",
+          "s03"
+        ],
+        [
+          "取消未发新话题",
+          "s01"
+        ]
+      ]
+    },
+    {
+      "id": "s03",
+      "title": "输入时，让对话占主位",
+      "state": "键盘展开 · 单人交流",
+      "entry": "02 首次发送后继续输入",
+      "requirements": [
+        "FR-04",
+        "FR-05",
+        "NFR-01"
+      ],
+      "actions": [
+        [
+          "邀请更多导师",
+          "s04"
+        ],
+        [
+          "切换话题",
+          "s07"
+        ]
+      ]
+    },
+    {
+      "id": "s04",
+      "title": "想多听一个人，就点加号",
+      "state": "准备多人交流 · 未发送",
+      "entry": "在单人对话点邀请",
+      "requirements": [
+        "FR-05",
+        "FR-07",
+        "FR-08",
+        "A3",
+        "A5"
+      ],
+      "actions": [
+        [
+          "加减成员",
+          "s04"
+        ],
+        [
+          "核对范围",
+          "s05"
+        ],
+        [
+          "回到私聊",
+          "s08"
+        ]
+      ]
+    },
+    {
+      "id": "s05",
+      "title": "谁收到什么，发送前看清",
+      "state": "新的两人交流段",
+      "entry": "04 选“未来的我＋直率教练”",
+      "requirements": [
+        "FR-06",
+        "FR-07",
+        "FR-08",
+        "A4",
+        "A5"
+      ],
+      "actions": [
+        [
+          "更改成员",
+          "s04"
+        ],
+        [
+          "核对历史范围",
+          "s09"
+        ],
+        [
+          "发送（示意）",
+          "s06"
+        ]
+      ]
+    },
+    {
+      "id": "s06",
+      "title": "正在说话的人，不被新选择替换",
+      "state": "本次生成中 · 准备下一次",
+      "entry": "05 发起两人讨论",
+      "requirements": [
+        "FR-05",
+        "FR-06",
+        "FR-08",
+        "FR-12"
+      ],
+      "actions": [
+        [
+          "停止并保留部分结果",
+          "s10"
+        ],
+        [
+          "切换话题",
+          "s07"
+        ],
+        [
+          "调整下一次对象",
+          "s04"
+        ]
+      ]
+    },
+    {
+      "id": "s07",
+      "title": "话题，就是你正在想的事",
+      "state": "最近话题列表",
+      "entry": "任一对话顶部点话题",
+      "requirements": [
+        "FR-09",
+        "FR-10",
+        "FR-11",
+        "FR-12",
+        "FR-13",
+        "A1"
+      ],
+      "actions": [
+        [
+          "恢复本周安排",
+          "s08"
+        ],
+        [
+          "新话题",
+          "s02"
+        ],
+        [
+          "已归档",
+          "s12"
+        ],
+        [
+          "旧记录",
+          "s09"
+        ]
+      ]
+    },
+    {
+      "id": "s08",
+      "title": "回来时，接上原来的位置",
+      "state": "恢复话题与该段草稿",
+      "entry": "选择本周安排或重启后返回",
+      "requirements": [
+        "FR-08",
+        "FR-09",
+        "FR-10",
+        "FR-11",
+        "A1"
+      ],
+      "actions": [
+        [
+          "查看新回复或完整时间线",
+          "s09"
+        ],
+        [
+          "显式带入草稿",
+          "s05"
+        ],
+        [
+          "话题列表",
+          "s07"
+        ],
+        [
+          "整理话题",
+          "s12"
+        ]
+      ]
+    },
+    {
+      "id": "s09",
+      "title": "我能回看全程，导师各看获准部分",
+      "state": "同一话题 · 不同交流段",
+      "entry": "08 展开时间线",
+      "requirements": [
+        "FR-07",
+        "FR-08",
+        "FR-11",
+        "FR-14",
+        "A1",
+        "A5"
+      ],
+      "actions": [
+        [
+          "返回当前段",
+          "s08"
+        ],
+        [
+          "带入历史的范围核对",
+          "s05"
+        ],
+        [
+          "保存选定结果",
+          "s12"
+        ]
+      ]
+    },
+    {
+      "id": "s10",
+      "title": "失败与停止，都留得下已发生的事",
+      "state": "请求结果未知 / 已停止",
+      "entry": "网络中断、首次失败或主动停止",
+      "requirements": [
+        "FR-03",
+        "FR-06",
+        "FR-09",
+        "FR-12"
+      ],
+      "actions": [
+        [
+          "核对原请求后恢复",
+          "s08"
+        ],
+        [
+          "查看话题列表",
+          "s07"
+        ]
+      ]
+    },
+    {
+      "id": "s11",
+      "title": "离线也能读、能写草稿",
+      "state": "离线 / 保存失败",
+      "entry": "断网或本地保存失败",
+      "requirements": [
+        "FR-09",
+        "FR-10",
+        "NFR-02"
+      ],
+      "actions": [
+        [
+          "切换已缓存话题",
+          "s07"
+        ],
+        [
+          "保存失败恢复：待确认",
+          "q-recovery"
+        ]
+      ]
+    },
+    {
+      "id": "s12",
+      "title": "整理记录，不改变它原本的性质",
+      "state": "改名 / 归档 / 保存到日记",
+      "entry": "08 点整理或 07 打开已归档",
+      "requirements": [
+        "FR-11",
+        "FR-13",
+        "FR-14"
+      ],
+      "actions": [
+        [
+          "返回话题",
+          "s08"
+        ],
+        [
+          "恢复归档后回话题列表",
+          "s07"
+        ],
+        [
+          "删除或运行中归档细节",
+          "q-management"
+        ]
+      ]
+    }
+  ],
+  "requirements": {
+    "FR-01": {
+      "meaning": "默认人物清楚，真正不可用才提示原因",
+      "screens": [
+        "s01"
+      ]
+    },
+    "FR-02": {
+      "meaning": "经过、选中、发言状态不同",
+      "screens": [
+        "s01",
+        "s02"
+      ]
+    },
+    "FR-03": {
+      "meaning": "点选直接开聊；首次失败也能找回",
+      "screens": [
+        "s01",
+        "s02",
+        "s10"
+      ]
+    },
+    "FR-04": {
+      "meaning": "键盘与回看优先",
+      "screens": [
+        "s03"
+      ]
+    },
+    "FR-05": {
+      "meaning": "成员可见、可撤回、无对象不能发",
+      "screens": [
+        "s03",
+        "s04",
+        "s06"
+      ]
+    },
+    "FR-06": {
+      "meaning": "多人合理默认、有限讨论、部分结果与停止",
+      "screens": [
+        "s05",
+        "s06",
+        "s10"
+      ]
+    },
+    "FR-07": {
+      "meaning": "接收对象与带入内容一起核对",
+      "screens": [
+        "s04",
+        "s05",
+        "s09"
+      ]
+    },
+    "FR-08": {
+      "meaning": "分段权限、独立草稿、相同对象恢复原段",
+      "screens": [
+        "s04",
+        "s05",
+        "s06",
+        "s08",
+        "s09"
+      ]
+    },
+    "FR-09": {
+      "meaning": "记录、草稿、状态和阅读位置保留",
+      "screens": [
+        "s02",
+        "s07",
+        "s08",
+        "s10",
+        "s11"
+      ]
+    },
+    "FR-10": {
+      "meaning": "最近话题、搜索与主动查看新回复",
+      "screens": [
+        "s07",
+        "s08",
+        "s11"
+      ]
+    },
+    "FR-11": {
+      "meaning": "标题可改、无空话题、不合并同名、旧来源保留",
+      "screens": [
+        "s02",
+        "s07",
+        "s08",
+        "s09",
+        "s12"
+      ]
+    },
+    "FR-12": {
+      "meaning": "生成中切话题不搬走结果、不重发",
+      "screens": [
+        "s06",
+        "s07",
+        "s10"
+      ]
+    },
+    "FR-13": {
+      "meaning": "归档可恢复，删除单独核对",
+      "screens": [
+        "s07",
+        "s12"
+      ]
+    },
+    "FR-14": {
+      "meaning": "聊天与日记、AI建议与采纳分开",
+      "screens": [
+        "s09",
+        "s12"
+      ]
+    },
+    "NFR-01": {
+      "meaning": "可读、可操作、焦点与非颜色状态",
+      "screens": [
+        "s01",
+        "s03",
+        "s04",
+        "s06"
+      ]
+    },
+    "NFR-02": {
+      "meaning": "即时反馈、减少动态、离线与未加载区分",
+      "screens": [
+        "s01",
+        "s04",
+        "s11"
+      ]
+    },
+    "A1": {
+      "meaning": "统一话题，内部多个交流段",
+      "screens": [
+        "s07",
+        "s08",
+        "s09"
+      ]
+    },
+    "A2": {
+      "meaning": "经过即亮、点选对象、发送才聊",
+      "screens": [
+        "s01",
+        "s02"
+      ]
+    },
+    "A3": {
+      "meaning": "人物旁就地加减人",
+      "screens": [
+        "s04"
+      ]
+    },
+    "A4": {
+      "meaning": "主持人可选且接收范围透明",
+      "screens": [
+        "s05"
+      ]
+    },
+    "A5": {
+      "meaning": "选中者即接收者，旧私聊不自动共享",
+      "screens": [
+        "s04",
+        "s05",
+        "s09"
+      ]
+    }
+  },
+  "assumptions": [
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5"
+  ],
+  "open_questions": [
+    {
+      "id": "q-recovery",
+      "screens": [
+        "s11"
+      ],
+      "decision": "Exact recovery action when local draft saving fails remains unspecified."
+    },
+    {
+      "id": "q-management",
+      "screens": [
+        "s12"
+      ],
+      "decision": "Archiving an in-flight discussion and separate deletion-range confirmation remain unspecified."
+    },
+    {
+      "id": "history-preview",
+      "screens": [
+        "s05",
+        "s09"
+      ],
+      "decision": "Detailed UI for selecting earlier messages and reviewing a background summary."
+    },
+    {
+      "id": "topic-entry",
+      "screens": [
+        "s07",
+        "s08"
+      ],
+      "decision": "Placement of topic entry, temporary titles, and full timeline layout."
+    }
+  ],
+  "state_coverage": {
+    "first_use": [
+      "s01",
+      "s02"
+    ],
+    "empty": [
+      "s01",
+      "s02"
+    ],
+    "unavailable_mentor": [
+      "s01"
+    ],
+    "loading_generating": [
+      "s06"
+    ],
+    "no_recipients": [
+      "s04"
+    ],
+    "unknown_request": [
+      "s10"
+    ],
+    "stopped_partial": [
+      "s10"
+    ],
+    "offline_cached": [
+      "s11"
+    ],
+    "unloaded_history": [
+      "s11"
+    ],
+    "save_failed": [
+      "s11"
+    ],
+    "restore_draft_and_position": [
+      "s08"
+    ],
+    "archived": [
+      "s12"
+    ],
+    "permissions": {
+      "status": "not-added-by-this-scope",
+      "reason": "OS/vault permissions stay in existing entry flows; recipient sharing changes are explicitly covered in s05 and s09 and remain unapproved."
+    }
+  },
+  "interaction_limits": {
+    "live_widgets": [
+      "s01",
+      "s04"
+    ],
+    "other_controls": "Anchor links to static state illustrations; search and keyboard are labeled placeholders.",
+    "persistence": "In-memory only; refresh resets.",
+    "network": false,
+    "model_calls": false,
+    "diary_writes": false,
+    "real_data": false
+  },
+  "validation": {
+    "static": {
+      "result": "passed",
+      "unique_ids": 37,
+      "anchor_targets_checked": 135,
+      "screens": 12,
+      "mapped_requirements": 21,
+      "external_dependencies": 0,
+      "javascript_syntax": "passed",
+      "persistence": "none"
+    },
+    "browser": "delegated-to-parent"
+  }
+}

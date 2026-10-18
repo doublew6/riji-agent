@@ -49,7 +49,7 @@ class ChannelRouter:
         return self.adapters[platform].create_room(principal, applications, operation_id)
 
     def inspect_room(self, room_id):
-        platform = "local" if room_id.startswith("local-") else "feishu"
+        platform = "mobile" if room_id.startswith("mobile-") else "local" if room_id.startswith("local-") else "feishu"
         return self.adapters[platform].inspect_room(room_id)
 
     def send(self, delivery, text):

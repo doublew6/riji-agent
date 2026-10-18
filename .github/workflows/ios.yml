@@ -1,0 +1,43 @@
+name: iOS regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: iOS test suite
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - full
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      IOS_TEST_SUITE: ${{ inputs.suite || 'smoke' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run isolated iOS regression
+        timeout-minutes: 55
+        run: python3 scripts/test_ios.py --suite "$IOS_TEST_SUITE"
+      - name: Retain logs, inventories and result bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/ios-tests/
+          if-no-files-found: error
+          retention-days: 14

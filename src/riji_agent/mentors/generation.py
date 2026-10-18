@@ -105,6 +105,10 @@ class ModelGeneration:
         instruction += "\n仅返回符合此schema的JSON对象，无Markdown围栏。source_refs只能使用输入给出的来源id。\n" + schema
         instruction += "\n本轮仅可使用已提供背景，没有可调用的工具。不要声称已搜索或保存日记。"
         instruction += "responds_to只能填写schema中允许的真实发言ID，不是描述或导师姓名；maxItems为0的字段必须是空数组。"
+        if request.conversation.chat_kind == "group":
+            instruction += ("这是固定成员的持续群聊。本轮你只发一条简短、自然的回应，不替其他成员说话，"
+                            "不添加主持人、不自动发起下一轮或宣布会议结束。可以接续本群已交付的发言；"
+                            "只被点名的导师回应时，消息仍对全体群成员可见。不得声称已读取私聊或其他群历史。")
         if request.repair_hint:
             instruction += "\n上次输出未通过格式或引用检查，请重新生成：" + comparison_repair_instruction(request.repair_hint)
         if request.conversation.source_scope == "group_only":

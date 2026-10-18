@@ -23,6 +23,7 @@ from riji_agent.memory.model_call import deferred_model_error
 from riji_agent.memory.organization import overdue_ids
 from riji_agent.memory.snapshot import MemorySnapshotWriter
 from riji_agent.memory.render import render_memory_fact
+from riji_agent.memory.serialized import serialize_mutation
 from riji_agent.models.types import LLMError
 
 _LOG = logging.getLogger("riji_agent.memory")
@@ -72,6 +73,8 @@ class MemoryService:
         except MemoryBackendError:
             _LOG.warning("long-term memory retrieval unavailable")
             return RetrievedMemoryContext((), (), "长期记忆后端暂不可用，不能把检索失败解释成用户从未记录。")
+        shared = tuple(item for item in shared if item.metadata.get("privacy", "cloud") == "cloud")
+        private = tuple(item for item in private if item.metadata.get("privacy", "cloud") == "cloud")
         if self.journal is not None:
             mentors = self.journal.policy.mentors
             def allowed(item: LongTermMemory) -> bool:
@@ -131,10 +134,19 @@ class MemoryService:
     def list_memories(
         self, *, user_id: str, include_archived: bool = True
     ) -> Sequence[LongTermMemory]:
-        return self.backend.list_memories(
-            user_id=user_id, include_archived=include_archived, limit=100000 if self.journal else 1000
-        )
+        if self.journal is not None:
+            return self.backend.list_memories(user_id=user_id, include_archived=include_archived, limit=100000)
+        exporter = getattr(self.backend, "export_memories", None)
+        if exporter is not None:
+            records = exporter(user_id=user_id)
+        else:
+            records = self.backend.list_memories(user_id=user_id, include_archived=True, limit=1000)
+            if len(records) >= 1000:
+                raise MemoryBackendError("incomplete_memory_listing")
+        return tuple(item for item in records if item.user_id == user_id
+                     and (include_archived or item.status is MemoryStatus.ACTIVE))
 
+    @serialize_mutation()
     def update_memory(self, memory_id: str, *, user_id: str, content: str) -> None:
         before = self._owned(memory_id, user_id)
         metadata = dict(before.metadata, reviewed_at=datetime.now(timezone.utc).isoformat())
@@ -143,6 +155,7 @@ class MemoryService:
         self.operations.organization.request(user_id)
         self.request_snapshot()
 
+    @serialize_mutation()
     def reconfirm_memory(self, memory_id: str, *, user_id: str) -> None:
         before = self._owned(memory_id, user_id)
         metadata = dict(before.metadata, reviewed_at=datetime.now(timezone.utc).isoformat())
@@ -157,6 +170,16 @@ class MemoryService:
     def restore_memory(self, memory_id: str, *, user_id: str) -> None:
         self._set_status(memory_id, user_id=user_id, status=MemoryStatus.ACTIVE)
 
+    @serialize_mutation()
+    def set_memory_permission(self, memory_id: str, *, user_id: str, permission: str) -> None:
+        if permission not in {"cloud", "local", "none"}:
+            raise MemoryBackendError("invalid_memory_permission")
+        item = self._owned(memory_id, user_id)
+        self.backend.update(memory_id, metadata=dict(item.metadata, privacy=permission))
+        if self.journal is not None:
+            self.journal.notify_change()
+
+    @serialize_mutation()
     def delete_memory(self, memory_id: str, *, user_id: str) -> None:
         before = self._owned(memory_id, user_id)
         failure = None
@@ -196,6 +219,7 @@ class MemoryService:
         )
         return generated_at, count
 
+    @serialize_mutation()
     def _set_status(
         self, memory_id: str, *, user_id: str, status: MemoryStatus
     ) -> None:

@@ -65,6 +65,15 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.settings = runtime_settings
+    revision = runtime_settings.deployment_revision
+    if revision:
+        from importlib.metadata import version
+        frozen_build = {"service": "riji-agent", "version": version("riji-agent"), "revision": revision}
+
+        @app.get("/.well-known/fleet", include_in_schema=False)
+        def fleet_build() -> dict[str, str]:
+            return dict(frozen_build)
+
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, str]:
@@ -78,6 +87,14 @@ def create_app(
             from riji_agent.mentors.ui import build_review_router
             app.include_router(build_router(mentors))
             app.include_router(build_review_router())
+            if runtime_settings.mobile_enabled:
+                from riji_agent.mobile.api import build_router as build_mobile_router
+                from riji_agent.mobile.service import MobileService
+                from riji_agent.mobile.store import MobileStore
+                mobile = MobileService(MobileStore(runtime_settings.data_dir / "mobile.sqlite3"),
+                                       mentors, gateway.memory_service)
+                app.state.mobile = mobile
+                app.include_router(build_mobile_router(mobile))
         if runtime_settings.memory_review_enabled and gateway.memory_service is not None:
             app.include_router(
                 build_memory_review_router(gateway.memory_service, runtime_settings)
@@ -490,6 +507,8 @@ def _argument_parser() -> argparse.ArgumentParser:
     index_cmd.add_argument(
         "--status", action="store_true", help="Print index metadata only; make no changes."
     )
+    from riji_agent.mobile.cli import register_mobile_commands
+    register_mobile_commands(sub)
     _register_memory_commands(sub)
     _register_service_commands(sub)
     return parser
@@ -499,6 +518,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = _argument_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "mobile":
+        from riji_agent.mobile.cli import run_mobile_command
+        raise SystemExit(run_mobile_command(args))
     if args.command == "index":
         raise SystemExit(_run_index_command(rebuild=args.rebuild, status=args.status))
     if args.command == "memory":

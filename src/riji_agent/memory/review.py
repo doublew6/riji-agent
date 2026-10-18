@@ -143,8 +143,7 @@ def _register_journal_routes(router: APIRouter, service: MemoryService, security
             if payload.get("acknowledged") is not True:
                 return _json({"error": "privacy_acknowledgment_required"}, status=400)
             try:
-                engine.privacy.grant(payload.get("binding", ""), payload.get("permissions", {}))
-                engine.store.set_control("paused", "1")
+                engine.privacy.grant(payload.get("binding", ""), payload.get("permissions", {}), paused=True)
             except (JournalMemoryError, TypeError) as exc:
                 return _json({"error": getattr(exc, "code", "invalid_privacy_permissions")}, status=409)
         elif action == "revoke":
@@ -167,11 +166,8 @@ def _set_memory_permission(service: MemoryService, payload: dict) -> JSONRespons
     if not isinstance(permission, str) or permission not in PERMISSIONS:
         return _json({"error": "invalid_memory_permission"}, status=400)
     try:
-        item = service.backend.get(payload.get("memory_id", ""))
-        if item.user_id != payload.get("user_id"):
-            return _json({"error": "memory_not_found"}, status=404)
-        service.backend.update(item.id, metadata=dict(item.metadata, privacy=permission))
-        service.journal.notify_change()
+        service.set_memory_permission(payload.get("memory_id", ""),
+                                      user_id=payload.get("user_id"), permission=permission)
     except MemoryBackendError:
         return _json({"error": "memory_not_found"}, status=404)
     return _json({"ok": True})

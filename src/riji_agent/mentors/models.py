@@ -102,6 +102,7 @@ class Artifact(Record):
     run_id: str = ""
     origin_room_id: str = ""
     origin_kind: Literal["user_statement", "user_plan", "user_feedback", "ai_discussion"] = "ai_discussion"
+    context_artifact_ids: tuple[str, ...] = ()
     round_index: int = 0
     text: str = Field(max_length=12000)
     claims: tuple[str, ...] = ()
@@ -120,6 +121,8 @@ class Conversation(Record):
     id: str = Field(default_factory=new_id)
     owner_id: str
     kind: Literal["private", "roundtable"]
+    chat_kind: Literal["legacy", "group"] = "legacy"
+    title: str = Field(default="", max_length=120)
     personas: tuple[str, ...]
     question: str = Field(min_length=1, max_length=10000)
     mode: Literal["private", "reference", "debate"]
@@ -134,11 +137,15 @@ class Conversation(Record):
     grant_id: str = ""
     rounds: int = 2
     debate_started: bool = False
-    source_scope: Literal["personal", "group_only"] = "personal"
+    source_scope: Literal["personal", "group_only", "mobile_selected"] = "personal"
     source_application_id: str = ""
     source_platform: str = ""
     source_tenant: str = ""
+    material_selection_revision: int = 0
+    selected_artifact_ids: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
+    history_source_ids: tuple[str, ...] = ()
+    history_artifact_ids: tuple[str, ...] = ()
     run_id: str = Field(default_factory=new_id)
     run_kind: str = "initial"
     run_personas: tuple[str, ...] = ()
@@ -197,6 +204,7 @@ class Delivery(Record):
     input_revision: int
     cancel_epoch: int
     status: str = "pending"
+    delivered_at: float = 0
     provider_message_id: str = ""
     first_attempt_at: float = 0
     attempts: int = 0
@@ -214,7 +222,7 @@ class Command(Record):
     preview_hash: str = ""
     personas: tuple[str, ...] = ()
     mode: Literal["reference", "debate"] = "reference"
-    rounds: int = Field(default=2, ge=1, le=2)
+    rounds: int = Field(default=2, ge=1, le=10)
     supersedes: tuple[str, ...] = ()
     statement_kind: Literal["user_statement", "user_plan", "user_feedback"] = "user_statement"
     replace_background: bool = False
@@ -231,6 +239,7 @@ class Receipt(Record):
 
 class SummaryItem(Record):
     kind: Literal["user_statement", "user_plan", "user_feedback", "ai_advice", "unresolved"]
+    actor: str = Field(default="", max_length=128)
     text: str = Field(max_length=12000)
     artifact_ids: tuple[str, ...]
     source_refs: tuple[str, ...] = ()

@@ -147,7 +147,8 @@ def test_review_persistent_banner_scope_binding_and_csrf(tmp_path):
     for view in ['overview', 'facts', 'sources', 'compare', 'lifecycle', 'privacy']:
         page = client.get('/admin/memory', params={'view': view})
         assert 'aria-label="当前隐私权限"' in page.text
-        assert '撤回日记授权' in page.text and 'position:sticky' in page.text
+        assert '撤回日记授权' in page.text
+        assert 'position:sticky' not in page.text
     csrf = re.search(r'<meta name="csrf-token" content="([^"]+)"', page.text)[1]
     headers = {'X-CSRF-Token': csrf}
     body = dict(user_id='u1', binding=engine.privacy.binding, permissions=dict.fromkeys(PURPOSES, True), acknowledged=True)

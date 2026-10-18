@@ -204,11 +204,11 @@ class DiscussionWorker:
         if current.source_scope == "group_only":
             self.service.policy.group_content(current)
         summary = self.service.summaries.current(current, reanalyze=current.reanalyze)
-        if current.run_kind == "followup":
+        if current.run_kind == "followup" and current.chat_kind != "group":
             with self.store.transaction() as db:
                 question = self.store.lookup(db, "followup_question", current.run_id)
             current = current.model_copy(update={"question": question or current.question})
-        elif summary is not None:
+        elif summary is not None and current.chat_kind != "group":
             # The original topic may contain a corrected premise. The effective
             # user context, rather than that immutable archive title, is sent.
             current = current.model_copy(update={"question": "\n".join(
@@ -222,6 +222,12 @@ class DiscussionWorker:
             previous = private_history(self.service, conversation, artifacts)
         else:
             previous = visible_history(stage, artifacts, conversation)
+        if conversation.chat_kind == "group":
+            from riji_agent.mentors.group_chat import recent_group_items, visible_group_artifacts
+            previous = recent_group_items(visible_group_artifacts(self.store, conversation, artifacts), max_items=24)
+        elif conversation.source_scope == "mobile_selected":
+            from riji_agent.mentors.mobile_context import selected_artifacts
+            previous = selected_artifacts(conversation, previous)
         return GenerationRequest(conversation=current, actor=stage.actor, stage=stage.kind,
                                  round_index=stage.round_index, background=background,
                                  previous=previous, execution=execution, working_summary=summary)
@@ -258,7 +264,9 @@ class DiscussionWorker:
                             input_revision=execution.input_revision, run_id=execution.run_id,
                             round_index=stage.round_index,
                             origin_room_id=request.conversation.room_id if request.conversation.source_scope == "group_only" else "",
-                            created_at=self.now(), dependencies=tuple(sorted(dependencies)), **result.model_dump())
+                            created_at=self.now(), dependencies=tuple(sorted(dependencies)),
+                            context_artifact_ids=tuple(sorted(set(request.conversation.selected_artifact_ids)))
+                            if request.conversation.source_scope == "mobile_selected" else (), **result.model_dump())
         target = self._target(request.conversation, artifact.actor)
         with self.store.transaction() as db:
             current = self.store.get(db, "conversation", execution.conversation_id, Conversation)
@@ -325,7 +333,7 @@ class DiscussionWorker:
                 return
             db.execute("UPDATE mentor_steps SET status=?,error=? WHERE key=?", (failure_status, code, step))
             status = "partial" if code in {"budget_exhausted", "source_budget_exhausted"} else "interrupted"
-            if (code == "budget_exhausted" and conversation.kind == "roundtable"
+            if (code == "budget_exhausted" and conversation.kind == "roundtable" and conversation.chat_kind != "group"
                     and conversation.run_kind != "followup" and not conversation.summarize_requested):
                 status = "queued"
                 conversation = conversation.model_copy(update={"summarize_requested": True})

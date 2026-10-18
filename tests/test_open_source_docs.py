@@ -98,7 +98,9 @@ def test_release_privacy_and_security_docs_exist() -> None:
     for phrase in (
         "Do not include secrets",
         "Security reports",
-        "git log --all --name-only",
+        "privacy_scan.py --all-files",
+        "privacy_scan.py --history --head",
+        "privacy_scan.py --staged",
         "PRIVATE_DEMO_SENTINEL",
     ):
         assert phrase in security

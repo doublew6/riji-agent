@@ -67,7 +67,9 @@ def test_rejected_report_keeps_exact_category_but_not_model_text(tmp_path, caplo
         "SELECT * FROM memory_organization_runs WHERE id=?", (run_id,)).fetchone())
     assert failed["status"] == "failed"
     assert failed["error_code"] == "organization_" + failure
-    assert failed["report_json"] is None
+    checkpoint = json.loads(failed["report_json"])
+    assert checkpoint["journal_checkpoint"] == 1 and checkpoint["groups"] == []
+    assert checkpoint["covered_seeds"] == {} and checkpoint["remaining"] == 1
     assert engine.initialization_status()["organization"] == {"failed": 1}
     assert len(model.batches) == 1 and budget(engine, "initialization:") > before
     assert budget(engine, "day:") == 0

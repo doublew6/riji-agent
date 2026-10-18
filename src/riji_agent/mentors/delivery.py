@@ -44,9 +44,9 @@ class OutboxDispatcher:
             for item in items:
                 if item.status != "pending" or (conversation_id and item.conversation_id != conversation_id):
                     continue
-                earlier = [other for other in items if other.conversation_id == item.conversation_id
-                           and other.sequence < item.sequence and other.status not in {"sent", "cancelled"}]
                 conversation = self.store.get(db, "conversation", item.conversation_id, Conversation)
+                earlier = [other for other in items if other.conversation_id == item.conversation_id
+                           and other.sequence < item.sequence and self._blocks_delivery(db, conversation, other)]
                 if earlier or conversation.status not in {"queued", "running", "delivering", "partial"}:
                     continue
                 item = item.model_copy(update={"status": "sending", "attempts": item.attempts + 1,
@@ -60,16 +60,19 @@ class OutboxDispatcher:
             result = TransportResult(status="unknown", error_code="delivery_receipt_missing")
         with self.store.transaction() as db:
             current = self.store.get(db, "delivery", item.id, Delivery)
-            if current is None:
+            if current is None or current.status == "sent":
                 return
             status = {"sent": "sent", "not_sent": "failed", "unknown": "unknown"}[result.status]
-            current = current.model_copy(update={"status": status, "provider_message_id": result.message_id})
+            current = current.model_copy(update={"status": status, "provider_message_id": result.message_id,
+                "delivered_at": (current.delivered_at or self.now()) if status == "sent" else 0})
             self.store.put(db, "delivery", current, item.conversation_id)
             if status == "sent":
                 self.store.bind(db, "message_delivery", key(current.chat_id, result.message_id), current.id)
             else:
                 conversation = self.store.get(db, "conversation", item.conversation_id, Conversation)
-                if conversation.status not in {"deleted", "stopped"}:
+                active_receipt = (conversation.input_revision == item.input_revision
+                                  and conversation.cancel_epoch == item.cancel_epoch)
+                if conversation.status not in {"deleted", "stopped"} and (conversation.chat_kind != "group" or active_receipt):
                     conversation = conversation.model_copy(update={"status": "interrupted", "lease_until": 0})
                     self.store.put(db, "conversation", conversation, conversation.owner_id)
                     self.store.bind(db, "blocked", conversation.id, "delivery_" + status)
@@ -89,7 +92,7 @@ class OutboxDispatcher:
                 if conversation.status != "delivering" or (identifier and identifier != conversation.id):
                     continue
                 deliveries = self.store.records(db, "delivery", conversation.id, Delivery)
-                if any(item.status not in {"sent", "cancelled"} for item in deliveries):
+                if any(self._blocks_delivery(db, conversation, item) for item in deliveries):
                     continue
                 conversation = conversation.model_copy(update={"status": "completed", "room_status": "ended", "updated_at": self.now()})
                 self.store.put(db, "conversation", conversation, conversation.owner_id)
@@ -97,6 +100,15 @@ class OutboxDispatcher:
                 self.service.budgets.pause(db, conversation)
                 return True
         return False
+
+    def _blocks_delivery(self, db, conversation: Conversation, item: Delivery) -> bool:
+        if item.status in {"sent", "cancelled"}:
+            return False
+        if conversation.chat_kind == "group":
+            artifact = self.store.get(db, "artifact", item.artifact_id, Artifact)
+            if artifact and self.store.lookup(db, "ended_group_turn", artifact.run_id) == conversation.id:
+                return False
+        return True
 
     @staticmethod
     def _render(artifact: Artifact) -> str:

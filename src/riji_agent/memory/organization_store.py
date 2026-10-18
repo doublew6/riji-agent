@@ -26,6 +26,79 @@ ORGANIZATION_ERROR_CODES = ORGANIZATION_PROVIDER_ERROR_CODES | frozenset({
 })
 
 
+def _version_map(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(mid, str) and bool(mid) and isinstance(version, str) and bool(version)
+        for mid, version in value.items()
+    )
+
+
+def _checkpoint_observations(values: Any, known_ids: set[str]) -> bool:
+    from riji_agent.memory.capture import contains_credentials
+
+    if not isinstance(values, list) or len(values) > 3:
+        return False
+    for entry in values:
+        if not isinstance(entry, dict) or set(entry) != {"summary", "support_ids", "counter_ids", "limitation"}:
+            return False
+        for field, maximum in (("summary", 240), ("limitation", 180)):
+            text = entry[field]
+            if not isinstance(text, str) or not 1 <= len(text) <= maximum or contains_credentials(text):
+                return False
+        for field in ("support_ids", "counter_ids"):
+            ids = entry[field]
+            if (not isinstance(ids, list) or any(not isinstance(mid, str) or mid not in known_ids for mid in ids)
+                    or len(ids) != len(set(ids))):
+                return False
+        if len(entry["support_ids"]) < 2 or set(entry["support_ids"]).intersection(entry["counter_ids"]):
+            return False
+    return True
+
+
+def _checkpoint_group(value: Any) -> bool:
+    # The organization parser imports this store; defer its import until use.
+    from riji_agent.memory.organization import _parse_report
+
+    fields = {"topics", "comparisons", "time_bound_ids", "observations", "versions", "scope", "persona_id"}
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    versions = value["versions"]
+    if not _version_map(versions) or not 0 < len(versions) <= 20:
+        return False
+    if (value["scope"] not in ("shared", "persona")
+            or not (value["persona_id"] is None or isinstance(value["persona_id"], str) and value["persona_id"])):
+        return False
+    for field, keys in (("topics", {"category", "title", "summary", "evidence_ids"}),
+                        ("comparisons", {"kind", "evidence_ids", "reason"})):
+        if not isinstance(value[field], list) or any(
+                not isinstance(entry, dict) or set(entry) != keys for entry in value[field]):
+            return False
+    try:
+        _parse_report(json.dumps({key: value[key] for key in ("topics", "comparisons", "time_bound_ids")}), set(versions))
+    except (ValueError, TypeError):
+        return False
+    return _checkpoint_observations(value["observations"], set(versions))
+
+
+def _journal_checkpoint(value: Any) -> bool:
+    fields = {"journal_checkpoint", "fingerprint", "total", "processed", "groups", "covered_seeds",
+              "stopped_seeds", "remaining", "versions", "catalog_epoch", "review_after_days"}
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    if type(value["journal_checkpoint"]) is not int or value["journal_checkpoint"] != 1:
+        return False
+    if not isinstance(value["fingerprint"], str) or not value["fingerprint"]:
+        return False
+    if any(type(value[field]) is not int or value[field] < 0
+           for field in ("total", "processed", "remaining", "review_after_days")):
+        return False
+    if value["catalog_epoch"] is not None and not isinstance(value["catalog_epoch"], str):
+        return False
+    if any(not _version_map(value[field]) for field in ("covered_seeds", "stopped_seeds", "versions")):
+        return False
+    return isinstance(value["groups"], list) and all(_checkpoint_group(group) for group in value["groups"])
+
+
 class OrganizationStore:
     def __init__(self, path: Path) -> None:
         self._lock = threading.RLock()
@@ -161,6 +234,43 @@ class OrganizationStore:
                 "UPDATE memory_organization_runs SET report_json = ? WHERE id = ? AND status = 'processing'",
                 (json.dumps(manifest, ensure_ascii=False), run_id),
             )
+
+    def record_checkpoint(self, run_id: int, report: dict[str, Any]) -> None:
+        """Persist validated journal progress without changing the processing state."""
+        if not isinstance(report, dict) or "journal_checkpoint" in report:
+            raise ValueError("invalid_journal_checkpoint")
+        checkpoint = dict(report, journal_checkpoint=1)
+        if not _journal_checkpoint(checkpoint):
+            raise ValueError("invalid_journal_checkpoint")
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE memory_organization_runs SET report_json=?, updated_at=? "
+                "WHERE id=? AND status='processing'",
+                (json.dumps(checkpoint, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), run_id),
+            )
+
+    def latest_report(self, user_id: str) -> Optional[dict[str, Any]]:
+        """Select a completed report or a versioned, complete journal checkpoint."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM memory_organization_runs WHERE user_id=? "
+                "AND status IN ('ready','processing','pending','failed') AND report_json IS NOT NULL "
+                "ORDER BY id DESC", (user_id,),
+            )
+            for row in rows:
+                try:
+                    report = json.loads(row["report_json"])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(report, dict) or "input_batches" in report:
+                    continue
+                if row["status"] != "ready" and not _journal_checkpoint(report):
+                    continue
+                result = dict(row)
+                result.pop("report_json")
+                result["report"] = report
+                return result
+        return None
 
     def latest(self, user_id: str, *, ready_only: bool = False) -> Optional[dict[str, Any]]:
         clause = " AND status = 'ready'" if ready_only else ""

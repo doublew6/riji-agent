@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="2660" version="1.7">
+  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+    <BuildActionEntries>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="00000000000000000000020E" BuildableName="RijiICloudProbeTests.xctest" BlueprintName="RijiICloudProbeTests" ReferencedContainer="container:Riji.xcodeproj"/>
+      </BuildActionEntry>
+    </BuildActionEntries>
+  </BuildAction>
+  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO">
+    <EnvironmentVariables>
+      <EnvironmentVariable key="RIJI_TEST_CONTAINER" value="BD30E2CF-68EB-4E71-909F-58115F3EF954" isEnabled="YES"/>
+      <EnvironmentVariable key="RIJI_TEST_ORIGINAL_VAULT" value="0" isEnabled="YES"/>
+    </EnvironmentVariables>
+    <Testables>
+      <TestableReference skipped="NO" parallelizable="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="00000000000000000000020E" BuildableName="RijiICloudProbeTests.xctest" BlueprintName="RijiICloudProbeTests" ReferencedContainer="container:Riji.xcodeproj"/>
+      </TestableReference>
+    </Testables>
+  </TestAction>
+  <AnalyzeAction buildConfiguration="Debug"/>
+</Scheme>

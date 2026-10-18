@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     )
     im_provider: str = Field(default="feishu", alias="RIJI_IM_PROVIDER")
     agent_runtime: str = Field(default="hermes", alias="RIJI_AGENT_RUNTIME")
+    mobile_enabled: bool = Field(default=False, alias="RIJI_MOBILE_ENABLED")
+    deployment_revision: str = Field(default="", alias="RIJI_DEPLOYMENT_REVISION", max_length=128, pattern=r"^[A-Za-z0-9._-]*$")
     mentors_enabled: bool = Field(default=False, alias="RIJI_MENTORS_ENABLED")
     mentors_config_path: Optional[Path] = Field(default=None, alias="RIJI_MENTORS_CONFIG_PATH")
     model_provider: str = Field(default="deepseek", alias="RIJI_MODEL_PROVIDER")

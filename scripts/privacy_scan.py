@@ -90,13 +90,40 @@ def main() -> int:
     mode.add_argument("--staged", action="store_true")
     mode.add_argument("--tracked", action="store_true")
     mode.add_argument("--event-file", type=Path)
+    mode.add_argument("--all-files", action="store_true",
+                      help="Audit tracked and non-ignored untracked working files, read-only.")
+    mode.add_argument("--revision", help="Audit one Git commit tree and its message, read-only.")
+    mode.add_argument("--history", action="store_true",
+                      help="Audit all ancestors of an explicit --head, read-only.")
+    parser.add_argument("--head", help="Exact ref/commit to freeze before a history audit.")
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--report", type=Path,
+                        help="Save a safe JSON audit report; only valid for audit modes.")
     args = parser.parse_args()
     try:
+        if bool(args.history) != bool(args.head):
+            raise GuardError("history_requires_explicit_head")
+        if args.report and not (args.all_files or args.revision or args.history):
+            raise GuardError("report_requires_audit_mode")
         config = load_config(args.config)
         if args.event_file:
             return report(event_findings(args.event_file, config))
         repo = Path(_git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
+        if args.all_files or args.revision or args.history:
+            from privacy_audit import audit_sources
+
+            selected = "all-files" if args.all_files else "history" if args.history else "revision"
+            result = audit_sources(repo, selected, config, _git, args.head or args.revision)
+            if args.report:
+                if args.report.is_symlink():
+                    raise GuardError("report_symlink_not_allowed")
+                args.report.write_text(json.dumps(result, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+                print(json.dumps({key: value for key, value in result.items()
+                                  if key not in ("findings", "manual_review", "identity_metadata")},
+                                 ensure_ascii=True))
+            else:
+                print(json.dumps(result, ensure_ascii=True))
+            return 0 if result["ok"] else 2
         if args.staged:
             return report(staged_findings(repo, config))
         return report(_working_files(repo, _names(_git(repo, "ls-files", "-z")), config))

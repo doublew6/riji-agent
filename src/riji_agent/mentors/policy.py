@@ -6,7 +6,7 @@ import hashlib
 import time
 from typing import Callable
 
-from riji_agent.mentors.models import AudienceGrant, Conversation, Execution, MentorError, Principal, Source
+from riji_agent.mentors.models import Application, AudienceGrant, ChatBinding, Conversation, Execution, MentorError, Principal, RoomSnapshot, Source
 from riji_agent.mentors.ports import ChannelPort, SourcePort
 from riji_agent.mentors.store import MentorStore, key
 
@@ -15,8 +15,12 @@ class DiscussionPolicy:
     def __init__(self, store: MentorStore, sources: SourcePort, channel: ChannelPort,
                  now: Callable[[], float] = time.time) -> None:
         self.store, self.sources, self.channel, self.now = store, sources, channel, now
+        self.device_guard = None
 
     def freeze(self, conversation: Conversation) -> Conversation:
+        self.check_device(conversation)
+        if conversation.source_scope == "mobile_selected":
+            return conversation
         if conversation.source_scope == "group_only":
             self.group_content(conversation)
             return conversation
@@ -27,15 +31,18 @@ class DiscussionPolicy:
             current = self.store.get(db, "conversation", conversation.id, Conversation)
             if current.input_revision != conversation.input_revision:
                 raise MentorError("input_changed")
-            for source in permitted:
-                snapshot_id = key(principal.id, source.id, source.version)
-                existing = self.store.get(db, "source", snapshot_id, Source)
-                if existing is not None and existing != source:
-                    raise MentorError("source_version_conflict")
-                self.store.put(db, "source", source, principal.id, snapshot_id)
+            self.save_sources(db, principal.id, permitted)
             current = current.model_copy(update={"source_ids": tuple(key(principal.id, source.id, source.version) for source in permitted)})
             self.store.put(db, "conversation", current, principal.id)
             return current
+
+    def save_sources(self, db, owner_id: str, sources: tuple[Source, ...]) -> None:
+        for source in sources:
+            snapshot_id = key(owner_id, source.id, source.version)
+            existing = self.store.get(db, "source", snapshot_id, Source)
+            if existing is not None and existing != source:
+                raise MentorError("source_version_conflict")
+            self.store.put(db, "source", source, owner_id, snapshot_id)
 
     def _usable(self, source: Source, principal: Principal, conversation: Conversation) -> bool:
         return (source.owner_id == principal.id
@@ -59,16 +66,34 @@ class DiscussionPolicy:
     def check(self, execution: Execution, *, require_lease: bool = True) -> Conversation:
         conversation = self.store.read("conversation", execution.conversation_id, Conversation)
         self._check_execution(conversation, execution, require_lease)
+        self.check_device(conversation)
         principal = self.store.read("principal", conversation.owner_id, Principal)
         for source in self.background(conversation):
             if not self._usable(source, principal, conversation):
+                self.block(conversation.id, "source_revoked", execution=execution)
+                raise MentorError("source_revoked")
+        for identifier in conversation.history_source_ids:
+            source = self.store.read("source", identifier, Source)
+            if source is None or not self._usable(source, principal, conversation):
                 self.block(conversation.id, "source_revoked", execution=execution)
                 raise MentorError("source_revoked")
         if conversation.kind == "roundtable":
             self._check_audience(conversation, execution=execution)
         current = self.store.read("conversation", conversation.id, Conversation)
         self._check_execution(current, execution, require_lease)
+        self.check_device(current)
         return current
+
+    def check_device(self, conversation: Conversation) -> None:
+        """Mobile work fails closed even when mobile support is later disabled."""
+        with self.store.transaction() as db:
+            origin = self.store.lookup(db, "origin", conversation.id)
+            binding = self.store.get(db, "chat", origin, ChatBinding) if origin else None
+            app = self.store.get(db, "application", binding.application_id, Application) if binding else None
+        if app is not None and app.platform == "mobile":
+            if self.device_guard is None:
+                raise MentorError("mobile_device_unavailable")
+            self.device_guard(conversation, binding)
 
     def _check_execution(self, conversation: Conversation | None, execution: Execution, require_lease: bool) -> None:
         if conversation is None or conversation.status in {"stopped", "deleted", "failed", "interrupted", "archived", "waiting_user"}:
@@ -106,6 +131,8 @@ class DiscussionPolicy:
         if not current.complete:
             self.block(conversation.id, "verification_paused", execution=execution)
             raise MentorError("audience_verification_failed")
+        if conversation.chat_kind == "group":
+            self._check_group_members(conversation, current)
         if current != grant.snapshot:
             self.block(conversation.id, "room_sealed", execution=execution)
             raise MentorError("audience_changed")
@@ -113,6 +140,21 @@ class DiscussionPolicy:
         if versions != grant.source_versions:
             self.block(conversation.id, "source_revoked", execution=execution)
             raise MentorError("source_revoked")
+
+    def _check_group_members(self, conversation: Conversation, snapshot: RoomSnapshot) -> None:
+        principal = self.store.read("principal", conversation.owner_id, Principal)
+        applications = [app for app in self.channel.applications.values()
+                        if app.platform == "mobile" and app.tenant == "personal-mobile-v1"
+                        and app.persona_id in conversation.personas and app.role == "mentor"]
+        valid = (len(applications) == len(conversation.personas)
+                 and {app.persona_id for app in applications} == set(conversation.personas)
+                 and set(snapshot.application_ids) == {app.id for app in applications}
+                 and len(snapshot.application_ids) == len(applications)
+                 and snapshot.private and snapshot.management_restricted and snapshot.history_restricted
+                 and snapshot.continuity_verified and principal is not None
+                 and snapshot.human_subjects == (principal.account.subject,))
+        if not valid:
+            raise MentorError("audience_not_authorized")
 
     def group_snapshot(self, conversation: Conversation):
         from riji_agent.mentors.group_scope import current_snapshot
@@ -145,6 +187,9 @@ class DiscussionPolicy:
 
     def _cancel_pending(self, db, conversation_id: str) -> None:
         from riji_agent.mentors.models import Delivery
+        current = self.store.get(db, "conversation", conversation_id, Conversation)
         for delivery in self.store.records(db, "delivery", conversation_id, Delivery):
             if delivery.status in {"pending", "sending"}:
-                self.store.put(db, "delivery", delivery.model_copy(update={"status": "cancelled"}), conversation_id)
+                uncertain = current is not None and current.chat_kind == "group" and delivery.status == "sending"
+                self.store.put(db, "delivery", delivery.model_copy(
+                    update={"status": "unknown" if uncertain else "cancelled"}), conversation_id)

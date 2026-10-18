@@ -15,6 +15,10 @@ class Stage:
 
 
 def next_stage(conversation: Conversation, artifacts: tuple[Artifact, ...]) -> Stage | None:
+    if conversation.chat_kind == "group":
+        current = tuple(item for item in artifacts if item.run_id == conversation.run_id and item.kind != "user")
+        return next((Stage("followup", actor) for actor in conversation.run_personas
+                     if not any(item.actor == actor for item in current)), None)
     current = tuple(item for item in artifacts if item.input_revision == conversation.input_revision and item.kind != "user"
                     and (not item.run_id or item.run_id == conversation.run_id))
     if conversation.run_kind == "followup" or conversation.kind == "private":
@@ -42,4 +46,11 @@ def visible_history(stage: Stage, artifacts: tuple[Artifact, ...], conversation:
         return ()
     current = tuple(item for item in artifacts if item.input_revision == conversation.input_revision
                     and (not item.run_id or item.run_id == conversation.run_id))
-    return current[-24:]
+    if len(current) <= 24:
+        return current
+    # Long debates still need the initial stances and their quoted comparison.
+    anchors = tuple(item for item in current if item.kind in {"opinion", "comparison"})[:5]
+    anchor_ids = {item.id for item in anchors}
+    recent = tuple(item for item in current if item.id not in anchor_ids)[-(24 - len(anchors)):]
+    selected = anchor_ids | {item.id for item in recent}
+    return tuple(item for item in current if item.id in selected)

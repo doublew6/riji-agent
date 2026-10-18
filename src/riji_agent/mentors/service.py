@@ -4,16 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 from riji_agent.mentors.budget import BudgetService
 from riji_agent.mentors.identity import IdentityService
 from riji_agent.mentors.models import (
     Application, Artifact, AudienceGrant, ChatBinding, Command, Conversation,
-    Delivery, MentorError, Principal, Receipt, new_id,
+    Delivery, MentorError, Principal, Receipt, Source, WorkingSummary, new_id,
 )
 from riji_agent.mentors.policy import DiscussionPolicy
 from riji_agent.mentors.store import MentorStore, key
+
+
+@dataclass(frozen=True)
+class MobileContinuation:
+    conversation: Conversation
+    sources: tuple[Source, ...]
+    history: tuple[Artifact, ...]
+    user_artifact: Artifact
+
+
+@dataclass(frozen=True)
+class MobileMaterials:
+    conversation: Conversation
+    artifact_ids: tuple[str, ...]
+    sources: tuple[Source, ...]
 
 
 class DiscussionService:
@@ -85,7 +101,9 @@ class DiscussionService:
                 self.summaries.record_run(db, conversation)
         return conversation
 
-    def apply(self, command: Command, *, group_binding: ChatBinding | None = None) -> Receipt:
+    def apply(self, command: Command, *, group_binding: ChatBinding | None = None,
+              mobile_context: MobileContinuation | None = None,
+              mobile_materials: MobileMaterials | None = None) -> Receipt:
         fingerprint = hashlib.sha256(command.model_dump_json().encode()).hexdigest()
         with self.store.transaction() as db:
             previous = db.execute("SELECT * FROM mentor_commands WHERE id=?", (command.id,)).fetchone()
@@ -99,7 +117,10 @@ class DiscussionService:
             self.check_input_scope(conversation, command.kind, group_binding, db=db)
             if command.kind not in {"stop", "delete"} and command.expected_revision != conversation.input_revision:
                 raise MentorError("input_changed")
-            updated = self._apply(db, conversation, command)
+            if mobile_materials is not None:
+                conversation = self._mobile_materials(db, conversation, mobile_materials)
+            updated = (self._continue_mobile(db, command, mobile_context) if mobile_context is not None
+                       else self._apply(db, conversation, command))
             updated = updated.model_copy(update={"state_revision": conversation.state_revision + 1, "updated_at": self.now()})
             self.store.put(db, "conversation", updated, updated.owner_id)
             if updated.status != "deleted":
@@ -109,6 +130,55 @@ class DiscussionService:
             db.execute("INSERT INTO mentor_commands VALUES (?,?,?,?)",
                        (command.id, command.principal_id, fingerprint, receipt.model_dump_json()))
         return receipt
+
+    def _mobile_materials(self, db, current: Conversation, selected: MobileMaterials) -> Conversation:
+        if current != selected.conversation or current.source_scope != "mobile_selected":
+            raise MentorError("input_changed")
+        self.policy.save_sources(db, current.owner_id, selected.sources)
+        updated = current.model_copy(update={"material_selection_revision": current.input_revision,
+            "selected_artifact_ids": selected.artifact_ids,
+            "source_ids": tuple(key(current.owner_id, item.id, item.version) for item in selected.sources)})
+        updated = self.summaries.refresh(db, updated)
+        grant = self.store.get(db, "grant", current.grant_id, AudienceGrant)
+        self.store.put(db, "grant", grant.model_copy(update={"source_versions": {s.id: s.version for s in selected.sources}}), current.owner_id)
+        return updated
+
+    def continue_mobile(self, command: Command) -> Receipt:
+        from riji_agent.mentors.private_context import mobile_history
+        conversation = self.get(command.conversation_id, command.principal_id)
+        self.policy.check_device(conversation)
+        prospective = conversation.model_copy(update={"input_revision": conversation.input_revision + 1, "run_id": new_id()})
+        user_artifact = self._make_user_artifact(prospective, command.text)
+        history = mobile_history(self, conversation, user_artifact)
+        principal = self.store.read("principal", conversation.owner_id, Principal)
+        selected = self.policy.sources.background(principal, conversation.model_copy(update={"question": command.text}))
+        sources = tuple(source for source in selected if self.policy._usable(source, principal, conversation))
+        return self.apply(command, mobile_context=MobileContinuation(conversation, sources, history, user_artifact))
+
+    def _continue_mobile(self, db, command: Command, context: MobileContinuation) -> Conversation:
+        current = self.store.get(db, "conversation", command.conversation_id, Conversation)
+        if current != context.conversation:
+            raise MentorError("input_changed")
+        blocked = self.store.lookup(db, "blocked", current.id)
+        if (current.status not in {"completed", "partial", "stopped"}
+                and not (current.status == "interrupted" and blocked == "source_revoked")):
+            raise MentorError("discussion_still_running")
+        if not command.text.strip() or self.store.lookup(db, "archive_only", current.id):
+            raise MentorError("supplement_not_available")
+        self.policy.save_sources(db, current.owner_id, context.sources)
+        self.budgets.pause(db, current)
+        self.policy._cancel_pending(db, current.id)
+        updated = current.model_copy(update={"run_id": context.user_artifact.run_id, "run_kind": "followup",
+            "followup_actor": current.personas[0], "status": "queued", "lease_until": 0,
+            "input_revision": context.user_artifact.input_revision, "cancel_epoch": current.cancel_epoch + 1,
+            "source_ids": tuple(key(current.owner_id, source.id, source.version) for source in context.sources),
+            "history_source_ids": tuple(sorted({ref for item in context.history for ref in item.dependencies})),
+            "history_artifact_ids": tuple(item.id for item in context.history)})
+        self.store.bind(db, "followup_question", updated.run_id, command.text)
+        db.execute("DELETE FROM mentor_keys WHERE key=? AND kind IN ('blocked','private_notice')", (current.id,))
+        self.store.put(db, "artifact", context.user_artifact, updated.id)
+        self.budgets.activate(db, updated)
+        return updated
 
     def check_input_scope(self, conversation: Conversation, kind: str,
                           binding: ChatBinding | None = None, *, db=None) -> None:
@@ -171,6 +241,9 @@ class DiscussionService:
             if command.kind == "delete":
                 return conversation
             raise MentorError("discussion_not_found")
+        if conversation.chat_kind == "group":
+            from riji_agent.mentors.group_chat import apply_group_command
+            return apply_group_command(self, db, conversation, command)
         if command.kind in {"stop", "delete"}:
             return self._stop(db, conversation, delete=command.kind == "delete")
         if command.kind in {"start_run", "reanalyze", "continue", "correct", "archive", "restore"}:
@@ -184,6 +257,11 @@ class DiscussionService:
         if command.kind == "resume":
             return self._resume(db, conversation)
         if command.kind == "summarize":
+            if conversation.source_scope == "mobile_selected" and conversation.status in {"waiting_user", "stopped"}:
+                self.lifecycle._reconciled(db, conversation)
+                self.budgets.activate(db, conversation)
+                return conversation.model_copy(update={"summarize_requested": True, "status": "queued",
+                    "run_kind": "roundtable", "followup_actor": "", "lease_until": 0})
             if conversation.status not in {"queued", "running", "waiting_user"}:
                 raise MentorError("discussion_not_running")
             return conversation.model_copy(update={"summarize_requested": True})
@@ -194,6 +272,8 @@ class DiscussionService:
     def _stop(self, db, conversation: Conversation, *, delete: bool) -> Conversation:
         self.budgets.pause(db, conversation)
         self.policy._cancel_pending(db, conversation.id)
+        if delete:
+            self._delete_sources(db, conversation)
         suspended = self.store.get(db, "suspended_run", conversation.id, Conversation)
         if suspended is not None:
             self.summaries.record_run(db, suspended.model_copy(update={"status": "stopped"}))
@@ -202,37 +282,62 @@ class DiscussionService:
             db.execute("INSERT OR IGNORE INTO mentor_deleted VALUES (?,?)", (conversation.id, self.now()))
             db.execute("DELETE FROM mentor_records WHERE owner=? AND kind IN ('artifact','delivery','handoff','transfer','run','summary')", (conversation.id,))
             db.execute("DELETE FROM mentor_keys WHERE kind='superseded' AND value=?", (conversation.id,))
+            db.execute("DELETE FROM mentor_keys WHERE kind='ended_group_turn' AND value=?", (conversation.id,))
             db.execute("DELETE FROM mentor_steps WHERE conversation_id=?", (conversation.id,))
             if conversation.grant_id:
                 db.execute("DELETE FROM mentor_records WHERE kind='grant' AND id=?", (conversation.grant_id,))
-            db.execute("DELETE FROM mentor_records WHERE kind='local_room' AND id=?", (conversation.room_id,))
+            db.execute("DELETE FROM mentor_records WHERE kind IN ('local_room','mobile_room') AND id=?", (conversation.room_id,))
             runs = db.execute("SELECT id FROM mentor_budgets WHERE conversation_id=?", (conversation.id,)).fetchall()
             for run in runs:
                 db.execute("DELETE FROM mentor_keys WHERE kind='followup_question' AND key=?", (run[0],))
             db.execute("DELETE FROM mentor_keys WHERE key=? AND kind NOT IN ('room','origin')", (conversation.id,))
-            others = self.store.records(db, "conversation", conversation.owner_id, Conversation)
-            retained = {source for item in others if item.id != conversation.id and item.status != "deleted" for source in item.source_ids}
-            from riji_agent.mentors.models import Source
-            for _ in range(9):
-                inherited = set()
-                for identifier in retained:
-                    item = self.store.get(db, "source", identifier, Source)
-                    if item:
-                        inherited.update(item.dependencies)
-                if inherited.issubset(retained):
-                    break
-                retained.update(inherited)
-            for source in set(conversation.source_ids) - retained:
-                db.execute("DELETE FROM mentor_records WHERE kind='source' AND id=?", (source,))
         return conversation.model_copy(update={
             "status": "deleted" if delete else "stopped", "cancel_epoch": conversation.cancel_epoch + 1,
             "lease_until": 0, "question": "[deleted]" if delete else conversation.question,
+            "title": "" if delete else conversation.title,
             "source_ids": () if delete else conversation.source_ids,
+            "history_source_ids": () if delete else conversation.history_source_ids,
+            "history_artifact_ids": () if delete else conversation.history_artifact_ids,
             "room_status": "sealed" if delete else conversation.room_status,
             "summary_id": "" if delete else conversation.summary_id,
             "summary_version": 0 if delete else conversation.summary_version,
             "suspended_run_id": "",
         })
+
+    def _delete_sources(self, db, conversation: Conversation) -> None:
+        """Collect roots before erasing history, preserving other archives' roots."""
+        removed = self._conversation_sources(db, conversation)
+        others = self.store.records(db, "conversation", conversation.owner_id, Conversation)
+        retained = set()
+        for item in others:
+            if item.id != conversation.id and item.status != "deleted":
+                retained.update(self._conversation_sources(db, item))
+        for source in removed - retained:
+            db.execute("DELETE FROM mentor_records WHERE kind='source' AND id=? AND owner=?",
+                       (source, conversation.owner_id))
+
+    def _conversation_sources(self, db, conversation: Conversation) -> set[str]:
+        from riji_agent.mentors.transfer import Transfer
+        roots = set(conversation.source_ids) | set(conversation.history_source_ids)
+        suspended = self.store.get(db, "suspended_run", conversation.id, Conversation)
+        if suspended is not None:
+            roots.update((*suspended.source_ids, *suspended.history_source_ids))
+        for item in self.store.records(db, "artifact", conversation.id, Artifact):
+            roots.update(item.dependencies)
+        for summary in self.store.records(db, "summary", conversation.id, WorkingSummary):
+            roots.update(ref for item in summary.items for ref in item.dependencies)
+        for transfer in self.store.records(db, "transfer", conversation.id, Transfer):
+            roots.update(transfer.dependencies)
+        pending, complete = list(roots), set()
+        while pending:
+            identifier = pending.pop()
+            if identifier in complete:
+                continue
+            complete.add(identifier)
+            source = self.store.get(db, "source", identifier, Source)
+            if source is not None:
+                pending.extend(set(source.dependencies) - complete)
+        return complete
 
     def _share(self, db, conversation: Conversation, command: Command) -> Conversation:
         if conversation.kind != "roundtable" or conversation.status != "awaiting_share":
@@ -274,11 +379,14 @@ class DiscussionService:
             raise MentorError("room_reverification_required")
         if conversation.kind == "roundtable":
             conversation = self.summaries.prepare(db, conversation)
-        if db.execute("SELECT 1 FROM mentor_steps WHERE conversation_id=? AND status IN ('unknown','call_sent')", (conversation.id,)).fetchone():
-            raise MentorError("step_reconciliation_required")
-        deliveries = self.store.records(db, "delivery", conversation.id, Delivery)
-        if any(item.status in {"unknown", "sending", "failed"} for item in deliveries):
-            raise MentorError("delivery_reconciliation_required")
+        if conversation.chat_kind == "group":
+            self.lifecycle._reconciled(db, conversation)
+        else:
+            if db.execute("SELECT 1 FROM mentor_steps WHERE conversation_id=? AND status IN ('unknown','call_sent')", (conversation.id,)).fetchone():
+                raise MentorError("step_reconciliation_required")
+            deliveries = self.store.records(db, "delivery", conversation.id, Delivery)
+            if any(item.status in {"unknown", "sending", "failed"} for item in deliveries):
+                raise MentorError("delivery_reconciliation_required")
         db.execute("DELETE FROM mentor_steps WHERE conversation_id=? AND status='failed'", (conversation.id,))
         self.budgets.activate(db, conversation)
         return conversation.model_copy(update={"status": "queued", "lease_until": 0})
@@ -319,11 +427,14 @@ class DiscussionService:
         return updated
 
     def _user_artifact(self, db, conversation: Conversation, text: str, *, statement_kind: str = "user_statement") -> None:
-        artifact = Artifact(conversation_id=conversation.id, actor="user", kind="user",
+        artifact = self._make_user_artifact(conversation, text, statement_kind=statement_kind)
+        self.store.put(db, "artifact", artifact, conversation.id)
+
+    def _make_user_artifact(self, conversation: Conversation, text: str, *, statement_kind: str = "user_statement") -> Artifact:
+        return Artifact(conversation_id=conversation.id, actor="user", kind="user",
                             input_revision=conversation.input_revision, run_id=conversation.run_id,
                             origin_kind=statement_kind, text=text, created_at=self.now(),
                             origin_room_id=conversation.room_id if conversation.source_scope == "group_only" else "")
-        self.store.put(db, "artifact", artifact, conversation.id)
 
     def applications(self, conversation: Conversation) -> tuple[Application, ...]:
         with self.store.transaction() as db:
@@ -337,7 +448,7 @@ class DiscussionService:
         if conversation.source_scope == "group_only":
             self.check_input_scope(conversation, "start_run", binding)
         apps = self.store.list("application", "", Application)
-        wanted = ("host", *conversation.personas)
+        wanted = conversation.personas if conversation.chat_kind == "group" else ("host", *conversation.personas)
         selected = []
         for actor in wanted:
             matches = [app for app in apps if app.persona_id == actor and app.platform == origin.platform

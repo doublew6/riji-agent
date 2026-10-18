@@ -1,0 +1,413 @@
+{
+  "artifact": "visual-prd.html",
+  "source": {
+    "path": "prd.md",
+    "title": "导师私聊与群聊 PRD",
+    "version": "0.3.2-approved",
+    "date": "2026-10-16"
+  },
+  "status": "approved-for-development",
+  "implementation": "local-verified",
+  "scope": "Offline visual PRD. Existing personal portrait atlas is embedded unchanged in the retained home scene. Remaining UI is low-fidelity. Synthetic in-memory demos; no network, AI calls, persistence, app or service changes. 2026-10-16 correction: each group is a direct home row; group chat screens show compact members and messages, with no repeated large scene or intermediate directory. Screen s06 is a magnified detail of s01, not an additional product destination.",
+  "groups": [
+    {
+      "id": "g1",
+      "title": "找导师",
+      "screens": [
+        "s01",
+        "s02"
+      ]
+    },
+    {
+      "id": "g2",
+      "title": "建群聊天",
+      "screens": [
+        "s03",
+        "s04",
+        "s05",
+        "s06"
+      ]
+    },
+    {
+      "id": "g3",
+      "title": "找回与管理",
+      "screens": [
+        "s07",
+        "s08"
+      ]
+    },
+    {
+      "id": "g4",
+      "title": "异常与边界",
+      "screens": [],
+      "notes": "Visible cross-screen content/recipient boundary; no hidden product flow."
+    }
+  ],
+  "screens": [
+    {
+      "id": "s01",
+      "title": "导师人物＋群聊列表",
+      "state": "导师首页：上方人物，下方每群一行；一键打开群消息",
+      "requirements": [
+        "C1",
+        "C4",
+        "P1",
+        "FR-01",
+        "FR-02",
+        "NFR-01",
+        "NFR-02"
+      ],
+      "actions": [
+        [
+          "点导师人物",
+          "s02"
+        ],
+        [
+          "发起群聊",
+          "s03"
+        ],
+        [
+          "点群直接进入聊天",
+          "s04"
+        ]
+      ]
+    },
+    {
+      "id": "s02",
+      "title": "一个导师，一个聊天框",
+      "state": "原有私聊和草稿",
+      "requirements": [
+        "C1",
+        "FR-02",
+        "FR-03",
+        "FR-09",
+        "NFR-01"
+      ],
+      "actions": [
+        [
+          "发送演示",
+          "s02"
+        ],
+        [
+          "返回导师首页",
+          "s01"
+        ],
+        [
+          "建群",
+          "s03"
+        ]
+      ]
+    },
+    {
+      "id": "s03",
+      "title": "勾选导师，直接建群",
+      "state": "选择2–4位导师",
+      "requirements": [
+        "C2",
+        "P2",
+        "FR-04",
+        "NFR-01",
+        "NFR-02"
+      ],
+      "actions": [
+        [
+          "勾选导师",
+          "s03"
+        ],
+        [
+          "创建群聊",
+          "s04"
+        ],
+        [
+          "取消",
+          "s01"
+        ]
+      ]
+    },
+    {
+      "id": "s04",
+      "title": "点群就到消息，空群也保留",
+      "state": "首页直接进入的群消息；紧凑成员栏，无重复大场景",
+      "requirements": [
+        "C2",
+        "C3",
+        "P2",
+        "FR-05",
+        "FR-06"
+      ],
+      "actions": [
+        [
+          "发送演示",
+          "s04"
+        ],
+        [
+          "返回首页，稍后再聊",
+          "s01"
+        ],
+        [
+          "详情",
+          "s07"
+        ]
+      ]
+    },
+    {
+      "id": "s05",
+      "title": "像群聊一样交流",
+      "state": "静态合成消息与回复节奏；无重复大人物场景",
+      "requirements": [
+        "C2",
+        "C3",
+        "P3",
+        "FR-06",
+        "FR-07",
+        "FR-08"
+      ],
+      "actions": [
+        [
+          "详情",
+          "s07"
+        ],
+        [
+          "返回",
+          "s01"
+        ]
+      ]
+    },
+    {
+      "id": "s06",
+      "title": "首页群聊区 · 局部放大",
+      "state": "s01 下方列表的解释性放大；不是单独页面或必经步骤",
+      "requirements": [
+        "C3",
+        "P1",
+        "FR-05",
+        "FR-09",
+        "FR-10",
+        "NFR-01"
+      ],
+      "actions": [
+        [
+          "点群直接聊天",
+          "s04"
+        ],
+        [
+          "建群",
+          "s03"
+        ]
+      ]
+    },
+    {
+      "id": "s07",
+      "title": "简单的群详情",
+      "state": "可改名；成员调整未实现且待讨论",
+      "requirements": [
+        "P2",
+        "FR-10",
+        "FR-11",
+        "FR-12"
+      ],
+      "actions": [
+        [
+          "保存名称演示",
+          "s07"
+        ],
+        [
+          "返回原群消息",
+          "s04"
+        ]
+      ]
+    },
+    {
+      "id": "s08",
+      "title": "不顺利时保留当前位置",
+      "state": "离线、未知结果、归档的独立候选状态",
+      "requirements": [
+        "FR-13",
+        "FR-14",
+        "NFR-02"
+      ],
+      "actions": [
+        [
+          "回到原群与草稿",
+          "s04"
+        ],
+        [
+          "创建失败保留选择",
+          "s03"
+        ],
+        [
+          "返回首页查看群的位置",
+          "s01"
+        ]
+      ]
+    }
+  ],
+  "requirements": {
+    "C1": [
+      "s01",
+      "s02"
+    ],
+    "C2": [
+      "s03",
+      "s04",
+      "s05"
+    ],
+    "C3": [
+      "s04",
+      "s05",
+      "s06"
+    ],
+    "C4": [
+      "s01"
+    ],
+    "P1": [
+      "s01",
+      "s06"
+    ],
+    "P2": [
+      "s03",
+      "s04",
+      "s07"
+    ],
+    "P3": [
+      "s05"
+    ],
+    "FR-01": [
+      "s01"
+    ],
+    "FR-02": [
+      "s01",
+      "s02"
+    ],
+    "FR-03": [
+      "s02"
+    ],
+    "FR-04": [
+      "s03"
+    ],
+    "FR-05": [
+      "s04",
+      "s06"
+    ],
+    "FR-06": [
+      "s04",
+      "s05"
+    ],
+    "FR-07": [
+      "s05"
+    ],
+    "FR-08": [
+      "s05",
+      "g4"
+    ],
+    "FR-09": [
+      "s02",
+      "s06"
+    ],
+    "FR-10": [
+      "s06",
+      "s08"
+    ],
+    "FR-11": [
+      "s07"
+    ],
+    "FR-12": [
+      "s07"
+    ],
+    "FR-13": [
+      "s08"
+    ],
+    "FR-14": [
+      "s08"
+    ],
+    "NFR-01": [
+      "s01",
+      "s02",
+      "s03",
+      "s06"
+    ],
+    "NFR-02": [
+      "s01",
+      "s03",
+      "s08"
+    ]
+  },
+  "interactive_demos": [
+    {
+      "id": "portrait-mentor-chat",
+      "screens": [
+        "s01",
+        "s02"
+      ],
+      "behavior": "Only the four home-stage portrait buttons open private mentor chats. Reopening a mentor restores that mentor messages and draft; no duplicate private-chat contact rows remain."
+    },
+    {
+      "id": "create-and-rename-group",
+      "screens": [
+        "s03",
+        "s04",
+        "s07"
+      ],
+      "behavior": "Select 2–4; create a new distinct group even for same members. Clear selection after creation to prevent immediate repeated submission. Cancel selection creates no group. Renaming preserves group identity and draft."
+    },
+    {
+      "id": "isolated-group-drafts",
+      "screens": [
+        "s01",
+        "s04",
+        "s06"
+      ],
+      "behavior": "Lists include newly created empty groups. Changing selected group preserves each draft; original and new groups are distinct. Synthetic state exists only until refresh. Home rows open chat directly. s06 duplicates the same list only as a PRD close-up; it is not an app navigation layer."
+    }
+  ],
+  "privacy": {
+    "classification": "local-personal-review",
+    "contains_personalized_portrait": true,
+    "publication_authorized": false,
+    "external_requests": false,
+    "portrait_asset": "ios/Riji/Assets.xcassets/MentorPortraitAtlas.imageset/mentor-portraits.png",
+    "portrait_sha256": "69831026bc0702c1a5c7880b247d7d7b4bc6270ef82efd461e9b0846b8cdec30",
+    "handling": "Original local PNG embedded unchanged as data URL; source asset untouched. Never print image base64. Do not publish this artifact without a separate privacy review and authorization."
+  },
+  "limitations": [
+    "Browser rendering not verified; prior local-file browser policy denial respected, no alternate browser or indirect bypass attempted.",
+    "No true persistence, restart recovery, network, delivery, AI or accessibility-device validation.",
+    "P1–P3 were approved for development. Mid-chat membership and destructive deletion remain out of scope; this HTML does not implement archival service behavior.",
+    "Error/archival states are static examples, not working service or destructive actions."
+  ],
+  "validation": {
+    "html_structure": {
+      "status": "passed",
+      "screens": 8,
+      "requirements": 23,
+      "unique_ids": 23,
+      "internal_anchors": 55,
+      "all_targets_resolve": true,
+      "portrait_private_chat_entries": 4,
+      "duplicate_private_chat_rows": 0,
+      "group_large_scenes": 0,
+      "external_dependencies": 0
+    },
+    "script_syntax": {
+      "status": "passed",
+      "method": "Node --check on revised inline interaction script"
+    },
+    "rendering": "not-run-policy-limitation",
+    "scope": "2026-10-16 targeted correction: home group rows open messages directly; removed repeated group scenes and labeled s06 as a same-page close-up. Static checks apply to this HTML only; earlier app acceptance remains dated evidence.",
+    "html_sha256": "e3f68c112a3ad06382b0c3c2ca34d8d2cde1b5f53a60b840ad5be683b20c49ad"
+  },
+  "native_correction_validation": {
+    "date": "2026-10-16",
+    "scope": "Home group rows open directly into compact group messages; this native verification is separate from the HTML checks.",
+    "tests": 5,
+    "failures": 0,
+    "suite_seconds": 296.162,
+    "command_wall_seconds": 320,
+    "result_bundle": "output/mentor-flat-list-2026-10-16/chat-layout.xcresult",
+    "log": "output/mentor-flat-list-2026-10-16/chat-layout.log",
+    "environment": "Riji Automated Tests / iOS 27; isolated synthetic data; no Air or model call",
+    "air_deployed": false,
+    "phone_installed": false,
+    "user_experience_accepted": false
+  }
+}

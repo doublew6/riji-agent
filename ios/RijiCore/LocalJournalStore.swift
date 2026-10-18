@@ -1,0 +1,338 @@
+import Foundation
+
+/// One actor owns all journal operations for an application process. No backend is involved.
+public actor LocalJournalStore {
+    public nonisolated let timeZone: TimeZone
+    public nonisolated let derivedVoiceCache: VoiceDerivedAudioCache
+    let original: OriginalVaultAccess?
+    public nonisolated let isOriginal: Bool
+    public nonisolated let permitsBodyWriting: Bool
+    let journals: URL
+    let state: URL
+    let files: JournalFileSystem
+    let encoder: JSONEncoder
+    let decoder = JSONDecoder()
+    var voiceCaptureCache: [UUID: VoiceCaptureRecord] = [:]
+    var voiceEvidenceCacheStampCount = 0
+    var voiceEvidenceScan: VoiceEvidenceScan?
+    var voiceCorrectionIndex: VoiceLegacyCorrectionIndex?
+    var voiceEvidenceCache: [String: VoiceEvidenceCacheEntry] = [:]
+    var voiceSummaryCache: [String: VoiceSummaryCacheEntry] = [:]
+    var voiceSummaryLoaded = false
+
+    public init(journalDirectory: URL, stateDirectory: URL, timeZone: TimeZone = .current,
+                failure: @escaping FileFailureHook = { _, _ in }, original: OriginalVaultAccess? = nil) throws {
+        self.original = original
+        isOriginal = original != nil
+        permitsBodyWriting = original?.canWrite ?? true
+        // External Markdown never becomes a workflow directory. All app state stays local.
+        self.journals = journalDirectory
+        let stateDirectory = original.map { stateDirectory.appendingPathComponent("original-vaults/" + $0.identity) } ?? stateDirectory
+        self.state = stateDirectory
+        let files = JournalFileSystem(failure: failure)
+        self.files = files
+        derivedVoiceCache = VoiceDerivedAudioCache(directory: stateDirectory.appendingPathComponent("voice-derived-audio"), failure: failure)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        self.encoder = encoder
+        try files.createDirectory(journalDirectory)
+        try files.createDirectory(stateDirectory)
+        for folder in ["ai-previews", "ai-transactions", "ai-receipts", "ai-bindings", "drafts", "transactions", "receipts", "workflow-transactions", "workflow-receipts", "workflow-drafts", "voice", "voice-intents", "body-drafts", "body-transactions", "body-receipts", "body-revisions", "body-merges", "body-resolutions", "body-resolution-history", "cloud-drafts", "cloud-evidence", "cloud-confirmations", "cloud-completed", "cloud-body-holds"] {
+            try files.createDirectory(stateDirectory.appendingPathComponent(folder, isDirectory: true))
+        }
+        for folder in original == nil ? ["Templates", "Weekly", "Monthly", "Goals"] : [] {
+            try files.createDirectory(journalDirectory.deletingLastPathComponent().appendingPathComponent(folder))
+        }
+        try? derivedVoiceCache.recoverStale()
+        let zoneURL = stateDirectory.appendingPathComponent("timezone.json")
+        if let data = try files.read(zoneURL) {
+            guard let name = try? JSONDecoder().decode(String.self, from: data),
+                  let saved = TimeZone(identifier: name) else { throw JournalError.storage }
+            self.timeZone = saved
+        } else {
+            try files.write(encoder.encode(timeZone.identifier), to: zoneURL, purpose: .metadata)
+            self.timeZone = timeZone
+        }
+    }
+
+    public func initialDay(now: Date = Date()) throws -> JournalDay {
+        let intents = try files.list(state.appendingPathComponent("voice-intents"))
+        guard intents.count <= 10000 else { throw VoiceError.limit }
+        if let url = intents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).first(where: { $0.pathExtension == "json" }) {
+            return try JournalDay(url.deletingPathExtension().lastPathComponent)
+        }
+        if let data = try files.read(state.appendingPathComponent("selection.json")),
+           let day = try? decoder.decode(JournalDay.self, from: data) {
+            if try bodyRecoveryDays().union(cloudRecoveryDays()).contains(day) { return day }
+            if let draft = try readDraft(day), !draft.text.isEmpty { return day }
+            if try pendingTransaction(for: day) != nil { return day }
+        }
+        if let day = try bodyRecoveryDays().union(cloudRecoveryDays()).sorted().first { return day }
+        return JournalDay(date: now, timeZone: timeZone)
+    }
+
+    public func select(_ day: JournalDay) throws {
+        try files.write(encoder.encode(day), to: state.appendingPathComponent("selection.json"), purpose: .metadata)
+    }
+
+    public func weekdayLanguage() throws -> WeekdayLanguage {
+        if let update: WeekdayPreferenceUpdate = try decode(weekdayUpdateURL) {
+            return update.committed ? update.next : try decodeWeekday(update.previous)
+        }
+        return try decodeWeekday(files.read(weekdayURL))
+    }
+
+    public func setWeekdayLanguage(_ language: WeekdayLanguage) throws {
+        try recoverWeekdayPreference()
+        let previous = try files.read(weekdayURL)
+        _ = try decodeWeekday(previous)
+        var update = WeekdayPreferenceUpdate(previous: previous, next: language, committed: false)
+        // A durable pending record remains authoritative if both the write and rollback fail.
+        try files.write(encoder.encode(update), to: weekdayUpdateURL, purpose: .transaction)
+        do { try files.write(encoder.encode(language), to: weekdayURL, purpose: .metadata) }
+        catch { try? recoverWeekdayPreference(); throw JournalError.storage }
+        update.committed = true
+        do { try files.write(encoder.encode(update), to: weekdayUpdateURL, purpose: .transaction) }
+        catch {
+            let recorded: WeekdayPreferenceUpdate? = try decode(weekdayUpdateURL)
+            guard recorded == update else { try? recoverWeekdayPreference(); throw JournalError.storage }
+        }
+        // Once committed, cleanup is retryable and cannot turn a saved choice into a UI failure.
+        try? files.remove(weekdayUpdateURL, purpose: .transaction)
+    }
+
+    private var weekdayURL: URL { state.appendingPathComponent("weekday-language.json") }
+    private var weekdayUpdateURL: URL { state.appendingPathComponent("weekday-language-update.json") }
+
+    private func decodeWeekday(_ data: Data?) throws -> WeekdayLanguage {
+        guard let data else { return .chinese }
+        guard let language = try? decoder.decode(WeekdayLanguage.self, from: data) else { throw JournalError.storage }
+        return language
+    }
+
+    private func recoverWeekdayPreference() throws {
+        guard let update: WeekdayPreferenceUpdate = try decode(weekdayUpdateURL) else { return }
+        let desired = try update.committed ? encoder.encode(update.next) : update.previous
+        if try files.read(weekdayURL) != desired {
+            if let desired { try files.write(desired, to: weekdayURL, purpose: .metadata) }
+            else { try files.remove(weekdayURL, purpose: .metadata) }
+        }
+        do { try files.remove(weekdayUpdateURL, purpose: .transaction) }
+        catch { if try files.read(weekdayUpdateURL) != nil { throw JournalError.storage } }
+    }
+
+    public func open(_ day: JournalDay) throws -> JournalSnapshot {
+        let display = try original?.displaySnapshot(day)
+        let data = try original == nil ? readBodySource(day) : display?.data
+        var cloudHoldFailed = false
+        if display?.cloud != nil { do { try observeCloudConflict(day) } catch { cloudHoldFailed = true } }
+        else { try? reconcileSettledCloudReview(day) }
+        let draft = try readDraft(day)
+        let markdown: String
+        if let data {
+            guard let source = String(data: data, encoding: .utf8) else { throw JournalError.invalidMarkdown }
+            markdown = source
+        } else if let draft { markdown = draft.effectiveTemplate }
+        else if let original { markdown = try original.templateVersion().instantiate(day: day, weekdayLanguage: weekdayLanguage()) }
+        else { markdown = try selectedTemplate(.daily).instantiate(day: day, weekdayLanguage: weekdayLanguage()) }
+        let pending = try pendingTransaction(for: day) != nil || (draft.map { try files.read(transactionURL($0.operationID)) != nil ||
+            files.read(receiptURL($0.operationID)) != nil } ?? false)
+        return JournalSnapshot(day: day, markdown: markdown, sourceHash: data.map(SourceHash.digest),
+                               draft: draft, isPending: pending, cloudConflict: display?.cloud, cloudHoldFailed: cloudHoldFailed)
+    }
+
+    public func makeDraft(for snapshot: JournalSnapshot, section: String) throws -> JournalDraft {
+        JournalDraft(day: snapshot.day, section: section, sourceHash: snapshot.sourceHash,
+                     effectiveTemplate: snapshot.draft?.effectiveTemplate ?? snapshot.markdown)
+    }
+
+    public func saveDraft(_ draft: JournalDraft) throws {
+        guard original == nil else { throw OriginalVaultError.readOnly }
+        try assertNoVoiceInsertion(draft.day)
+        try validate(draft)
+        try preflightVoiceMetadata(draft)
+        if let transaction: JournalTransaction = try decode(transactionURL(draft.operationID)) {
+            guard transaction.payloadHash == payloadHash(draft) else { throw JournalError.operationMismatch }
+        }
+        if let receipt: JournalReceipt = try decode(receiptURL(draft.operationID)) {
+            guard receipt.payloadHash == payloadHash(draft) else { throw JournalError.operationMismatch }
+            throw JournalError.pendingOperation
+        }
+        if let previous = try readDraft(draft.day) {
+            if previous.operationID == draft.operationID && payloadHash(previous) != payloadHash(draft) { throw JournalError.operationMismatch }
+            if previous.operationID != draft.operationID,
+               try hasOperation(previous.operationID) { throw JournalError.pendingOperation }
+        }
+        try select(draft.day)
+        try files.write(encoder.encode(draft), to: draftURL(draft.day), purpose: .draft)
+    }
+
+    public func commit(_ draft: JournalDraft) throws -> JournalReceipt {
+        guard original == nil else { throw OriginalVaultError.readOnly }
+        try assertNoVoiceInsertion(draft.day)
+        try validate(draft)
+        let hash = payloadHash(draft)
+        if let receipt: JournalReceipt = try decode(receiptURL(draft.operationID)) {
+            guard receipt.payloadHash == hash else { throw JournalError.operationMismatch }
+            try cleanup(draft)
+            return receipt
+        }
+        try assertNoBodyPending(draft.day)
+        try assertNoWorkflowPending(.daily(draft.day))
+        if let transaction: JournalTransaction = try decode(transactionURL(draft.operationID)) {
+            guard transaction.payloadHash == hash else { throw JournalError.operationMismatch }
+            return try finish(transaction)
+        }
+        try saveDraft(draft)
+        let before = try files.read(diaryURL(draft.day))
+        guard before.map(SourceHash.digest) == draft.sourceHash else { throw JournalError.changedSource }
+        let after = try MarkdownSectionAppender.append(text: draft.text, to: draft.section,
+                                                      in: before ?? Data(draft.effectiveTemplate.utf8))
+        let transaction = JournalTransaction(draft: draft, payloadHash: hash, beforeHash: draft.sourceHash,
+                                             afterHash: SourceHash.digest(after), afterContent: after)
+        try files.write(encoder.encode(transaction), to: transactionURL(draft.operationID), purpose: .transaction)
+        return try finish(transaction)
+    }
+
+    /// Recovery only completes a previously persisted, explicitly confirmed operation.
+    public func recover(_ day: JournalDay) throws -> JournalReceipt? {
+        if original != nil { return nil }
+        try recoverWorkflows(target: .daily(day))
+        guard let draft = try readDraft(day) else { return try recoverOrphanedTransaction(day) }
+        if try files.read(transactionURL(draft.operationID)) != nil || files.read(receiptURL(draft.operationID)) != nil {
+            return try commit(draft)
+        }
+        return nil
+    }
+
+    public func hasOperation(_ id: UUID) throws -> Bool {
+        try files.read(transactionURL(id)) != nil || files.read(receiptURL(id)) != nil
+    }
+
+    public func directory() throws -> [JournalDirectoryEntry] {
+        let localDays = Set(try files.list(journals).compactMap { url -> JournalDay? in
+            guard url.pathExtension == "md" else { return nil }
+            return try? JournalDay(url.deletingPathExtension().lastPathComponent)
+        })
+        let diaryDays = try original.map { Set(try $0.paths().keys) } ?? localDays
+        var draftDays = Set<JournalDay>()
+        for url in try files.list(state.appendingPathComponent("drafts")) where url.pathExtension == "json" {
+            guard let day = try? JournalDay(url.deletingPathExtension().lastPathComponent),
+                  let draft = try readDraft(day) else { continue }
+            let pending = try hasOperation(draft.operationID)
+            if !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pending {
+                draftDays.insert(day)
+            }
+        }
+        for url in try files.list(state.appendingPathComponent("transactions")) where url.pathExtension == "json" {
+            if let transaction: JournalTransaction = try decode(url) { draftDays.insert(transaction.draft.day) }
+        }
+        draftDays.formUnion(try bodyRecoveryDays().union(cloudRecoveryDays()))
+        return diaryDays.union(draftDays).sorted(by: >).map {
+            JournalDirectoryEntry(day: $0, hasDiary: diaryDays.contains($0), hasDraft: draftDays.contains($0))
+        }
+    }
+
+    public func exportMarkdown(_ day: JournalDay) throws -> Data {
+        guard let data = try original == nil ? readBodySource(day) : original?.displaySnapshot(day).data else { throw JournalError.noDiary }
+        guard String(data: data, encoding: .utf8) != nil else { throw JournalError.invalidMarkdown }
+        return data
+    }
+
+    /// Used by tests and sandbox-local export adapters; this never mutates the journal or draft.
+    public func exportMarkdown(_ day: JournalDay, to destination: URL) throws {
+        try files.write(exportMarkdown(day), to: destination, purpose: .export)
+    }
+
+    private func finish(_ transaction: JournalTransaction) throws -> JournalReceipt {
+        let draft = transaction.draft
+        guard transaction.payloadHash == payloadHash(draft), transaction.beforeHash == draft.sourceHash,
+              transaction.afterHash == SourceHash.digest(transaction.afterContent) else { throw JournalError.operationMismatch }
+        let current = try files.read(diaryURL(draft.day))
+        let currentHash = current.map(SourceHash.digest)
+        if currentHash != transaction.afterHash {
+            guard currentHash == transaction.beforeHash else { throw JournalError.changedSource }
+            try files.write(transaction.afterContent, to: diaryURL(draft.day), purpose: .diary)
+        }
+        guard try files.read(diaryURL(draft.day)).map(SourceHash.digest) == transaction.afterHash else {
+            throw JournalError.changedSource
+        }
+        let receipt = JournalReceipt(operationID: draft.operationID, payloadHash: transaction.payloadHash,
+                                     day: draft.day, afterHash: transaction.afterHash, voiceInsertions: draft.voiceInsertions)
+        try files.write(encoder.encode(receipt), to: receiptURL(draft.operationID), purpose: .receipt)
+        try cleanup(draft)
+        return receipt
+    }
+
+    private func cleanup(_ draft: JournalDraft) throws {
+        if try readDraft(draft.day)?.operationID == draft.operationID {
+            try files.remove(draftURL(draft.day), purpose: .draft)
+        }
+        try files.remove(transactionURL(draft.operationID), purpose: .transaction)
+    }
+
+    private func recoverOrphanedTransaction(_ day: JournalDay) throws -> JournalReceipt? {
+        guard let transaction = try pendingTransaction(for: day) else { return nil }
+        return try commit(transaction.draft)
+    }
+
+    func pendingTransaction(for day: JournalDay) throws -> JournalTransaction? {
+        for url in try files.list(state.appendingPathComponent("transactions")) where url.pathExtension == "json" {
+            if let transaction: JournalTransaction = try decode(url), transaction.draft.day == day {
+                return transaction
+            }
+        }
+        return nil
+    }
+
+    func validate(_ draft: JournalDraft) throws {
+        try VoiceMetadataBounds.validate(draft.voiceInsertions ?? [])
+        guard draft.sourceHash.map({ $0.utf8.count == 64 }) ?? true else { throw JournalError.changedSource }
+        guard !draft.text.contains("<!-- riji-record:") else { throw JournalError.invalidMarkdown }
+        guard SourceHash.digest(Data(draft.effectiveTemplate.utf8)) == draft.templateHash else {
+            throw JournalError.invalidTemplate
+        }
+    }
+
+    func payloadHash(_ draft: JournalDraft) -> String {
+        // All stored fields are primitive Codable values; encoding cannot fail.
+        SourceHash.digest(try! encoder.encode(draft))
+    }
+
+    func readDraft(_ day: JournalDay) throws -> JournalDraft? { try decode(draftURL(day)) }
+
+    func decode<T: Decodable>(_ url: URL) throws -> T? {
+        guard let data = try files.read(url) else { return nil }
+        guard let value = try? decoder.decode(T.self, from: data) else { throw JournalError.storage }
+        return value
+    }
+
+    public func originalDay(path: [String]) throws -> JournalDay? {
+        try original?.paths().first(where: { $0.value == path })?.key
+    }
+
+    public func bodySourceID(_ day: JournalDay) throws -> String? { try original?.sourceID(day) }
+
+    func readBodySource(_ day: JournalDay) throws -> Data? {
+        if let original { return try original.read(day) }
+        return try files.read(diaryURL(day))
+    }
+
+    func writeBodySource(_ edit: BodyEdit, before: Data?) throws {
+        if let original { try original.write(edit); return }
+        try files.write(edit.content, to: diaryURL(edit.day), purpose: .bodyDiary) {
+            guard try self.readBodySource(edit.day) == before else { throw JournalError.changedSource }
+        }
+    }
+
+    func diaryURL(_ day: JournalDay) -> URL { journals.appendingPathComponent("\(day.value).md") }
+    func draftURL(_ day: JournalDay) -> URL { state.appendingPathComponent("drafts/\(day.value).json") }
+    func transactionURL(_ id: UUID) -> URL { state.appendingPathComponent("transactions/\(id.uuidString).json") }
+    func receiptURL(_ id: UUID) -> URL { state.appendingPathComponent("receipts/\(id.uuidString).json") }
+}
+
+private struct WeekdayPreferenceUpdate: Codable, Equatable {
+    let previous: Data?
+    let next: WeekdayLanguage
+    var committed: Bool
+}

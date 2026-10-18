@@ -74,7 +74,7 @@ class DiscussionHistory:
     def export(self, conversation_id: str, principal_id: str) -> dict:
         view = self.read(conversation_id, principal_id)
         conversation = view["conversation"]
-        safe = {name: conversation[name] for name in ("id", "kind", "personas", "question", "mode", "input_revision", "created_at",
+        safe = {name: conversation[name] for name in ("id", "kind", "chat_kind", "title", "personas", "question", "mode", "input_revision", "created_at",
                                                      "run_id", "run_personas", "run_number", "summary_id", "summary_version", "correction_version", "source_scope")}
         artifacts = view["artifacts"]
         for item in artifacts:
