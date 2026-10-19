@@ -546,7 +546,14 @@ def test_whole_run_deadline_bounds_a_longer_stage(tmp_path, monkeypatch):
     assert run.commands[-1]["cleanup"]["stopped"]
 
 
-def test_swift_discovery_allows_a_cold_build_beyond_five_minutes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("discovery", [
+    ("swift-discovery", ["synthetic-swift", "test", "list"], 360),
+    ("xcode-discovery", ["synthetic-xcodebuild", "test", "-enumerate-tests"], 660),
+])
+@pytest.mark.parametrize("whole_run_expires", [False, True])
+def test_cold_discovery_budget_preserves_whole_run_deadline(
+        tmp_path, monkeypatch, discovery, whole_run_expires):
+    stage, args, build_seconds = discovery
     elapsed = [0.0]
     monkeypatch.setattr(runner.time, "monotonic", lambda: elapsed[0])
 
@@ -558,7 +565,7 @@ def test_swift_discovery_allows_a_cold_build_beyond_five_minutes(tmp_path, monke
             if self.returncode is not None:
                 return self.returncode
             elapsed[0] += timeout
-            if elapsed[0] >= 360:
+            if elapsed[0] >= build_seconds:
                 self.returncode = 0
                 return 0
             raise subprocess.TimeoutExpired("synthetic cold build", timeout)
@@ -572,10 +579,19 @@ def test_swift_discovery_allows_a_cold_build_beyond_five_minutes(tmp_path, monke
     process = ColdBuild()
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: process)
     run = make_run(tmp_path)
-    run.command("swift-discovery", ["synthetic-swift", "test", "list"])
-    assert elapsed[0] >= 360
-    assert run.commands[-1]["status"] == "passed"
-    assert "cleanup" not in run.commands[-1]
+    if whole_run_expires:
+        run.control.deadline = elapsed[0] + build_seconds - 30
+        with pytest.raises(runner.RunnerTimeout, match="whole-run"):
+            run.command(stage, args)
+        assert elapsed[0] == build_seconds - 30
+        assert run.commands[-1]["status"] == "timed_out"
+        assert run.commands[-1]["cleanup"]["stopped"]
+        assert run.commands[-1]["returncode"] == -signal.SIGTERM
+    else:
+        run.command(stage, args)
+        assert elapsed[0] >= build_seconds
+        assert run.commands[-1]["status"] == "passed"
+        assert "cleanup" not in run.commands[-1]
 
 
 def seed_sources(root):

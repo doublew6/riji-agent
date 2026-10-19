@@ -30,7 +30,8 @@ STAGE_TIMEOUT_SECONDS = {
     # Listing tests also compiles the package on a fresh CI runner.
     "swift-discovery": 15 * 60,
     "swift-tests": 15 * 60,
-    "xcode-discovery": 10 * 60,
+    # Enumeration also builds and loads the test bundles on a cold CI runner.
+    "xcode-discovery": 15 * 60,
     "xcode-tests": 40 * 60,
 }
 

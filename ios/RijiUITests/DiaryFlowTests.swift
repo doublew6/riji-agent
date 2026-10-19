@@ -715,12 +715,13 @@ final class DiaryFlowTests: XCTestCase {
     private func tapVisibleGroupAction(_ element: XCUIElement) {
         var previousFrame: CGRect?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard element.exists, element.isHittable, element.isEnabled else { return false }
+            guard element.exists else { return false }
             let frame = element.frame
-            defer { previousFrame = frame }
-            return previousFrame == frame && frame.width > 0 && frame.height > 0
-                && self.app.frame.contains(frame)
-        }, object: element)
+            guard self.isFiniteFrame(frame), self.app.frame.contains(frame) else { return false }
+            let stable = previousFrame == frame
+            previousFrame = frame
+            return stable && element.isEnabled && element.isHittable
+        }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
                        "The complete action must settle visibly and be hittable before tapping")
         let frame = element.frame
@@ -2482,6 +2483,10 @@ final class DiaryFlowTests: XCTestCase {
     private func assertMarkdownPreviewExport(fromSettings: Bool) {
         let raw = "# Live preview\n### **Morning**\n- [ ] Important task\n- [x] Completed task\n- A list item\n> A thought\n**Bold** and *italic* and ~~old~~\n`code` and [Link](https://example.com)\n---\n-\n"
         let initial = input.value as? String ?? ""
+        prepareSystemFilesLocalLocation()
+        app.activate()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertEqual(input.value as? String, initial, "Preparing the system export destination must not change the diary")
         input.tap(); input.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         // Use the native Select All command; arrow navigation can stop after a
@@ -2527,6 +2532,42 @@ final class DiaryFlowTests: XCTestCase {
         waitForExpectations(timeout: 10)
         let digest = SHA256.hash(data: Data(checked.utf8)).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(receipt.value as? String, digest, "Rendering must never become a lossy Markdown serialization")
+    }
+
+    private func prepareSystemFilesLocalLocation() {
+        // A fresh Simulator may open the export picker with no destinations.
+        // Establish the real local location in Files through its own UI first.
+        let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentsApp")
+        files.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        files.launch()
+        XCTAssertTrue(files.wait(for: .runningForeground, timeout: 10))
+        let browse = files.tabBars.buttons["浏览"]
+        if browse.waitForExistence(timeout: 5) { browse.tap() }
+        let localLocation = files.cells.matching(NSPredicate(format: "label == %@", "我的iPhone")).firstMatch
+        let localTitle = files.navigationBars.staticTexts["我的iPhone"]
+        let available = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            localTitle.exists || localLocation.exists
+        }, object: files)
+        guard XCTWaiter.wait(for: [available], timeout: 10) == .completed else {
+            attachSystemFilesFailure(files, "System Files must expose its real local destination before the export test")
+            return
+        }
+        if !localTitle.exists {
+            XCTAssertTrue(localLocation.isHittable)
+            localLocation.tap()
+        }
+        guard localTitle.waitForExistence(timeout: 5) else {
+            attachSystemFilesFailure(files, "System Files must enter My iPhone before returning to the diary")
+            return
+        }
+    }
+
+    private func attachSystemFilesFailure(_ files: XCUIApplication, _ reason: String) {
+        let screenshot = XCTAttachment(screenshot: files.screenshot())
+        screenshot.name = "System Files local destination unavailable"; screenshot.lifetime = .keepAlways; add(screenshot)
+        let hierarchy = XCTAttachment(string: files.debugDescription)
+        hierarchy.name = "System Files local destination hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        XCTFail(reason)
     }
 
     private func saveSettingsMarkdownFile(named name: String) {
