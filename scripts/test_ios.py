@@ -80,6 +80,7 @@ SMOKE_METHODS = (
     "testMobileCorruptArchiveWarningPreservesHealthyContentAndNeverClaimsEmpty",
 )
 SMOKE_TESTS = tuple("RijiUITests/DiaryFlowTests/" + name for name in SMOKE_METHODS)
+SMOKE_SUITES = ("smoke", "ui-smoke")
 
 
 def smoke_partition(index: int, count: int) -> tuple[str, ...]:
@@ -408,7 +409,7 @@ def audit_xcode(summary: dict, tests: dict, suite: str, udid: str, expected: set
     expected_targets = {"RijiNativeTests"} if suite == "native" else {"RijiNativeTests", "RijiUITests"}
     if set(counts) != expected_targets:
         raise RunnerError("Xcode did not execute the requested test bundles.")
-    if suite == "smoke":
+    if suite in SMOKE_SUITES:
         requested_ui = {item for item in expected if item.startswith("RijiUITests/")}
         actual_ui = {item for item in identifiers if item.startswith("RijiUITests/")}
         if not requested_ui or not requested_ui.issubset(SMOKE_TESTS) or actual_ui != requested_ui:
@@ -430,7 +431,7 @@ def xcode_arguments(run: Run, suite: str, udid: str) -> list[str]:
             "CODE_SIGNING_ALLOWED=NO", "test", "-only-testing:RijiNativeTests"]
     if suite == "full":
         args.append("-only-testing:RijiUITests")
-    elif suite == "smoke":
+    elif suite in SMOKE_SUITES:
         args.extend("-only-testing:" + test for test in run.smoke_tests)
     return args
 
@@ -449,13 +450,13 @@ def xcode_inventory(document: dict, suite: str, smoke_tests: tuple[str, ...] = S
     required = {"RijiNativeTests"} if suite == "native" else {"RijiNativeTests", "RijiUITests"}
     if targets != required:
         raise RunnerError("Xcode discovery did not include the requested full test bundles.")
-    if suite == "smoke" and not set(SMOKE_TESTS).issubset(identifiers):
+    if suite in SMOKE_SUITES and not set(SMOKE_TESTS).issubset(identifiers):
         raise RunnerError("Requested smoke tests are missing from Xcode discovery.")
-    if suite == "smoke" and (not smoke_tests or not set(smoke_tests).issubset(SMOKE_TESTS)
-                             or len(set(smoke_tests)) != len(smoke_tests)):
+    if suite in SMOKE_SUITES and (not smoke_tests or not set(smoke_tests).issubset(SMOKE_TESTS)
+                                 or len(set(smoke_tests)) != len(smoke_tests)):
         raise RunnerError("Invalid smoke shard selection.")
     return {test for test in identifiers if test.startswith("RijiNativeTests/")
-            or suite == "full" or (suite == "smoke" and test in smoke_tests)}
+            or suite == "full" or (suite in SMOKE_SUITES and test in smoke_tests)}
 
 
 def enumerate_xcode(run: Run, suite: str, udid: str) -> set[str]:
@@ -490,7 +491,7 @@ def execute_suite(run: Run, suite: str, report: dict) -> None:
     report["environment"] = check_tools(run)
     if suite != "core":
         report["device"] = prepare_device(run)
-    if suite != "native":
+    if suite in {"core", "smoke", "full"}:
         report["package"] = execute_package(run)
         write_json(run.artifacts / "summary.json", report)
     if suite != "core":
@@ -545,14 +546,14 @@ def verified_sources(run: Run, report: dict) -> Iterator[None]:
 
 def parse_arguments(argv: Optional[list[str]]) -> tuple[argparse.Namespace, tuple[int, int], tuple[str, ...]]:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("core", "native", "smoke", "full"), default="smoke")
+    parser.add_argument("--suite", choices=("core", "native", "smoke", "ui-smoke", "full"), default="smoke")
     parser.add_argument("--smoke-shard", metavar="INDEX/COUNT",
-                        help="Run one deterministic smoke UI partition; package and Native tests remain complete.")
+                        help="Partition smoke or ui-smoke UI tests; Native stays complete, package runs only in smoke.")
     args = parser.parse_args(argv)
     shard = (1, 1)
     if args.smoke_shard is not None:
-        if args.suite != "smoke" or not re.fullmatch(r"[1-9][0-9]*/[1-9][0-9]*", args.smoke_shard):
-            parser.error("--smoke-shard requires --suite smoke and INDEX/COUNT.")
+        if args.suite not in SMOKE_SUITES or not re.fullmatch(r"[1-9][0-9]*/[1-9][0-9]*", args.smoke_shard):
+            parser.error("--smoke-shard requires --suite smoke or ui-smoke and INDEX/COUNT.")
         index, count = map(int, args.smoke_shard.split("/"))
         shard = (index, count)
     try:
@@ -570,8 +571,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     artifacts.mkdir(parents=True)
     cache = Path.home() / "Library/Caches/riji-ios-automated-tests"
     report = {"suite": args.suite, "status": "running", "started_at": stamp,
-              "smoke_tests": list(smoke_tests) if args.suite == "smoke" else [],
-              "smoke_shard": {"index": shard[0], "count": shard[1]} if args.suite == "smoke" else None}
+              "smoke_tests": list(smoke_tests) if args.suite in SMOKE_SUITES else [],
+              "smoke_shard": {"index": shard[0], "count": shard[1]} if args.suite in SMOKE_SUITES else None}
     write_json(artifacts / "summary.json", report)
     print("Evidence: " + str(artifacts), flush=True)
     control = ExecutionControl()

@@ -66,10 +66,17 @@ final class DiaryFlowTests: XCTestCase {
             && !frame.isEmpty && app.frame.intersects(frame)
     }
 
+    private func isFiniteFrame(_ frame: CGRect) -> Bool {
+        frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite && !frame.isEmpty
+    }
+
     private func revealAboveToolbar(_ element: XCUIElement) {
         for _ in 0..<8 {
-            if element.exists, element.isHittable, element.frame.minY > app.frame.minY + 150 { return }
+            if hasVisibleFrame(element), element.frame.minY > app.frame.minY + 150, element.isHittable { return }
             app.swipeDown()
+        }
+        guard hasVisibleFrame(element), element.frame.minY > app.frame.minY + 150 else {
+            XCTFail("The requested control must clear the navigation bar before checking its hit point"); return
         }
         XCTAssertTrue(element.isHittable)
     }
@@ -1612,9 +1619,9 @@ final class DiaryFlowTests: XCTestCase {
         let nextGoal = app.buttons["mobileSummary-synthetic-goal-next"]; reveal(nextGoal)
         XCTAssertEqual(nextGoal.value as? String, "主题")
         captureMemoryCardEntry(nextGoal, named: "Approved memory all themes — ordinary remaining card, dark largest text")
-        revealAboveToolbar(filter); filter.tap(); app.buttons["工作与学习"].tap()
+        selectMemoryTheme("工作与学习")
         for card in [summary, goal, nextGoal] { XCTAssertFalse(card.exists) }
-        filter.tap(); app.buttons["目标与计划"].tap()
+        selectMemoryTheme("目标与计划")
         XCTAssertFalse(summary.exists)
         reveal(goal); XCTAssertEqual(goal.value as? String, "首个主题")
         captureMemoryCardEntry(goal, named: "Approved memory filtered goals — new first card, dark largest text")
@@ -1629,6 +1636,59 @@ final class DiaryFlowTests: XCTestCase {
         let weekly = app.buttons["mobileWeeklyMemory"]; reveal(weekly); weekly.tap()
         XCTAssertTrue(app.descendants(matching: .any)["mobileWeeklyMemoryUnavailable"].waitForExistence(timeout: 5))
         attachMentorScreenshot("Approved weekly report unavailable — dark largest text")
+    }
+
+    private func selectMemoryTheme(_ title: String) {
+        let filter = app.buttons["mobileThemeFilter"]
+        revealMemoryThemeFilter(filter); filter.tap()
+        let option = app.buttons[title]
+        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        var previousFrame = CGRect.null
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard option.exists else { return false }
+            let frame = option.frame
+            guard self.isFiniteFrame(frame), self.app.frame.insetBy(dx: 8, dy: 44).contains(frame) else { return false }
+            let stable = previousFrame == frame
+            previousFrame = frame
+            return stable && option.isEnabled && option.isHittable
+        }, object: option)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "The native picker option must have a stable visible hit target before selection")
+        option.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            filter.exists && filter.label.contains("分类筛选") && filter.label.hasSuffix(title)
+        }, object: filter)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected, dismissed], timeout: 5), .completed,
+                       "Filtering must commit the selected category and dismiss the native menu before inspecting cards")
+    }
+
+    private func revealMemoryThemeFilter(_ filter: XCUIElement) {
+        let list = app.collectionViews.firstMatch
+        XCTAssertTrue(app.navigationBars["记忆"].waitForExistence(timeout: 5))
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        for _ in 0..<16 {
+            let bounds = list.frame.intersection(app.frame)
+            let top = max(bounds.minY, app.navigationBars["记忆"].frame.maxY) + 12
+            let bottom = min(bounds.maxY, app.tabBars.firstMatch.frame.minY) - 12
+            XCTAssertGreaterThan(bottom - top, 200)
+            let viewport = CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
+            var offset = min(360, viewport.height * 0.6)
+            if filter.exists, isFiniteFrame(filter.frame) {
+                let frame = filter.frame
+                offset = viewport.midY - frame.midY
+                if viewport.contains(frame), abs(offset) < 24, filter.isHittable { return }
+                // Once mounted, approach the center in small steps. Full-screen
+                // swipes overshoot this large-text picker and can oscillate.
+                offset = (offset < 0 ? -1 : 1) * min(120, max(24, abs(offset) + 10))
+            }
+            let origin = list.coordinate(withNormalizedOffset: .zero)
+            let startY = viewport.midY - list.frame.minY - offset / 2
+            let start = origin.withOffset(CGVector(dx: 12, dy: startY))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: offset)),
+                        withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        XCTFail("The memory picker must be fully visible near the list center before opening its menu")
     }
 
     func testSettingsMainTabSavesInputAndKeepsSubpagesAndRecordingsReachable() {
@@ -2421,10 +2481,15 @@ final class DiaryFlowTests: XCTestCase {
 
     private func assertMarkdownPreviewExport(fromSettings: Bool) {
         let raw = "# Live preview\n### **Morning**\n- [ ] Important task\n- [x] Completed task\n- A list item\n> A thought\n**Bold** and *italic* and ~~old~~\n`code` and [Link](https://example.com)\n---\n-\n"
+        let initial = input.value as? String ?? ""
         input.tap(); input.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        input.typeKey(XCUIKeyboardKey.upArrow, modifierFlags: .command)
-        input.typeKey(XCUIKeyboardKey.downArrow, modifierFlags: [.command, .shift])
+        // Use the native Select All command; arrow navigation can stop after a
+        // rendered heading marker. Verify the selection cleared every source byte.
+        input.typeKey("a", modifierFlags: .command)
+        XCTAssertEqual(input.value as? String, initial, "Selecting the fixture must not change its source")
+        input.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertEqual(input.value as? String, "", "Select All must clear the complete original fixture before replacement")
         input.typeText(raw)
         waitForStatus("已保存在手机"); XCTAssertEqual(input.value as? String, raw)
         input.typeKey(XCUIKeyboardKey.upArrow, modifierFlags: .command)
@@ -2450,7 +2515,15 @@ final class DiaryFlowTests: XCTestCase {
         if fromSettings { saveSettingsMarkdownFile(named: exportName) }
         else { saveVoiceFile(named: exportName) }
         let receipt = fromSettings ? app.staticTexts["settingsExportStatus"] : status
-        expectation(for: NSPredicate(format: "label CONTAINS %@", "Markdown 已导出"), evaluatedWith: receipt)
+        let settingsPicker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+        // Files can finish after tap() returns. Resolving an absent receipt's label
+        // blocks inside XCTest, so poll existence before reading the completed export.
+        let exportCompleted = NSPredicate { _, _ in
+            if fromSettings && settingsPicker.exists { return false }
+            guard receipt.exists else { return false }
+            return receipt.label.contains("Markdown 已导出")
+        }
+        expectation(for: exportCompleted, evaluatedWith: nil)
         waitForExpectations(timeout: 10)
         let digest = SHA256.hash(data: Data(checked.utf8)).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(receipt.value as? String, digest, "Rendering must never become a lossy Markdown serialization")
@@ -3167,7 +3240,7 @@ extension DiaryFlowTests {
         let merged = app.textViews["bodyConflictMerge"]; reveal(merged)
         let expected = before + "External simulated edit\r\n" + suffix
         XCTAssertEqual(Data((merged.value as? String ?? "").utf8), Data(expected.utf8), "Untouched headings, tables, Unicode and CRLF must remain byte-for-byte unchanged")
-        let finalDiff = app.staticTexts["bodyFinalDiff"]; reveal(finalDiff); finalDiff.tap()
+        let finalDiff = app.buttons["bodyFinalDiff"]; reveal(finalDiff); finalDiff.tap()
         XCTAssertTrue(app.staticTexts["bodyFinalDiffSummary"].waitForExistence(timeout: 5))
         let confirm = app.buttons["confirmBodyMerge"]; reveal(confirm); confirm.tap()
         expectation(for: NSPredicate(format: "value == %@", expected), evaluatedWith: input); waitForExpectations(timeout: 10)
