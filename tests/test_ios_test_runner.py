@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -323,18 +324,39 @@ def test_xcode_enumeration_includes_all_native_and_selects_only_requested_ui():
     assert len(runner.xcode_inventory(document, "full")) == len(runner.SMOKE_TESTS) + 2
 
 
-def test_smoke_partitions_are_disjoint_and_cover_the_complete_suite():
-    partitions = [set(runner.smoke_partition(index, 3)) for index in (1, 2, 3)]
+@pytest.mark.parametrize("count", [1, 3, 4])
+def test_smoke_partitions_are_disjoint_and_cover_the_complete_suite(count):
+    partitions = [set(runner.smoke_partition(index, count)) for index in range(1, count + 1)]
     assert set.union(*partitions) == set(runner.SMOKE_TESTS)
     assert sum(map(len, partitions)) == len(runner.SMOKE_TESTS)
     assert max(map(len, partitions)) - min(map(len, partitions)) <= 1
     assert runner.smoke_partition(1, 1) == runner.SMOKE_TESTS
 
 
-@pytest.mark.parametrize("index", [1, 2, 3])
+def test_ci_shard_configuration_dispatches_every_smoke_test_exactly_once():
+    workflow = (ROOT / ".github/workflows/ios.yml").read_text(encoding="utf-8")
+    matrix = re.search(r"shard:.*inputs.suite == 'full' && '(\[[^']+\])' \|\| '(\[[^']+\])'", workflow)
+    assert matrix, "The workflow must expose separate full and smoke matrices"
+    assert json.loads(matrix[1]) == [0]
+    indices = json.loads(matrix[2])
+    denominator = re.search(r"IOS_SMOKE_SHARD: \$\{\{ matrix.shard \}\}/(\d+)", workflow)
+    assert denominator
+    count = int(denominator[1])
+    assert indices == list(range(1, count + 1)) and count == 4
+    requested = []
+    for index in indices:
+        args, shard, tests = runner.parse_arguments(["--suite", "smoke", "--smoke-shard", f"{index}/{count}"])
+        assert args.suite == "smoke" and shard == (index, count)
+        requested.append(tests)
+    assert list(map(len, requested)) == [11, 10, 10, 10]
+    assert set().union(*map(set, requested)) == set(runner.SMOKE_TESTS)
+    assert sum(map(len, requested)) == len(runner.SMOKE_TESTS)
+
+
+@pytest.mark.parametrize("index", [1, 2, 3, 4])
 def test_shard_arguments_inventory_and_result_audit_agree(tmp_path, index):
     run = make_run(tmp_path)
-    run.smoke_tests = runner.smoke_partition(index, 3)
+    run.smoke_tests = runner.smoke_partition(index, 4)
     args = runner.xcode_arguments(run, "smoke", UDID)
     selected = {arg.removeprefix("-only-testing:") for arg in args
                 if arg.startswith("-only-testing:RijiUITests/")}
@@ -356,7 +378,7 @@ def test_shard_arguments_inventory_and_result_audit_agree(tmp_path, index):
 
 def test_shard_still_requires_discovery_of_the_entire_smoke_suite():
     document = enumeration()
-    selected = runner.smoke_partition(1, 3)
+    selected = runner.smoke_partition(1, 4)
     missing = next(test for test in runner.SMOKE_TESTS if test not in selected)
     document["values"][0]["enabledTests"] = [test for test in document["values"][0]["enabledTests"]
         if test["identifier"] != missing + "()"]

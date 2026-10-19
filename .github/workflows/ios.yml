@@ -25,11 +25,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.suite == 'full' && '[0]' || '[1,2,3]') }}
+        shard: ${{ fromJSON(inputs.suite == 'full' && '[0]' || '[1,2,3,4]') }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       IOS_TEST_SUITE: ${{ inputs.suite || 'smoke' }}
-      IOS_SMOKE_SHARD: ${{ matrix.shard }}/3
+      IOS_SMOKE_SHARD: ${{ matrix.shard }}/4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

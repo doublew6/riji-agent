@@ -344,9 +344,25 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func captureMemoryCardEntry(_ card: XCUIElement, named name: String) {
-        for _ in 0..<5 {
-            if card.frame.maxY < app.tabBars.firstMatch.frame.minY - 12 { break }
-            app.swipeUp()
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        for _ in 0..<8 {
+            let navigationBottom = app.navigationBars["记忆"].frame.maxY
+            let tabTop = app.tabBars.firstMatch.frame.minY
+            let top = navigationBottom + 44 + 12
+            let bottom = tabTop - 12
+            XCTAssertGreaterThan(bottom - top, 80)
+            let frame = card.frame
+            XCTAssertTrue(frame.minY.isFinite && frame.height.isFinite && !frame.isEmpty)
+            if frame.maxY > top, frame.maxY < bottom { break }
+            // A full-screen swipe can move the large card's entry under the
+            // navigation bar. Center its bottom edge with bounded, reversible drags.
+            let offset = (top + bottom) / 2 - frame.maxY
+            let distance = min(120, abs(offset))
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: app.frame.width / 2,
+                dy: (navigationBottom + tabTop) / 2 - app.frame.minY))
+            let end = start.withOffset(CGVector(dx: 0, dy: offset > 0 ? distance : -distance))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
         XCTAssertTrue(card.isHittable)
         XCTAssertLessThan(card.frame.maxY, app.tabBars.firstMatch.frame.minY)
@@ -455,7 +471,7 @@ final class DiaryFlowTests: XCTestCase {
             let visible = messages.frame.insetBy(dx: 4, dy: 8)
             XCTAssertGreaterThan(visible.height, 40, "The inline chat must provide a usable message viewport")
             var earlier = attempt < 9 ? towardEarlier : !towardEarlier
-            var distance = min(80, visible.height * 0.25)
+            var distance = min(80, visible.height * 0.5)
             if element.exists {
                 let frame = element.frame
                 let center = CGPoint(x: frame.midX, y: frame.midY)
@@ -465,10 +481,13 @@ final class DiaryFlowTests: XCTestCase {
                 distance = min(distance, max(18, abs(frame.midY - visible.midY)))
                 print("Inline message scroll \(attempt): viewport=\(visible), target=\(frame), hittable=\(element.isHittable), earlier=\(earlier), distance=\(distance)")
             }
-            let middle = messages.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            let end = middle.withOffset(CGVector(dx: 0, dy: earlier ? distance : -distance))
-            // Scroll the actual message viewport, keeping gestures off the fixed header and keyboard.
-            middle.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+            let origin = messages.coordinate(withNormalizedOffset: .zero)
+            let startY = visible.minY - messages.frame.minY + visible.height * (earlier ? 0.25 : 0.75)
+            let start = origin.withOffset(CGVector(dx: messages.frame.width / 2, dy: startY))
+            let end = start.withOffset(CGVector(dx: 0, dy: earlier ? distance : -distance))
+            // Cross enough of the viewport to overcome touch slop even when the
+            // selection bar leaves little room; both endpoints remain inside it.
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
         attachMentorScreenshot("Inline message scroll — unresolved target")
         let hierarchy = XCTAttachment(string: app.debugDescription)
