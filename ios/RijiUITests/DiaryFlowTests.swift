@@ -146,11 +146,52 @@ final class DiaryFlowTests: XCTestCase {
 
     private func chooseGroupMenuEntry(_ entry: XCUIElement, named name: String) {
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
-        tapVisibleGroupAction(entry)
+        tapStableGroupMenuEntry(named: name)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !entry.exists }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
                        "Choosing a group must dismiss its native menu before checking the selected conversation")
         assertInlineGroup(named: name)
+    }
+
+    private func tapStableGroupMenuEntry(named name: String) {
+        var previous: (frame: CGRect, bounds: CGRect)?
+        var captured: (frame: CGRect, bounds: CGRect)?
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let visible = self.groupMenuEntryFrame(named: name) else {
+                previous = nil; return false
+            }
+            let stable = previous?.frame == visible.frame && previous?.bounds == visible.bounds
+            previous = visible
+            if stable { captured = visible }
+            return stable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "Two root snapshots must agree on the unique visible enabled group menu entry")
+        guard let visible = captured else { XCTFail("The group menu entry must have a stable captured frame"); return }
+        // Existence does not guarantee a later targeted native-menu snapshot.
+        // Resolve the known label in the root tree, then tap its stable center once.
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: visible.frame.midX - visible.bounds.minX, dy: visible.frame.midY - visible.bounds.minY)).tap()
+    }
+
+    private func groupMenuEntryFrame(named name: String) -> (frame: CGRect, bounds: CGRect)? {
+        guard let snapshot = try? app.snapshot() else {
+            XCTFail("The application must provide a snapshot of the group menu"); return nil
+        }
+        let labels = syntheticGroupMenuLabels(name)
+        var nodes: [XCUIElementSnapshot] = [snapshot]
+        var matches: [XCUIElementSnapshot] = []
+        while let node = nodes.popLast() {
+            if node.elementType == .button, labels.contains(node.label),
+               node.identifier.isEmpty || node.identifier.hasPrefix("mobileGroup-") { matches.append(node) }
+            nodes.append(contentsOf: node.children)
+        }
+        guard matches.count <= 1 else {
+            XCTFail("A group name must identify exactly one native menu button"); return nil
+        }
+        guard let entry = matches.first, entry.isEnabled, isFiniteFrame(snapshot.frame),
+              isFiniteFrame(entry.frame), snapshot.frame.contains(entry.frame) else { return nil }
+        return (entry.frame, snapshot.frame)
     }
 
     private func assertInlineInputReachableWithKeyboard() {
@@ -481,7 +522,12 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func syntheticGroupRow(_ name: String) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "mobileGroup-", name)).firstMatch
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label IN %@",
+                                        "mobileGroup-", syntheticGroupMenuLabels(name) as NSArray)).firstMatch
+    }
+
+    private func syntheticGroupMenuLabels(_ name: String) -> [String] {
+        [name, name + " · 草稿", name + " · 新回复", name + " · 草稿 · 新回复"]
     }
 
     private func revealRoundtableMessage(_ element: XCUIElement, towardEarlier: Bool = false) {
@@ -590,7 +636,11 @@ final class DiaryFlowTests: XCTestCase {
         input.swipeUp(); attachMentorScreenshot(screenshotName + " — readable diary without machine fields")
         app.buttons["moreMenu"].tap()
         let sources = app.buttons["diaryAISources"]
-        XCTAssertTrue(sources.waitForExistence(timeout: 5)); sources.tap()
+        XCTAssertTrue(sources.waitForExistence(timeout: 5)); tapVisibleGroupAction(sources)
+        let dismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: sources)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
+                       "Opening AI sources must dismiss the native diary menu")
         let close = app.buttons["closeDiaryAISources"]
         XCTAssertTrue(close.waitForExistence(timeout: 5))
         let raw = app.staticTexts["diaryAIRawMarkdown"]
@@ -697,7 +747,7 @@ final class DiaryFlowTests: XCTestCase {
         let multi = app.buttons["roundtableMultiSelect-" + identifier]
         XCTAssertTrue(multi.waitForExistence(timeout: 5))
         attachMentorScreenshot("AI reply actions — explicitly named save and multi-select")
-        multi.tap()
+        enterRoundtableSelection(from: multi)
         let selected = app.buttons["roundtableSelect-" + identifier]
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
         XCTAssertEqual(selected.value as? String, "已选择")
@@ -711,6 +761,16 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "roundtableSelect-")).count, 0)
         XCTAssertFalse(app.buttons["roundtableSaveSelection"].exists)
         XCTAssertTrue(composer.isHittable)
+    }
+
+    private func enterRoundtableSelection(from menuAction: XCUIElement) {
+        // Native menus can move after becoming accessible. Use the observed stable
+        // frame for one tap, then require dismissal before checking selection state.
+        tapVisibleGroupAction(menuAction)
+        let dismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: menuAction)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
+                       "The multi-select action must dismiss its native menu")
     }
 
     private func toggleVisibleGroupSelection(_ element: XCUIElement, expecting value: String) {
@@ -1183,7 +1243,7 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertFalse(confirm.exists)
         let identifier = openRoundtableMessageActions(last: true)
         let multi = app.buttons["roundtableMultiSelect-" + identifier]
-        XCTAssertTrue(multi.waitForExistence(timeout: 5)); multi.tap()
+        XCTAssertTrue(multi.waitForExistence(timeout: 5)); enterRoundtableSelection(from: multi)
         XCTAssertTrue(app.buttons["roundtableSelect-" + identifier].waitForExistence(timeout: 5))
         let save = app.buttons["roundtableSaveSelection"]; reveal(save); save.tap()
         let selectedText = editRoundtableResult()
