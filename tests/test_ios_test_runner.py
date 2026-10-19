@@ -323,6 +323,57 @@ def test_xcode_enumeration_includes_all_native_and_selects_only_requested_ui():
     assert len(runner.xcode_inventory(document, "full")) == len(runner.SMOKE_TESTS) + 2
 
 
+def test_smoke_partitions_are_disjoint_and_cover_the_complete_suite():
+    partitions = [set(runner.smoke_partition(index, 3)) for index in (1, 2, 3)]
+    assert set.union(*partitions) == set(runner.SMOKE_TESTS)
+    assert sum(map(len, partitions)) == len(runner.SMOKE_TESTS)
+    assert max(map(len, partitions)) - min(map(len, partitions)) <= 1
+    assert runner.smoke_partition(1, 1) == runner.SMOKE_TESTS
+
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+def test_shard_arguments_inventory_and_result_audit_agree(tmp_path, index):
+    run = make_run(tmp_path)
+    run.smoke_tests = runner.smoke_partition(index, 3)
+    args = runner.xcode_arguments(run, "smoke", UDID)
+    selected = {arg.removeprefix("-only-testing:") for arg in args
+                if arg.startswith("-only-testing:RijiUITests/")}
+    assert selected == set(run.smoke_tests)
+    assert "-only-testing:RijiNativeTests" in args
+    expected = runner.xcode_inventory(enumeration(), "smoke", run.smoke_tests)
+    assert expected == selected | {"RijiNativeTests/NativeTests/testNative"}
+    summary, results = result_documents()
+    ui = results["testNodes"][1]["children"]
+    results["testNodes"][1]["children"] = [case for case in ui
+        if "RijiUITests/" + case["nodeIdentifier"].removesuffix("()") in selected]
+    summary.update(passedTests=len(expected), totalTestCount=len(expected))
+    assert runner.audit_xcode(summary, results, "smoke", UDID, expected)["passed"] == len(expected)
+    results["testNodes"][1]["children"].pop()
+    summary.update(passedTests=len(expected) - 1, totalTestCount=len(expected) - 1)
+    with pytest.raises(runner.RunnerError, match="smoke tests are missing"):
+        runner.audit_xcode(summary, results, "smoke", UDID, expected)
+
+
+def test_shard_still_requires_discovery_of_the_entire_smoke_suite():
+    document = enumeration()
+    selected = runner.smoke_partition(1, 3)
+    missing = next(test for test in runner.SMOKE_TESTS if test not in selected)
+    document["values"][0]["enabledTests"] = [test for test in document["values"][0]["enabledTests"]
+        if test["identifier"] != missing + "()"]
+    with pytest.raises(runner.RunnerError, match="missing from Xcode discovery"):
+        runner.xcode_inventory(document, "smoke", selected)
+
+
+@pytest.mark.parametrize("args", [["--smoke-shard", "0/3"], ["--smoke-shard", "4/3"],
+    ["--smoke-shard", "1/999"], ["--smoke-shard", "invalid"],
+    ["--suite", "full", "--smoke-shard", "1/3"], ["--suite", "native", "--smoke-shard", "1/3"],
+    ["--suite", "core", "--smoke-shard", "1/3"]])
+def test_invalid_shard_is_rejected_before_any_tool_runs(args):
+    with pytest.raises(SystemExit) as stopped:
+        runner.main(args)
+    assert stopped.value.code == 2
+
+
 @pytest.mark.parametrize("mutation", ["error", "empty", "disabled", "missing-smoke", "duplicate"])
 def test_xcode_enumeration_fails_closed(mutation):
     document = enumeration()
@@ -443,6 +494,38 @@ def test_whole_run_deadline_bounds_a_longer_stage(tmp_path, monkeypatch):
         run.command("delay", [sys.executable, "-c", "import time; time.sleep(10)"])
     assert run.commands[-1]["status"] == "timed_out"
     assert run.commands[-1]["cleanup"]["stopped"]
+
+
+def test_swift_discovery_allows_a_cold_build_beyond_five_minutes(tmp_path, monkeypatch):
+    elapsed = [0.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: elapsed[0])
+
+    class ColdBuild:
+        pid = 12345
+        returncode = None
+
+        def wait(self, timeout):
+            if self.returncode is not None:
+                return self.returncode
+            elapsed[0] += timeout
+            if elapsed[0] >= 360:
+                self.returncode = 0
+                return 0
+            raise subprocess.TimeoutExpired("synthetic cold build", timeout)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -signal.SIGTERM
+
+    process = ColdBuild()
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: process)
+    run = make_run(tmp_path)
+    run.command("swift-discovery", ["synthetic-swift", "test", "list"])
+    assert elapsed[0] >= 360
+    assert run.commands[-1]["status"] == "passed"
+    assert "cleanup" not in run.commands[-1]
 
 
 def seed_sources(root):

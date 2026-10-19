@@ -22,9 +22,14 @@ jobs:
   ios:
     runs-on: macos-15
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.suite == 'full' && '[0]' || '[1,2,3]') }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       IOS_TEST_SUITE: ${{ inputs.suite || 'smoke' }}
+      IOS_SMOKE_SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,12 +37,17 @@ jobs:
           python-version: '3.11'
       - name: Run isolated iOS regression
         timeout-minutes: 55
-        run: python3 scripts/test_ios.py --suite "$IOS_TEST_SUITE"
+        run: |
+          if [ "$IOS_TEST_SUITE" = "smoke" ]; then
+            python3 scripts/test_ios.py --suite smoke --smoke-shard "$IOS_SMOKE_SHARD"
+          else
+            python3 scripts/test_ios.py --suite "$IOS_TEST_SUITE"
+          fi
       - name: Retain logs, inventories and result bundles
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: output/ios-tests/
           if-no-files-found: error
           retention-days: 14

@@ -46,6 +46,10 @@ uv run riji-agent index --status   # 只读查看 note 数、最近索引时间�
 
 ## 后台常驻服务（macOS / Linux / Windows）
 
+当前发布与 CI 验证范围为 **macOS / Linux**。Windows 的 Task Scheduler 后端及其
+单元测试保留，但 Windows 目前不作为受支持的运行平台；下文的 Windows 说明仅供
+后端维护参考，不表示已通过 Windows 实机运行验收。
+
 如果 riji-agent 要长期配合 Hermes + Feishu 使用，建议把它安装成系统级用户服务，
 而不是依赖某个终端窗口、`screen` 或 `nohup`。`service` 命令的子命令在三个平台上
 完全一致，`--target` 默认为 `auto`，会按当前系统自动选择后端：

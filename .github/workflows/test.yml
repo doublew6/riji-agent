@@ -11,9 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # All three service backends are unit-tested via injected fake runners,
-        # so every OS exercises every backend's rendering and dispatch.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Current supported runtime platforms. All service backends, including
+        # the retained Windows adapter, are unit-tested via injected fake runners.
+        os: [ubuntu-latest, macos-latest]
         # Project runtime target.
         python-version: ["3.11"]
     steps:

@@ -194,14 +194,18 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["roundtablePreviewInvite"].tap()
         let invitation = app.buttons["roundtableConfirmInvite"]
         XCTAssertTrue(invitation.waitForExistence(timeout: 5)); invitation.tap()
+        let invitationClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: invitation)
+        XCTAssertEqual(XCTWaiter.wait(for: [invitationClosed], timeout: 5), .completed)
         let participants = app.staticTexts["roundtableParticipants"]
+        // The inline conversation restores the latest message; its lazy header must be scrolled into view.
+        revealNorthStarRoundtableElement(participants, towardEarlier: true)
         let participating = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "本轮发言"), object: participants)
         XCTAssertEqual(XCTWaiter.wait(for: [participating], timeout: 10), .completed)
         XCTAssertTrue(participants.label.contains("温柔回顾者")); XCTAssertTrue(participants.label.contains("直率教练"))
         XCTAssertFalse(participants.label.contains("未来的我")); XCTAssertFalse(participants.label.contains("王阳明"))
         attachMentorScreenshot("North Star selected — roundtable")
         let latest = app.staticTexts["建议先降低起步难度，每周做一个小练习，避免把学习变成额外压力。"]
-        revealRoundtableMessage(latest); attachMentorScreenshot("Roundtable — current mentor dialogue")
+        revealNorthStarRoundtableElement(latest, towardEarlier: false); attachMentorScreenshot("Roundtable — current mentor dialogue")
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10)); XCTAssertEqual(input.value as? String, original)
         app.tabBars.buttons["导师"].tap(); app.buttons["mobileMentor-future_self"].tap()
@@ -212,6 +216,41 @@ final class DiaryFlowTests: XCTestCase {
         app.tabBars.buttons["日记"].tap()
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         attachMentorScreenshot("Diary after mentor destination — local appearance")
+    }
+
+    private func revealNorthStarRoundtableElement(_ element: XCUIElement, towardEarlier: Bool) {
+        let messages = app.scrollViews["roundtableMessages"]
+        XCTAssertTrue(messages.waitForExistence(timeout: 5))
+        var previousPosition: String?
+        var unchangedPositions = 0
+        for _ in 0..<16 {
+            let visible = messages.frame.insetBy(dx: 4, dy: 8)
+            XCTAssertGreaterThan(visible.height, 60)
+            var earlier = towardEarlier
+            var distance = visible.height * 0.6
+            if element.exists {
+                let frame = element.frame
+                if element.isHittable && visible.contains(frame) { return }
+                earlier = frame.midY < visible.midY
+                distance = min(distance, max(20, abs(frame.midY - visible.midY)))
+            }
+            let cards = messages.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH %@", "roundtableMessage-"))
+            let position = cards.allElementsBoundByIndex.filter { $0.frame.intersects(visible) }
+                .map { $0.identifier + ":" + String(Int($0.frame.minY.rounded())) }.joined(separator: "|")
+            unchangedPositions = position == previousPosition ? unchangedPositions + 1 : 0
+            guard unchangedPositions < 2 else {
+                XCTFail("The roundtable stopped scrolling before the requested content became visible"); return
+            }
+            previousPosition = position
+            // This target's direction is known; do not reverse halfway through the six-page conversation.
+            let origin = messages.coordinate(withNormalizedOffset: .zero)
+            let startY = visible.minY - messages.frame.minY + visible.height * (earlier ? 0.2 : 0.8)
+            let start = origin.withOffset(CGVector(dx: messages.frame.width / 2, dy: startY))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: earlier ? distance : -distance)),
+                        withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        XCTFail("The requested North Star conversation content must be visible within the message viewport")
     }
 
     func testMentorAccessibilityTextKeyboardAndRoundtableControlsRemainReachable() {
@@ -601,8 +640,8 @@ final class DiaryFlowTests: XCTestCase {
         let selected = app.buttons["roundtableSelect-" + identifier]
         XCTAssertTrue(selected.waitForExistence(timeout: 5))
         XCTAssertEqual(selected.value as? String, "已选择")
-        selected.tap(); XCTAssertEqual(selected.value as? String, "未选择")
-        selected.tap(); XCTAssertEqual(selected.value as? String, "已选择")
+        toggleVisibleGroupSelection(selected, expecting: "未选择")
+        toggleVisibleGroupSelection(selected, expecting: "已选择")
         XCTAssertTrue(app.buttons["roundtableSaveSelection"].exists)
         attachMentorScreenshot("Multi-select — visible selected state and cancel")
         verifySelectionAndReadingAcrossGroups(groupName: groupName, selectedID: identifier, laterID: laterIdentifier)
@@ -611,6 +650,37 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "roundtableSelect-")).count, 0)
         XCTAssertFalse(app.buttons["roundtableSaveSelection"].exists)
         XCTAssertTrue(composer.isHittable)
+    }
+
+    private func toggleVisibleGroupSelection(_ element: XCUIElement, expecting value: String) {
+        // Emptying the selection changes the composer height. Re-read the message
+        // viewport before each tap instead of reusing the previous activation point.
+        revealRoundtableMessage(element, towardEarlier: true)
+        let viewport = app.scrollViews["roundtableMessages"].frame
+        XCTAssertTrue(viewport.contains(element.frame), "Selection must be fully inside the message viewport")
+        tapVisibleGroupAction(element)
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed,
+                       "A single selection tap must produce the requested state")
+    }
+
+    private func tapVisibleGroupAction(_ element: XCUIElement) {
+        var previousFrame: CGRect?
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard element.exists, element.isHittable, element.isEnabled else { return false }
+            let frame = element.frame
+            defer { previousFrame = frame }
+            return previousFrame == frame && frame.width > 0 && frame.height > 0
+                && self.app.frame.contains(frame)
+        }, object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "The complete action must settle visibly and be hittable before tapping")
+        let frame = element.frame
+        // Context-menu and selection activation points can lag behind their layout.
+        // A foreground context menu may overlay the still-present keyboard.
+        // Tap the freshly observed center once, then let the caller assert the effect.
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: frame.midX - app.frame.minX, dy: frame.midY - app.frame.minY)).tap()
     }
 
     private func verifySelectionAndReadingAcrossGroups(groupName: String, selectedID: String, laterID: String) {
@@ -814,11 +884,10 @@ final class DiaryFlowTests: XCTestCase {
         composer.tap(); composer.typeText("A synthetic plan to save")
         app.buttons["roundtableSend"].tap()
         let identifier = openRoundtableMessageActions(longPress: true)
-        let save = app.buttons["roundtableSaveMessage-" + identifier]
-        XCTAssertTrue(save.waitForExistence(timeout: 5)); save.tap()
+        openGroupResultFromMessageActions(identifier)
         let beforeSave = cancelEditedResultAndResumeDiary(before: before)
-        _ = openRoundtableMessageActions(longPress: true)
-        XCTAssertTrue(save.waitForExistence(timeout: 5)); save.tap()
+        XCTAssertEqual(openRoundtableMessageActions(longPress: true), identifier)
+        openGroupResultFromMessageActions(identifier)
         let selectedText = editRoundtableResult(append: "\nSynthetic reviewed clarification.")
         XCTAssertFalse(app.buttons["roundtableLocalPreview"].exists)
         let exactBlock = exactRoundtableResultPreview(selectedText)
@@ -844,6 +913,17 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         let reopened = diaryRawMarkdownFromSources(edited: true, screenshotName: "Cold reopened group result")
         XCTAssertEqual(Data(reopened.utf8), Data(bytes.utf8), "Cold reopen must preserve the exact AI block and manual diary entry")
+    }
+
+    private func openGroupResultFromMessageActions(_ identifier: String) {
+        let save = app.buttons["roundtableSaveMessage-" + identifier]
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        tapVisibleGroupAction(save)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: save)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
+                       "Saving the selected message must dismiss its context menu")
+        XCTAssertTrue(app.buttons["roundtableCloseResult"].waitForExistence(timeout: 10),
+                      "The selected message must open its explicit save preview")
     }
 
     private func verifyRetainedPreviewAcrossGroups(groupName: String, text: String, exactBlock: String) {
@@ -2090,8 +2170,12 @@ final class DiaryFlowTests: XCTestCase {
         let action = app.textFields["mit-action"]
         XCTAssertTrue(action.waitForExistence(timeout: 5)); action.tap(); action.typeText("One synthetic practice")
         app.textFields["mit-criterion"].tap(); app.textFields["mit-criterion"].typeText("One saved reflection")
-        reveal(app.buttons["mitSection"]); app.buttons["mitSection"].tap(); app.buttons["🌅 Morning"].tap()
-        reveal(app.buttons["previewMIT"]); app.buttons["previewMIT"].tap()
+        let section = app.buttons["mitSection"]
+        revealDirectionMITControl(section); section.tap()
+        let morning = app.buttons["🌅 Morning"]
+        XCTAssertTrue(morning.waitForExistence(timeout: 5)); XCTAssertTrue(morning.isHittable); morning.tap()
+        XCTAssertTrue(section.label.contains("🌅 Morning"))
+        revealDirectionMITControl(app.buttons["previewMIT"]); app.buttons["previewMIT"].tap()
         let confirmMIT = app.buttons["confirmMIT"]
         XCTAssertTrue(confirmMIT.waitForExistence(timeout: 5)); confirmMIT.tap()
         XCTAssertTrue(app.staticTexts["currentMIT"].waitForExistence(timeout: 5))
@@ -2108,6 +2192,25 @@ final class DiaryFlowTests: XCTestCase {
         attachMentorScreenshot("Approved direction — accessibility XXXL definition")
         reveal(mit); XCTAssertTrue(mit.isHittable)
         attachMentorScreenshot("Approved direction — accessibility XXXL MIT action")
+    }
+
+    private func revealDirectionMITControl(_ element: XCUIElement) {
+        let form = app.collectionViews.containing(.textField, identifier: "mit-criterion").firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 5))
+        for _ in 0..<8 {
+            let top = max(form.frame.minY, app.navigationBars.firstMatch.frame.maxY) + 8
+            let keyboard = app.keyboards.firstMatch
+            let bottom = min(form.frame.maxY, keyboard.exists ? keyboard.frame.minY : app.frame.maxY) - 8
+            let height = bottom - top
+            XCTAssertGreaterThan(height, 60)
+            if element.exists, element.isHittable, element.frame.minY >= top, element.frame.maxY <= bottom { return }
+            // A partially exposed menu can report hittable while its tap point is under the keyboard.
+            let origin = form.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: form.frame.width / 2, dy: top - form.frame.minY + height * 0.75))
+            let end = origin.withOffset(CGVector(dx: form.frame.width / 2, dy: top - form.frame.minY + height * 0.25))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        XCTFail("The MIT control must be fully visible above the keyboard before interaction")
     }
 
     func testDirectMITBodyEditRequiresExplicitPlanReconciliation() {

@@ -170,8 +170,9 @@ uv run riji-agent service start
 uv run riji-agent service status
 ```
 
-macOS 使用 launchd，Linux 使用 systemd --user，Windows 使用 Task
-Scheduler；`--target` 默认是 `auto`。机器睡眠或用户登出时，飞书机器人无法
+当前发布与 CI 验证范围为 macOS / Linux，分别使用 launchd / systemd --user；
+`--target` 默认是 `auto`。Windows 的 Task Scheduler 后端及其单元测试保留，
+但 Windows 目前不作为受支持的运行平台。机器睡眠或用户登出时，飞书机器人无法
 回复；唤醒或登录后服务管理器会恢复本地服务。详见
 [docs/deployment.md](docs/deployment.md#后台常驻服务macos--linux--windows)。
 
