@@ -718,23 +718,56 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func tapVisibleGroupAction(_ element: XCUIElement) {
+        guard let target = try? element.snapshot() else {
+            XCTFail("The requested action must provide its exact accessibility identity"); return
+        }
+        XCTAssertTrue(!target.identifier.isEmpty || !target.label.isEmpty)
         var previousFrame: CGRect?
+        var previousBounds: CGRect?
+        var capturedFrame: CGRect?
+        var capturedBounds: CGRect?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard element.exists else { return false }
-            let frame = element.frame
-            guard self.isFiniteFrame(frame), self.app.frame.contains(frame) else { return false }
-            let stable = previousFrame == frame
-            previousFrame = frame
-            return stable && element.isEnabled && element.isHittable
+            guard let visible = self.visibleGroupActionSnapshot(matching: target) else {
+                previousFrame = nil; previousBounds = nil; return false
+            }
+            let stable = previousFrame == visible.frame && previousBounds == visible.bounds
+            previousFrame = visible.frame; previousBounds = visible.bounds
+            if stable { capturedFrame = visible.frame; capturedBounds = visible.bounds }
+            return stable
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
-                       "The complete action must settle visibly and be hittable before tapping")
-        let frame = element.frame
+                       "Two snapshots must agree on one fully visible enabled action before tapping")
+        guard let frame = capturedFrame, let bounds = capturedBounds else {
+            XCTFail("The action must have a stable captured frame"); return
+        }
+        // Resolve the hit point once, outside the snapshot-stability wait. Multiple
+        // independent AX queries inside that wait can exhaust its entire budget.
+        XCTAssertTrue(element.isHittable, "The stable action must be hittable before its single tap")
         // Context-menu and selection activation points can lag behind their layout.
         // A foreground context menu may overlay the still-present keyboard.
-        // Tap the freshly observed center once, then let the caller assert the effect.
+        // Tap the captured stable center once, then let the caller assert the effect.
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
-            dx: frame.midX - app.frame.minX, dy: frame.midY - app.frame.minY)).tap()
+            dx: frame.midX - bounds.minX, dy: frame.midY - bounds.minY)).tap()
+    }
+
+    private func visibleGroupActionSnapshot(matching target: XCUIElementSnapshot) -> (frame: CGRect, bounds: CGRect)? {
+        guard let snapshot = try? app.snapshot() else {
+            XCTFail("The application must provide an accessibility snapshot for the action"); return nil
+        }
+        var nodes: [XCUIElementSnapshot] = [snapshot]
+        var matches: [XCUIElementSnapshot] = []
+        while let node = nodes.popLast() {
+            let identityMatches = target.identifier.isEmpty
+                ? node.label == target.label : node.identifier == target.identifier
+            if node.elementType == target.elementType, identityMatches { matches.append(node) }
+            nodes.append(contentsOf: node.children)
+        }
+        guard matches.count <= 1 else {
+            XCTFail("The requested action must have exactly one matching accessibility identity"); return nil
+        }
+        guard let action = matches.first, action.isEnabled, isFiniteFrame(snapshot.frame),
+              isFiniteFrame(action.frame), snapshot.frame.contains(action.frame) else { return nil }
+        return (action.frame, snapshot.frame)
     }
 
     private func verifySelectionAndReadingAcrossGroups(groupName: String, selectedID: String, laterID: String) {
@@ -925,14 +958,42 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["roundtableSend"].tap()
         let advice = app.staticTexts.matching(NSPredicate(format: "label == %@", "这是一段合成测试回复：先选一个可以验证的小行动，再根据实际反馈调整。"))
         XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
+        let firstReply = groupMentionReplies.firstMatch
+        XCTAssertTrue(firstReply.waitForExistence(timeout: 5))
+        let firstReplyID = firstReply.identifier
+        if app.buttons["groupNewReply"].exists { showLatestGroupReply() }
         selectGroupMentionAfterMenuSettles(composer)
         XCTAssertTrue(app.staticTexts["groupReplyScope"].label.contains("仅温柔回顾者回应"))
         XCTAssertTrue(app.staticTexts["groupReplyScope"].label.contains("群内可见"))
         composer.typeText("Please add one thought")
         attachMentorScreenshot("Group mention — accessible input and visible audience")
         app.buttons["roundtableSend"].tap()
+        let newReply = groupMentionReplies.matching(NSPredicate(format: "identifier != %@", firstReplyID)).firstMatch
+        let latest = app.buttons["groupNewReply"]
+        let received = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            newReply.exists || latest.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [received], timeout: 10), .completed,
+                       "The new reply must become visible or offer its real unread navigation action")
+        if !newReply.exists, latest.exists { showLatestGroupReply() }
+        XCTAssertTrue(newReply.waitForExistence(timeout: 10), "The mentioned mentor must provide a new reply with the exact expected text")
         XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["roundtableInvite"].exists)
+    }
+
+    private var groupMentionReplies: XCUIElementQuery {
+        app.otherElements.matching(NSPredicate(format: "identifier BEGINSWITH %@", "roundtableMessage-"))
+            .containing(.staticText, identifier: "温柔回顾者")
+            .containing(.staticText, identifier: "这是一段合成测试回复：先选一个可以验证的小行动，再根据实际反馈调整。")
+    }
+
+    private func showLatestGroupReply() {
+        let latest = app.buttons["groupNewReply"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        tapVisibleGroupAction(latest)
+        let read = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !latest.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [read], timeout: 5), .completed,
+                       "Viewing the latest reply must clear its unread affordance")
     }
 
     private func selectGroupMentionAfterMenuSettles(_ composer: XCUIElement) {
@@ -1834,8 +1895,7 @@ final class DiaryFlowTests: XCTestCase {
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_NAVIGATION"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "After synthetic table"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "After synthetic table")
         let original = input.value as? String
         // Begin above the native table so the gesture belongs to date navigation.
         let origin = input.coordinate(withNormalizedOffset: .zero)
@@ -1869,8 +1929,7 @@ final class DiaryFlowTests: XCTestCase {
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_NAVIGATION"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "After synthetic table"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "After synthetic table")
         let original = input.value as? String
         func swipeHeadingToNextDay() {
             let origin = input.coordinate(withNormalizedOffset: .zero)
@@ -2408,7 +2467,12 @@ final class DiaryFlowTests: XCTestCase {
         let section = app.buttons["mitSection"]
         revealDirectionMITControl(section); section.tap()
         let morning = app.buttons["🌅 Morning"]
-        XCTAssertTrue(morning.waitForExistence(timeout: 5)); XCTAssertTrue(morning.isHittable); morning.tap()
+        XCTAssertTrue(morning.waitForExistence(timeout: 5)); tapVisibleGroupAction(morning)
+        let chosen = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !morning.exists && section.label.contains("🌅 Morning")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [chosen], timeout: 5), .completed,
+                       "The native section menu must close with the requested destination selected")
         XCTAssertTrue(section.label.contains("🌅 Morning"))
         action.tap(); action.typeText("One synthetic practice")
         app.textFields["mit-criterion"].tap(); app.textFields["mit-criterion"].typeText("One saved reflection")
@@ -2861,8 +2925,7 @@ extension DiaryFlowTests {
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_NAVIGATION"] = "1"
         app.launch()
-        let loaded = NSPredicate(format: "value CONTAINS %@", "After synthetic table")
-        expectation(for: loaded, evaluatedWith: input); waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "After synthetic table")
         let source = input.value as? String
         let lastColumn = app.staticTexts["Sixth header"]
         XCTAssertFalse(lastColumn.isHittable)
@@ -2910,8 +2973,7 @@ extension DiaryFlowTests {
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_CLOUD_CONFLICT"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "Original home synthetic"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "Original home synthetic")
         XCTAssertTrue(app.buttons["reviewCloudVersions"].waitForExistence(timeout: 5))
         app.buttons["diaryDirectory"].tap()
         app.buttons["vault-folder-daily"].tap()
@@ -3084,8 +3146,7 @@ extension DiaryFlowTests {
         app.launchEnvironment["RIJI_TEST_ORIGINAL_VAULT"] = "1"
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "Original home synthetic"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "Original home synthetic")
         let before = input.value as? String ?? ""
         XCTAssertTrue(before.contains("| 中文 🧠 0 |")); XCTAssertTrue(before.contains("\r\n"))
         XCTAssertFalse(app.buttons["openVoice"].exists)
@@ -3131,8 +3192,7 @@ extension DiaryFlowTests {
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_NAVIGATION"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "After synthetic table"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "After synthetic table")
         let original = input.value as? String ?? ""
         input.tap(); input.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
         let keyboard = app.keyboards.firstMatch, end = app.buttons["文末"]
@@ -3221,8 +3281,7 @@ extension DiaryFlowTests {
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_NAVIGATION"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "After synthetic table"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "After synthetic table")
         let source = input.value as? String ?? ""
         app.staticTexts["中文 🧠 0"].tap()
         let editor = app.textViews["markdownTableCellEditor"]
@@ -3281,14 +3340,22 @@ extension DiaryFlowTests {
 }
 
 extension DiaryFlowTests {
+    private func waitForOriginalEditor(containing text: String) {
+        // Loading the original source replaces the initial empty editor.
+        // Filter the current hierarchy instead of retaining that transient element.
+        let loaded = app.textViews.matching(identifier: "diaryBodyEditor")
+            .matching(NSPredicate(format: "value CONTAINS %@", text)).firstMatch
+        XCTAssertTrue(loaded.waitForExistence(timeout: 10),
+                      "The current original-source editor must contain the expected fixture text")
+    }
+
     private func launchExternalRefreshFixture() {
         app.terminate()
         app.launchEnvironment["RIJI_TEST_ORIGINAL_VAULT"] = "1"
         app.launchEnvironment["RIJI_TEST_VAULT_BROWSER"] = "1"
         app.launchEnvironment["RIJI_TEST_EXTERNAL_REFRESH"] = "1"
         app.launch()
-        expectation(for: NSPredicate(format: "value CONTAINS %@", "Original home synthetic"), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        waitForOriginalEditor(containing: "Original home synthetic")
     }
 
     func testActiveExternalFileRefreshAllowsContinuedEditingAndColdReopen() {
