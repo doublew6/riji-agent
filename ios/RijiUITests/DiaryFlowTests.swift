@@ -3464,7 +3464,7 @@ extension DiaryFlowTests {
         XCTAssertEqual(Data((merged.value as? String ?? "").utf8), Data(expected.utf8), "Untouched headings, tables, Unicode and CRLF must remain byte-for-byte unchanged")
         let finalDiff = app.buttons["bodyFinalDiff"]; reveal(finalDiff); finalDiff.tap()
         XCTAssertTrue(app.staticTexts["bodyFinalDiffSummary"].waitForExistence(timeout: 5))
-        confirmRecoveredBodyMerge()
+        performBodyReviewAction()
         expectation(for: NSPredicate(format: "value == %@", expected), evaluatedWith: input); waitForExpectations(timeout: 10)
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
@@ -3514,18 +3514,19 @@ extension DiaryFlowTests {
         }
     }
 
-    private func confirmRecoveredBodyMerge() {
+    private func performBodyReviewAction(_ identifier: String = "confirmBodyMerge", towardEarlier: Bool = false, evidenceName: String? = nil) {
         let navigation = app.navigationBars["核对正文版本"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 5))
         let window = app.windows.containing(.navigationBar, identifier: "核对正文版本").firstMatch
         let form = window.collectionViews.firstMatch
         XCTAssertTrue(form.waitForExistence(timeout: 5))
         var previousFrame: CGRect?
-        for attempt in 0...7 {
-            previousFrame = recoveredBodyConfirmFrame(in: form, navigation: navigation)
+        let maximumScrolls = towardEarlier ? 8 : 7
+        for attempt in 0...maximumScrolls {
+            previousFrame = bodyReviewActionFrame(identifier, in: form, navigation: navigation)
             if previousFrame != nil { break }
-            guard attempt < 7 else {
-                XCTFail("The recovered merge confirmation must become fully visible and enabled"); return
+            guard attempt < maximumScrolls else {
+                XCTFail("The body review action must become fully visible and enabled"); return
             }
             let bounds = form.frame.intersection(app.frame)
             let top = max(bounds.minY, navigation.frame.maxY) + 8, bottom = bounds.maxY - 20
@@ -3535,11 +3536,12 @@ extension DiaryFlowTests {
             let origin = form.coordinate(withNormalizedOffset: .zero)
             let upper = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.25))
             let lower = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.75))
-            lower.press(forDuration: 0.05, thenDragTo: upper, withVelocity: .slow, thenHoldForDuration: 0.2)
+            let start = towardEarlier ? upper : lower, end = towardEarlier ? lower : upper
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
         var capturedFrame: CGRect?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard let frame = self.recoveredBodyConfirmFrame(in: form, navigation: navigation) else {
+            guard let frame = self.bodyReviewActionFrame(identifier, in: form, navigation: navigation) else {
                 previousFrame = nil; return false
             }
             let stable = previousFrame == frame
@@ -3548,18 +3550,19 @@ extension DiaryFlowTests {
             return stable
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
-                       "Two Form snapshots must agree on the visible enabled confirmation before one tap")
-        guard let frame = capturedFrame else { XCTFail("The confirmation must have a stable captured frame"); return }
+                       "Two Form snapshots must agree on the visible enabled action before one tap")
+        guard let frame = capturedFrame else { XCTFail("The body review action must have a stable captured frame"); return }
+        if let evidenceName { attachMentorScreenshot(evidenceName) }
         // iOS 26 can throw while resolving this visible button's AX hit point.
         // Use its observed stable center once, then require the real save to finish.
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
             dx: frame.midX - app.frame.minX, dy: frame.midY - app.frame.minY)).tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !navigation.exists }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 10), .completed,
-                       "Confirming the recovered merge must save and close the review sheet")
+                       "The body review action must save and close the review sheet")
     }
 
-    private func recoveredBodyConfirmFrame(in form: XCUIElement, navigation: XCUIElement) -> CGRect? {
+    private func bodyReviewActionFrame(_ identifier: String, in form: XCUIElement, navigation: XCUIElement) -> CGRect? {
         guard let snapshot = try? form.snapshot() else {
             XCTFail("The recovered merge Form must provide an accessibility snapshot"); return nil
         }
@@ -3571,10 +3574,10 @@ extension DiaryFlowTests {
         var nodes: [XCUIElementSnapshot] = [snapshot]
         var buttons: [XCUIElementSnapshot] = []
         while let node = nodes.popLast() {
-            if node.identifier == "confirmBodyMerge", node.elementType == .button { buttons.append(node) }
+            if node.identifier == identifier, node.elementType == .button { buttons.append(node) }
             nodes.append(contentsOf: node.children)
         }
-        guard buttons.count <= 1 else { XCTFail("The recovered merge must expose only one confirmation button"); return nil }
+        guard buttons.count <= 1 else { XCTFail("The body review must expose only one button for the requested action"); return nil }
         guard let button = buttons.first, button.isEnabled else { return nil }
         let frame = button.frame
         guard isFiniteFrame(frame), bounds.contains(frame), frame.minY >= top, frame.maxY <= bottom else { return nil }
@@ -3609,10 +3612,8 @@ extension DiaryFlowTests {
             let merge = app.textViews["bodyConflictMerge"]
             reveal(merge)
             XCTAssertTrue(merge.exists)
-            revealAboveToolbar(app.buttons[choice])
-            let evidence = XCTAttachment(screenshot: app.screenshot())
-            evidence.name = "Explicit current file, local edit and manual merge choices"; evidence.lifetime = .keepAlways; add(evidence)
-            app.buttons[choice].tap()
+            performBodyReviewAction(choice, towardEarlier: true,
+                                    evidenceName: "Explicit current file, local edit and manual merge choices")
             let selected = before + (choice == "useLatestBodyVersion" ? "External simulated edit\r\n" : "Local simulated edit\r\n")
             expectation(for: NSPredicate(format: "value == %@", selected), evaluatedWith: input)
             waitForExpectations(timeout: 10)
