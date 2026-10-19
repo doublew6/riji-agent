@@ -798,8 +798,12 @@ final class DiaryFlowTests: XCTestCase {
         attachMentorScreenshot("Inline group home — portraits, messages and composer in one viewport")
         createSyntheticGroup(); renameSyntheticGroup("Synthetic learning group A")
         groupComposer.tap(); groupComposer.typeText("Unsent draft for group A")
+        expectation(for: NSPredicate(format: "value == %@", "Unsent draft for group A"), evaluatedWith: groupComposer)
+        waitForExpectations(timeout: 5)
         createSyntheticGroup(); renameSyntheticGroup("Synthetic long-term group B")
         groupComposer.tap(); groupComposer.typeText("Different draft for group B")
+        expectation(for: NSPredicate(format: "value == %@", "Different draft for group B"), evaluatedWith: groupComposer)
+        waitForExpectations(timeout: 5)
         openGroupSwitcher()
         XCTAssertTrue(syntheticGroupRow("Synthetic learning group A").waitForExistence(timeout: 5))
         attachMentorScreenshot("Inline group switcher — choose another conversation without a push")
@@ -809,6 +813,8 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["mobileMentor-future_self"].tap()
         let privateDraft = app.descendants(matching: .any).matching(identifier: "mobileChatDraft").firstMatch
         XCTAssertTrue(privateDraft.waitForExistence(timeout: 5)); privateDraft.tap(); privateDraft.typeText("Independent private draft")
+        expectation(for: NSPredicate(format: "value == %@", "Independent private draft"), evaluatedWith: privateDraft)
+        waitForExpectations(timeout: 5)
         app.navigationBars.buttons["导师"].tap(); assertInlineGroup(named: "Synthetic learning group A")
         XCTAssertEqual(groupComposer.value as? String, "Unsent draft for group A")
         XCUIDevice.shared.press(.home); app.activate()
@@ -919,7 +925,7 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["roundtableSend"].tap()
         let advice = app.staticTexts.matching(NSPredicate(format: "label == %@", "这是一段合成测试回复：先选一个可以验证的小行动，再根据实际反馈调整。"))
         XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
-        app.buttons["groupMention"].tap(); app.buttons["温柔回顾者"].tap()
+        selectGroupMentionAfterMenuSettles(composer)
         XCTAssertTrue(app.staticTexts["groupReplyScope"].label.contains("仅温柔回顾者回应"))
         XCTAssertTrue(app.staticTexts["groupReplyScope"].label.contains("群内可见"))
         composer.typeText("Please add one thought")
@@ -927,6 +933,21 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["roundtableSend"].tap()
         XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["roundtableInvite"].exists)
+    }
+
+    private func selectGroupMentionAfterMenuSettles(_ composer: XCUIElement) {
+        app.buttons["groupMention"].tap()
+        let option = app.buttons["温柔回顾者"]
+        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        tapVisibleGroupAction(option)
+        let scope = app.staticTexts["groupReplyScope"]
+        let applied = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard !option.exists, composer.exists, scope.exists else { return false }
+            return composer.value as? String == "@温柔回顾者 "
+                && scope.label.contains("仅温柔回顾者回应") && scope.label.contains("群内可见")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 5), .completed,
+                       "One mention selection must close the menu, insert the complete mention and update its audience")
     }
 
     func testMobileGroupResultPreviewRequiresConfirmationAndKeepsExactSelection() {
@@ -1233,6 +1254,8 @@ final class DiaryFlowTests: XCTestCase {
         revealRoundtableMessage(app.staticTexts[text])
         XCTAssertTrue(app.staticTexts[text].exists)
         composer.tap(); composer.typeText("Synthetic offline retained draft")
+        expectation(for: NSPredicate(format: "value == %@", "Synthetic offline retained draft"), evaluatedWith: composer)
+        waitForExpectations(timeout: 5)
         app.terminate(); app.launchEnvironment["RIJI_TEST_MOBILE"] = "roundtable-offline"; app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10)); app.tabBars.buttons["导师"].tap()
         assertInlineGroup()
@@ -1331,6 +1354,10 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertTrue(fact.waitForExistence(timeout: 5)); fact.tap()
         let correction = app.descendants(matching: .any).matching(identifier: "mobileMemoryCorrection").firstMatch
         XCTAssertTrue(correction.waitForExistence(timeout: 5)); correction.tap(); correction.typeText("Synthetic version-bound correction")
+        // Verify that every injected character reached the field before cold recovery.
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Synthetic version-bound correction"), object: correction)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed,
+                       "The complete correction draft must reach the field before termination")
         app.terminate()
         app.launchEnvironment["RIJI_TEST_MOBILE"] = "rebase-updated"
         app.launch()
@@ -1698,7 +1725,7 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testSettingsMainTabSavesInputAndKeepsSubpagesAndRecordingsReachable() {
-        let pending = appendRecoveryText(input, "Pending settings edit")
+        let pending = appendSettingsDiaryInput("Pending settings edit")
         app.buttons["收起键盘"].tap()
         XCTAssertTrue(app.tabBars.buttons["设置"].isHittable)
         app.tabBars.buttons["设置"].tap()
@@ -1913,6 +1940,26 @@ final class DiaryFlowTests: XCTestCase {
         editor.typeKey(XCUIKeyboardKey.downArrow, modifierFlags: .command)
         editor.typeText(suffix)
         XCTAssertEqual(editor.value as? String, before + suffix)
+        return before + suffix
+    }
+
+    private func appendSettingsDiaryInput(_ suffix: String) -> String {
+        let before = input.value as? String ?? ""
+        input.tap(); input.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        // Use the real editor's end action rather than relying on keyboard-shortcut
+        // routing to establish this pending-input precondition.
+        let end = app.buttons["文末"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard end.exists, self.hasVisibleFrame(end) else { return false }
+            return end.frame.maxY <= keyboard.frame.minY + 1 && end.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        XCTAssertEqual(input.value as? String, before, "Preparing the caret must preserve the original document")
+        end.tap(); input.typeText(suffix)
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", before + suffix), object: input)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed)
         return before + suffix
     }
 
@@ -3288,7 +3335,7 @@ extension DiaryFlowTests {
         XCTAssertEqual(Data((merged.value as? String ?? "").utf8), Data(expected.utf8), "Untouched headings, tables, Unicode and CRLF must remain byte-for-byte unchanged")
         let finalDiff = app.buttons["bodyFinalDiff"]; reveal(finalDiff); finalDiff.tap()
         XCTAssertTrue(app.staticTexts["bodyFinalDiffSummary"].waitForExistence(timeout: 5))
-        let confirm = app.buttons["confirmBodyMerge"]; reveal(confirm); confirm.tap()
+        confirmRecoveredBodyMerge()
         expectation(for: NSPredicate(format: "value == %@", expected), evaluatedWith: input); waitForExpectations(timeout: 10)
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
@@ -3336,6 +3383,73 @@ extension DiaryFlowTests {
             let start = towardTop ? upper : lower, end = towardTop ? lower : upper
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
+    }
+
+    private func confirmRecoveredBodyMerge() {
+        let navigation = app.navigationBars["核对正文版本"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 5))
+        let window = app.windows.containing(.navigationBar, identifier: "核对正文版本").firstMatch
+        let form = window.collectionViews.firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 5))
+        var previousFrame: CGRect?
+        for attempt in 0...7 {
+            previousFrame = recoveredBodyConfirmFrame(in: form, navigation: navigation)
+            if previousFrame != nil { break }
+            guard attempt < 7 else {
+                XCTFail("The recovered merge confirmation must become fully visible and enabled"); return
+            }
+            let bounds = form.frame.intersection(app.frame)
+            let top = max(bounds.minY, navigation.frame.maxY) + 8, bottom = bounds.maxY - 20
+            guard isFiniteFrame(bounds), top.isFinite, bottom.isFinite, bottom > top + 100 else {
+                XCTFail("The recovered merge Form must have a usable scroll viewport"); return
+            }
+            let origin = form.coordinate(withNormalizedOffset: .zero)
+            let upper = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.25))
+            let lower = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.75))
+            lower.press(forDuration: 0.05, thenDragTo: upper, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        var capturedFrame: CGRect?
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let frame = self.recoveredBodyConfirmFrame(in: form, navigation: navigation) else {
+                previousFrame = nil; return false
+            }
+            let stable = previousFrame == frame
+            previousFrame = frame
+            if stable { capturedFrame = frame }
+            return stable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "Two Form snapshots must agree on the visible enabled confirmation before one tap")
+        guard let frame = capturedFrame else { XCTFail("The confirmation must have a stable captured frame"); return }
+        // iOS 26 can throw while resolving this visible button's AX hit point.
+        // Use its observed stable center once, then require the real save to finish.
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: frame.midX - app.frame.minX, dy: frame.midY - app.frame.minY)).tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !navigation.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 10), .completed,
+                       "Confirming the recovered merge must save and close the review sheet")
+    }
+
+    private func recoveredBodyConfirmFrame(in form: XCUIElement, navigation: XCUIElement) -> CGRect? {
+        guard let snapshot = try? form.snapshot() else {
+            XCTFail("The recovered merge Form must provide an accessibility snapshot"); return nil
+        }
+        let bounds = snapshot.frame.intersection(app.frame)
+        let top = max(bounds.minY, navigation.frame.maxY) + 8, bottom = bounds.maxY - 20
+        guard isFiniteFrame(bounds), top.isFinite, bottom.isFinite, bottom > top + 100 else {
+            XCTFail("The recovered merge Form must have a usable confirmation viewport"); return nil
+        }
+        var nodes: [XCUIElementSnapshot] = [snapshot]
+        var buttons: [XCUIElementSnapshot] = []
+        while let node = nodes.popLast() {
+            if node.identifier == "confirmBodyMerge", node.elementType == .button { buttons.append(node) }
+            nodes.append(contentsOf: node.children)
+        }
+        guard buttons.count <= 1 else { XCTFail("The recovered merge must expose only one confirmation button"); return nil }
+        guard let button = buttons.first, button.isEnabled else { return nil }
+        let frame = button.frame
+        guard isFiniteFrame(frame), bounds.contains(frame), frame.minY >= top, frame.maxY <= bottom else { return nil }
+        return frame
     }
 
     private func appendBodyConflictFragment(_ editor: XCUIElement, _ suffix: String) {
