@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import Dispatch
+import Combine
 import RijiCore
 @testable import RijiState
 
@@ -319,6 +320,61 @@ private final class BodyWriteCounts: @unchecked Sendable {
     func count(_ purpose: FilePurpose) -> Int { lock.lock(); defer { lock.unlock() }; return values[String(describing: purpose), default: 0] }
 }
 
+private final class BodyCheckpointClock: @unchecked Sendable {
+    private struct Suspension {
+        let deadline: UInt64
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private let lock = NSLock()
+    private var now: UInt64 = 0
+    private var closed = false
+    private var pending: [UUID: Suspension] = [:]
+    private var registrations: [UInt64: [XCTestExpectation]] = [:]
+
+    func expectSleep(_ duration: UInt64) -> XCTestExpectation {
+        let registered = XCTestExpectation(description: "Register body sleep for \(duration) ns")
+        lock.lock(); defer { lock.unlock() }
+        registrations[duration, default: []].append(registered)
+        return registered
+    }
+
+    func sleep(_ duration: UInt64) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                register(id, duration: duration, continuation: continuation)
+            }
+        }, onCancel: { self.cancel(id) })
+    }
+
+    private func register(_ id: UUID, duration: UInt64, continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        guard !closed, !Task.isCancelled else { lock.unlock(); continuation.resume(throwing: CancellationError()); return }
+        pending[id] = Suspension(deadline: now + duration, continuation: continuation)
+        let registered = registrations[duration]?.isEmpty == false ? registrations[duration]?.removeFirst() : nil
+        lock.unlock()
+        registered?.fulfill()
+    }
+
+    func advance(by duration: UInt64) {
+        lock.lock(); now += duration
+        let ready = pending.filter { $0.value.deadline <= now }
+        for id in ready.keys { pending[id] = nil }
+        lock.unlock()
+        for suspension in ready.values { suspension.continuation.resume() }
+    }
+
+    private func cancel(_ id: UUID) {
+        lock.lock(); let suspension = pending.removeValue(forKey: id); lock.unlock()
+        suspension?.continuation.resume(throwing: CancellationError())
+    }
+
+    func cancelAll() {
+        lock.lock(); closed = true; let remaining = pending.values; pending.removeAll(); lock.unlock()
+        for suspension in remaining { suspension.continuation.resume(throwing: CancellationError()) }
+    }
+}
+
 extension BodyEditorStateTests {
     func testSuccessfulSaveWithLaterTypingKeepsTruthfulStatusAndFlushesLatestBytes() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("BodyGateSynthetic-\(UUID())")
@@ -369,19 +425,44 @@ extension BodyEditorStateTests {
     func testContinuousTypingCheckpointsWithoutPerKeystrokeHistory() async throws {
         let (root, store, _) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let model = DiaryViewModel(now: { self.instant }, storageFactory: { store }); await model.start()
-        let checkpointNanoseconds: UInt64 = 400_000_000
-        model.bodyCheckpointNanoseconds = checkpointNanoseconds
-        let started = DispatchTime.now().uptimeNanoseconds
+        let clock = BodyCheckpointClock(); defer { clock.cancelAll() }
+        model.bodySleep = { try await clock.sleep($0) }
+        model.bodyCheckpointNanoseconds = 400_000_000
+        var expectedVersions: [Data] = []
         for index in 0..<16 {
-            model.updateBody(model.markdown + "\(index)")
-            try await Task.sleep(nanoseconds: 80_000_000)
+            var registered = [clock.expectSleep(model.bodyQuietNanoseconds)]
+            if index.isMultiple(of: 5) { registered.append(clock.expectSleep(model.bodyCheckpointNanoseconds)) }
+            model.updateBody(model.markdown + "\(index) e\u{301} 🧠\r\n")
+            let registration = await XCTWaiter.fulfillment(of: registered, timeout: 5)
+            XCTAssertEqual(registration, .completed)
+            guard registration == .completed else { return }
+            let beforeCheckpoint = try await store.bodyRevisions(day)
+            XCTAssertEqual(beforeCheckpoint.map(\.content), expectedVersions, "Keystrokes must only replace the durable buffer")
+            if (index + 1).isMultiple(of: 5) {
+                let expected = Data(model.markdown.utf8)
+                let committed = XCTestExpectation(description: "Checkpoint during continuous typing after key \(index + 1)")
+                let observation = model.$bodyDirty.filter { !$0 }.first().sink { _ in committed.fulfill() }
+                // Quiet never reaches one second. Stop virtual time during the write;
+                // the separate in-flight test covers typing while a save catches up.
+                clock.advance(by: 80_000_000)
+                let completion = await XCTWaiter.fulfillment(of: [committed], timeout: 5)
+                observation.cancel()
+                XCTAssertEqual(completion, .completed, "Continuous edits must not postpone the checkpoint")
+                guard completion == .completed else { return }
+                XCTAssertEqual(Data(model.markdown.utf8), expected)
+                expectedVersions.append(expected)
+                let history = try await store.bodyRevisions(day)
+                XCTAssertEqual(history.map(\.content), expectedVersions)
+                let saved = try await store.exportMarkdown(day)
+                XCTAssertEqual(saved, expectedVersions.last)
+            } else { clock.advance(by: 80_000_000) }
         }
-        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - started
-        // Sleeps are minimums: allow elapsed checkpoint windows plus the final explicit flush.
-        let maximumRevisions = Int((elapsedNanoseconds + checkpointNanoseconds - 1) / checkpointNanoseconds) + 1
+        XCTAssertEqual(expectedVersions.count, 3)
+        expectedVersions.append(Data(model.markdown.utf8))
         assertTrue(await model.flushBody())
         let history = try await store.bodyRevisions(day)
-        XCTAssertGreaterThan(history.count, 1); XCTAssertLessThanOrEqual(history.count, maximumRevisions)
+        XCTAssertEqual(history.count, 4); XCTAssertEqual(history.map(\.content), expectedVersions)
+        let saved = try await store.exportMarkdown(day); XCTAssertEqual(saved, expectedVersions.last)
     }
 
     func testDismissedMergeSurvivesPersistenceFailureReopenAndRelaunch() async throws {

@@ -83,8 +83,8 @@ struct DiaryTasksView: View {
 struct DiaryExportRecoveryView: View {
     @ObservedObject var model: DiaryViewModel
     @ObservedObject var mobile: MobileClientModel
-    @State private var document: MarkdownDocument?
-    @State private var showExport = false
+    @State private var exportRequest: SettingsMarkdownExportRequest?
+    @State private var isPreparingExport = false
     @State private var showVoice = false
     @State private var showVersions = false
     private var exportTestValue: String {
@@ -102,11 +102,15 @@ struct DiaryExportRecoveryView: View {
                     .font(.callout)
                 Button(model.bodyRecoveryUnavailable ? "导出已保存版本 Markdown" : "导出当前 Markdown") {
                     let day = model.selectedDay
+                    isPreparingExport = true
                     Task {
-                        document = await (model.bodyRecoveryUnavailable ? model.exportSavedBodyVersion() : model.export(day: day))
-                        showExport = document != nil
+                        defer { isPreparingExport = false }
+                        if let document = await (model.bodyRecoveryUnavailable ? model.exportSavedBodyVersion() : model.export(day: day)) {
+                            exportRequest = SettingsMarkdownExportRequest(document: document)
+                        }
                     }
-                }.disabled(model.isBusy || (!model.isSaved && !model.bodyDirty)).accessibilityIdentifier("settingsExportMarkdown")
+                }.disabled(model.isBusy || isPreparingExport || exportRequest != nil || (!model.isSaved && !model.bodyDirty))
+                    .accessibilityIdentifier("settingsExportMarkdown")
                 if model.status.contains("Markdown") && model.status.contains("已导出") {
                     Text("上次导出：" + model.status).font(.callout).accessibilityIdentifier("settingsExportStatus")
                         .accessibilityValue(exportTestValue)
@@ -138,11 +142,40 @@ struct DiaryExportRecoveryView: View {
                 RijiUnavailable(title: "完整备份恢复暂不可用", detail: "当前没有经过核验的全量导出与恢复接口。可先导出当前正文或保留草稿，回到日记核对具体冲突；不会覆盖原件或恢复旧授权。")
             }
         }.navigationTitle("导出与恢复").navigationBarTitleDisplayMode(.inline)
-            .fileExporter(isPresented: $showExport, document: document,
-                          contentType: MarkdownDocument.readableContentTypes[0], defaultFilename: document?.filename ?? "Diary.md") { result in
-                if let document { model.exportCompleted(result, document: document) }
+            .background {
+                if let request = exportRequest {
+                    SettingsMarkdownExporter(document: request.document) { result in
+                        guard exportRequest?.id == request.id else { return }
+                        if let result { model.exportCompleted(result, document: request.document) }
+                        exportRequest = nil
+                    }.id(request.id)
+                }
             }
             .sheet(isPresented: $showVoice) { if let voice = model.voice { VoiceSheet(diary: model, model: voice) } }
             .sheet(isPresented: $showVersions) { CloudVersionReviewView(model: model) { showVersions = false } }
+    }
+}
+
+private struct SettingsMarkdownExportRequest: Identifiable {
+    let id = UUID()
+    let document: MarkdownDocument
+}
+
+private struct SettingsMarkdownExporter: View {
+    let document: MarkdownDocument
+    let finished: (Result<URL, Error>?) -> Void
+    @State private var isPresented = false
+    @State private var started = false
+
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .fileExporter(isPresented: $isPresented, document: document,
+                          contentTypes: MarkdownDocument.readableContentTypes, defaultFilename: document.filename,
+                          onCompletion: { finished($0) }, onCancellation: { finished(nil) })
+            .onAppear {
+                // Build the exporter with its immutable document before presenting it.
+                guard !started else { return }
+                started = true; isPresented = true
+            }
     }
 }

@@ -139,9 +139,17 @@ final class DiaryFlowTests: XCTestCase {
 
     private func selectSyntheticGroup(_ name: String, archived: Bool = false) {
         openGroupSwitcher()
-        if archived { app.buttons["mobileArchivedGroups"].tap() }
+        if archived { tapVisibleGroupAction(app.buttons["mobileArchivedGroups"]) }
         let entry = syntheticGroupRow(name)
-        XCTAssertTrue(entry.waitForExistence(timeout: 5)); entry.tap()
+        chooseGroupMenuEntry(entry, named: name)
+    }
+
+    private func chooseGroupMenuEntry(_ entry: XCUIElement, named name: String) {
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        tapVisibleGroupAction(entry)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !entry.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
+                       "Choosing a group must dismiss its native menu before checking the selected conversation")
         assertInlineGroup(named: name)
     }
 
@@ -840,8 +848,7 @@ final class DiaryFlowTests: XCTestCase {
         openGroupSwitcher()
         XCTAssertTrue(syntheticGroupRow("Synthetic learning group A").waitForExistence(timeout: 5))
         attachMentorScreenshot("Inline group switcher — choose another conversation without a push")
-        syntheticGroupRow("Synthetic learning group A").tap()
-        assertInlineGroup(named: "Synthetic learning group A")
+        chooseGroupMenuEntry(syntheticGroupRow("Synthetic learning group A"), named: "Synthetic learning group A")
         XCTAssertEqual(groupComposer.value as? String, "Unsent draft for group A")
         app.buttons["mobileMentor-future_self"].tap()
         let privateDraft = app.descendants(matching: .any).matching(identifier: "mobileChatDraft").firstMatch
@@ -884,13 +891,12 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertFalse(syntheticGroupRow("Synthetic learning group A").exists,
                        "An archived group must leave the active group choices")
         let archivedMenu = app.buttons["mobileArchivedGroups"]
-        XCTAssertTrue(archivedMenu.waitForExistence(timeout: 5)); archivedMenu.tap()
+        XCTAssertTrue(archivedMenu.waitForExistence(timeout: 5)); tapVisibleGroupAction(archivedMenu)
         // UIKit drops the SwiftUI identifier in this nested native menu.
         let archived = app.buttons.matching(NSPredicate(format: "label == %@", "Synthetic learning group A · 草稿")).firstMatch
         XCTAssertTrue(archived.waitForExistence(timeout: 5)); XCTAssertTrue(archived.isHittable)
         attachMentorScreenshot("Archived group choices — retained draft available in the nested menu")
-        archived.tap()
-        assertInlineGroup(named: "Synthetic learning group A")
+        chooseGroupMenuEntry(archived, named: "Synthetic learning group A")
         let restore = app.buttons["groupRestore"]
         XCTAssertTrue(restore.waitForExistence(timeout: 5)); reveal(restore); restore.tap()
         let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: restore)
@@ -1658,8 +1664,11 @@ final class DiaryFlowTests: XCTestCase {
         let settingsTitle = app.navigationBars["设置"].staticTexts["设置"]
         XCTAssertTrue(settingsTitle.waitForExistence(timeout: 5)); XCTAssertTrue(settingsTitle.isHittable)
         attachMentorScreenshot("Approved settings root — visible inline title")
-        for id in ["settingsFiles", "settingsDataAI", "settingsTasks", "settingsExportRecovery"] {
-            let row = app.buttons[id]; reveal(row); row.tap()
+        for (id, title) in [("settingsFiles", "文件与模板"), ("settingsDataAI", "资料与 AI"),
+                            ("settingsTasks", "任务与处理"), ("settingsExportRecovery", "导出与恢复")] {
+            let row = app.buttons[id]; reveal(row); tapVisibleGroupAction(row)
+            XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 5),
+                          "The selected settings destination must finish opening before inspecting its controls")
             XCTAssertEqual(app.tabBars.buttons.allElementsBoundByIndex.map(\.label), ["日记", "导师", "记忆", "设置"])
             if id == "settingsFiles" {
                 XCTAssertTrue(app.buttons["settingsChooseVault"].exists)
@@ -2628,9 +2637,11 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertFalse(app.keyboards.firstMatch.exists, "A task tap must not open a separate editor")
         app.terminate(); app.launch(); XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertEqual(input.value as? String, checked)
+        var exportedBody = checked
         if fromSettings {
-            app.tabBars.buttons["设置"].tap(); app.buttons["settingsExportRecovery"].tap()
-            app.buttons["settingsExportMarkdown"].tap()
+            openSettingsMarkdownExporter()
+            exportedBody = cancelSettingsExportAndEdit(checked)
+            openSettingsMarkdownExporter()
         } else { app.buttons["moreMenu"].tap(); app.buttons["exportMarkdown"].tap() }
         let exportName = "Riji-Markdown-Preview-" + container
         if fromSettings { saveSettingsMarkdownFile(named: exportName) }
@@ -2646,8 +2657,54 @@ final class DiaryFlowTests: XCTestCase {
         }
         expectation(for: exportCompleted, evaluatedWith: nil)
         waitForExpectations(timeout: 10)
-        let digest = SHA256.hash(data: Data(checked.utf8)).map { String(format: "%02x", $0) }.joined()
+        let digest = SHA256.hash(data: Data(exportedBody.utf8)).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(receipt.value as? String, digest, "Rendering must never become a lossy Markdown serialization")
+    }
+
+    private func openSettingsMarkdownExporter() {
+        let settings = app.tabBars.buttons["设置"]
+        settings.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in settings.isSelected }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
+        let destination = app.navigationBars["导出与恢复"]
+        if !destination.exists {
+            let row = app.buttons["settingsExportRecovery"]
+            reveal(row); tapVisibleGroupAction(row)
+        }
+        XCTAssertTrue(destination.waitForExistence(timeout: 5))
+        let export = app.buttons["settingsExportMarkdown"]
+        XCTAssertTrue(export.waitForExistence(timeout: 5)); tapVisibleGroupAction(export)
+    }
+
+    private func cancelSettingsExportAndEdit(_ original: String) -> String {
+        // The first presentation must be complete before cancellation; reopening
+        // must not hide an empty or malformed first exporter.
+        _ = settingsExportFilename()
+        let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+        let cancel = picker.buttons.matching(NSPredicate(format: "label == '取消' OR label == 'Cancel'")).firstMatch
+        if !cancel.exists {
+            let back = picker.buttons["BackButton"]
+            XCTAssertTrue(back.waitForExistence(timeout: 5)); XCTAssertTrue(back.isHittable); back.tap()
+        }
+        // Files is a remote system view: use its scoped native button rather
+        // than requiring it to appear in the app-owned snapshot used for menus.
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(cancel.isHittable); cancel.tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !picker.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertTrue(app.buttons["settingsExportMarkdown"].isEnabled)
+        XCTAssertFalse(app.staticTexts["settingsExportStatus"].exists, "Cancellation must not claim an exported file")
+        app.tabBars.buttons["日记"].tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 10)); XCTAssertEqual(input.value as? String, original)
+        input.tap(); input.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let end = app.buttons["文末"]
+        XCTAssertTrue(end.waitForExistence(timeout: 5)); XCTAssertTrue(end.isHittable); end.tap()
+        let addition = "Fresh export after cancellation " + container + "\n"
+        input.typeText(addition)
+        let expected = original + addition
+        XCTAssertEqual(input.value as? String, expected); waitForStatus("已保存在手机")
+        app.buttons["收起键盘"].tap()
+        return expected
     }
 
     private func prepareSystemFilesLocalLocation() {
@@ -2691,20 +2748,25 @@ final class DiaryFlowTests: XCTestCase {
         let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
         let save = picker.buttons["保存"]
         XCTAssertTrue(save.waitForExistence(timeout: 10))
-        let filename = app.textFields["DOCPicker.filenameTextField"]
-        guard filename.waitForExistence(timeout: 20) else {
-            attachMentorScreenshot("Settings Markdown export — missing system filename field")
-            let hierarchy = XCTAttachment(string: app.debugDescription)
-            hierarchy.name = "Settings Markdown export — system picker hierarchy"
-            hierarchy.lifetime = .keepAlways; add(hierarchy)
-            XCTFail("The system exporter must expose its filename field before saving a unique file"); return
-        }
+        let filename = settingsExportFilename()
         filename.tap()
         let previous = filename.value as? String ?? ""
         filename.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count))
         filename.typeText(name)
         XCTAssertEqual(filename.value as? String, name)
         XCTAssertTrue(save.isEnabled); XCTAssertTrue(save.isHittable); save.tap()
+    }
+
+    private func settingsExportFilename() -> XCUIElement {
+        let filename = app.textFields["DOCPicker.filenameTextField"]
+        guard filename.waitForExistence(timeout: 20) else {
+            attachMentorScreenshot("Settings Markdown export — missing system filename field")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "Settings Markdown export — system picker hierarchy"
+            hierarchy.lifetime = .keepAlways; add(hierarchy)
+            XCTFail("The system exporter must expose its filename field before saving a unique file"); return filename
+        }
+        return filename
     }
 
     func testLocalVaultTreeOpensOriginalFilesReadOnlyAndRestoresItsBookmark() {
