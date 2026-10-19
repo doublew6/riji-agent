@@ -408,6 +408,11 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertTrue(mentor.waitForExistence(timeout: 5)); mentor.tap()
         let draft = app.descendants(matching: .any).matching(identifier: "mobileChatDraft").firstMatch
         XCTAssertTrue(draft.waitForExistence(timeout: 5)); draft.tap(); draft.typeText("Synthetic retained draft")
+        // Keyboard injection can return before the final characters reach the field.
+        // Verify the input precondition before testing abrupt cold recovery.
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Synthetic retained draft"), object: draft)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed,
+                       "The complete draft must reach the composer before termination")
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10)); app.tabBars.buttons["导师"].tap()
         XCTAssertTrue(mentor.waitForExistence(timeout: 5)); mentor.tap()
@@ -3277,7 +3282,7 @@ extension DiaryFlowTests {
         app.terminate(); app.launch(); XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["recoverBodyMerge"].waitForExistence(timeout: 10))
         app.buttons["recoverBodyMerge"].tap()
-        let full = app.buttons["bodyFullVersions"]; reveal(full); full.tap()
+        openRecoveredBodyFullVersions()
         let merged = app.textViews["bodyConflictMerge"]; reveal(merged)
         let expected = before + "External simulated edit\r\n" + suffix
         XCTAssertEqual(Data((merged.value as? String ?? "").utf8), Data(expected.utf8), "Untouched headings, tables, Unicode and CRLF must remain byte-for-byte unchanged")
@@ -3288,6 +3293,49 @@ extension DiaryFlowTests {
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertEqual(Data((input.value as? String ?? "").utf8), Data(expected.utf8))
+    }
+
+    private func openRecoveredBodyFullVersions() {
+        let navigation = app.navigationBars["核对正文版本"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 5))
+        let window = app.windows.containing(.navigationBar, identifier: "核对正文版本").firstMatch
+        let form = window.collectionViews.firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 5))
+        let full = form.buttons["bodyFullVersions"]
+        for attempt in 0...7 {
+            // The recovered Form can discard a lazy row between exists and frame.
+            // Search one captured tree instead of resolving the missing row itself.
+            guard let snapshot = try? form.snapshot() else {
+                XCTFail("The recovered merge Form must provide an accessibility snapshot"); return
+            }
+            let bounds = snapshot.frame.intersection(app.frame)
+            let top = max(bounds.minY, navigation.frame.maxY) + 8
+            let bottom = bounds.maxY - 20
+            guard isFiniteFrame(bounds), bottom > top + 100 else {
+                XCTFail("The recovered merge Form must have a usable scroll viewport"); return
+            }
+            var nodes: [XCUIElementSnapshot] = [snapshot]
+            var disclosureFrame: CGRect?
+            while let node = nodes.popLast() {
+                if node.identifier == "bodyFullVersions", node.elementType == .button {
+                    disclosureFrame = node.frame; break
+                }
+                nodes.append(contentsOf: node.children)
+            }
+            if let frame = disclosureFrame, isFiniteFrame(frame),
+               frame.minY >= top, frame.maxY <= bottom, bounds.contains(frame), full.isHittable {
+                full.tap(); return
+            }
+            guard attempt < 7 else {
+                XCTFail("The recovered merge Form must reveal its full-versions disclosure before opening it"); return
+            }
+            let towardTop = disclosureFrame.map { isFiniteFrame($0) && $0.minY < top } ?? false
+            let origin = form.coordinate(withNormalizedOffset: .zero)
+            let upper = origin.withOffset(CGVector(dx: 12, dy: top - snapshot.frame.minY + (bottom - top) * 0.25))
+            let lower = origin.withOffset(CGVector(dx: 12, dy: top - snapshot.frame.minY + (bottom - top) * 0.75))
+            let start = towardTop ? upper : lower, end = towardTop ? lower : upper
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
     }
 
     private func appendBodyConflictFragment(_ editor: XCUIElement, _ suffix: String) {
