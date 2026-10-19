@@ -952,9 +952,11 @@ final class DiaryFlowTests: XCTestCase {
         _ element: XCUIElement, allowingPartialText: Bool = false, towardTop: Bool = false
     ) {
         XCTAssertTrue(app.navigationBars["保存到日记"].waitForExistence(timeout: 5))
-        // The sheet has one Form. Do not anchor this query to a lazy preview row:
-        // that row disappears during editing and when scrolling past long text.
-        let form = app.collectionViews.firstMatch
+        // The keyboard candidate bar is also a CollectionView. Restrict the
+        // query to the sheet's window, without depending on a lazy preview row.
+        let window = app.windows.containing(.navigationBar, identifier: "保存到日记").firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let form = window.collectionViews.firstMatch
         XCTAssertTrue(form.waitForExistence(timeout: 5))
         for _ in 0..<10 {
             let viewport = roundtableResultFormViewport(form)
@@ -1000,6 +1002,9 @@ final class DiaryFlowTests: XCTestCase {
             }
             bottom = min(bottom, keyboardTop - 8)
         }
+        XCTAssertTrue(top.isFinite && bottom.isFinite && bounds.minX.isFinite && bounds.width.isFinite)
+        XCTAssertGreaterThan(bottom - top, 100,
+                             "The save Form must have a positive unobstructed height before constructing its viewport")
         return CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
     }
 
@@ -2265,13 +2270,16 @@ final class DiaryFlowTests: XCTestCase {
         attachMentorScreenshot("Approved direction — stage, star and continuous definition")
         let mit = app.buttons["directionMIT"]; reveal(mit); mit.tap()
         let action = app.textFields["mit-action"]
-        XCTAssertTrue(action.waitForExistence(timeout: 5)); action.tap(); action.typeText("One synthetic practice")
-        app.textFields["mit-criterion"].tap(); app.textFields["mit-criterion"].typeText("One saved reflection")
+        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        // Select the destination before opening the keyboard: iOS 26 can expose
+        // visible context-menu items with zero AX frames beside its candidate window.
         let section = app.buttons["mitSection"]
         revealDirectionMITControl(section); section.tap()
         let morning = app.buttons["🌅 Morning"]
         XCTAssertTrue(morning.waitForExistence(timeout: 5)); XCTAssertTrue(morning.isHittable); morning.tap()
         XCTAssertTrue(section.label.contains("🌅 Morning"))
+        action.tap(); action.typeText("One synthetic practice")
+        app.textFields["mit-criterion"].tap(); app.textFields["mit-criterion"].typeText("One saved reflection")
         revealDirectionMITControl(app.buttons["previewMIT"]); app.buttons["previewMIT"].tap()
         let confirmMIT = app.buttons["confirmMIT"]
         XCTAssertTrue(confirmMIT.waitForExistence(timeout: 5)); confirmMIT.tap()
