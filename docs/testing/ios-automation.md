@@ -9,7 +9,7 @@ python3 scripts/test_ios.py
 默认执行 `smoke`。`DEVELOPER_DIR` 接受实际 Xcode `.app` 路径或其 `Contents/Developer` 路径；runner 将前者归一化后使用：
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer python3 scripts/test_ios.py --suite full
+DEVELOPER_DIR=/Applications/Xcode_26.5.app/Contents/Developer python3 scripts/test_ios.py --suite full
 ```
 
 需要分批运行 smoke 时，可指定 `--smoke-shard 1/4`、`2/4`、`3/4`、`4/4`。每片执行完整 package 和 Native 测试，并按排序后的 UI 测试标识轮流分配到各片；四片分别执行 11/10/10/10 条 UI，无重叠、合计覆盖全部 41 条。单片通过只表示该片通过，四片均通过才能代表完整 smoke。分片参数不适用于 `core`、`native` 或 `full`；不传参数仍执行完整 smoke。
@@ -111,13 +111,15 @@ uv run pytest tests/test_ios_test_runner.py
 
 [独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 将完整 smoke 分为一个 `core` job（当前 658 项 Swift package）与四个 `ui-smoke` job（每片完整 69 项 Native，UI 分别为 11/10/10/10 项）。五个 job 独立执行且全部必须成功，没有 `continue-on-error`；UI matrix 的 `fail-fast: false` 保留每片结果。每片有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名分别带 `core` 或 `ui-smoke-<片号>`，不能用某一片的成功代替 package 或其他片的结果。手动 `workflow_dispatch` 可选 smoke（同样的一个 core 加四片 UI）/full（单轮完整 package + Native + 全量 UI，不分片）。
 
-只申请 `contents: read`，固定 `macos-15` 和 `/Applications/Xcode_26.3.app/Contents/Developer`，每个 job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。各 suite 继续逐项检查发现清单、实际执行结果、零跳过和源文件前后 SHA-256；`ui-smoke` 的 discovery 仍要求全部 41 项 smoke 存在，再核对本片精确请求集合。[Python workflow](../../.github/workflows/test.yml) 按当前发布范围在 macOS 与 Linux 执行隐私扫描、smoke 和完整测试；Windows 目前不纳入运行平台验收，其服务适配器的 fake-runner 单测继续执行。
+只申请 `contents: read`，固定 `macos-26` 和 `/Applications/Xcode_26.5.app/Contents/Developer`，每个 job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。各 suite 继续逐项检查发现清单、实际执行结果、零跳过和源文件前后 SHA-256；`ui-smoke` 的 discovery 仍要求全部 41 项 smoke 存在，再核对本片精确请求集合。[Python workflow](../../.github/workflows/test.yml) 按当前发布范围在 macOS 与 Linux 执行隐私扫描、smoke 和完整测试；Windows 目前不纳入运行平台验收，其服务适配器的 fake-runner 单测继续执行。
 
 2026-10-19 的[三分片运行](https://github.com/doublew6/riji-agent/actions/runs/39201422311)中，第一片在前置阶段用时约 23 分钟后触及 50 分钟整轮上限；第三片完整的群结果保存流程单项用时 7 分 18 秒，整片用时 44 分 35 秒。[随后的四分片运行](https://github.com/doublew6/riji-agent/actions/runs/39210419818)中，第四片前置阶段用时约 25.8 分钟，10 项 UI 与 69 项 Native 全部执行通过，但结果摘要读取仍被整轮截止时间中断，workflow 未通过。将重复的 package 阶段移到独立必过 `core` job 用于减少每片前置开销；用例、断言与 50 分钟上限保持不变，其他片的真实 UI 失败仍须单独修复，最终以新提交五个 job 的完整证据验收。
 
 2026-10-19 的[独立 core 与 UI 分片运行](https://github.com/doublew6/riji-agent/actions/runs/39230987613)中，第一片在 Xcode discovery 开始约 9 分 41 秒后才启动测试 runner 加载，随后触及旧 10 分钟阶段期限，尚未执行测试用例。同轮第二、第三片的 discovery 分别用时约 3 分 28 秒、7 分 45 秒。预算据此调整为 15 分钟；这反映冷构建与枚举的耗时差异，不将超时记为 UI 断言失败。虚拟时钟回归通过真实 `Run.command` 路径覆盖跨越旧 10 分钟期限的完成，以及整轮期限先到时仍中断并清理子进程。
 
-[GitHub 官方 macOS 15 runner image 清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md) 是 Xcode/runtime 配置依据。CI 按实际安装的兼容 runtime 选择设备；不存在时直接失败。`macos-15` 镜像仍会由 GitHub 更新，Xcode 路径变动应显式更新并验证 workflow。本机选中的 Xcode 与 CI 可以不同，实际版本写入每次证据，不能相互冒充。2026-10-18 的[首次云端运行](https://github.com/doublew6/riji-agent/actions/runs/39091642713) 在 Swift discovery 的旧 5 分钟限制处超时，尚未运行测试用例；延长预算后的结果须以新运行证据为准。
+[GitHub 官方 macOS 26 arm64 runner image 清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md) 是 Xcode/runtime 配置依据。2026-10-20 核对的镜像 `20261013.0424.1` 包含 Xcode 26.5（build `17F42`）与 iOS 26.2、26.4.1、26.5 runtime。runner 新建设备时选择最高的可用兼容 iOS runtime，因此当前清单预期运行 iOS 26.5；已有同名专用设备则按原规则核验并复用。GitHub 后续更新镜像可能改变 runtime 清单，固定 Xcode 路径不等于固定 runtime，实际环境须以每轮 inventory 为准；缺少兼容组件直接失败，Xcode 路径变动须显式更新并验证 workflow。
+
+此次环境调整用于对齐本机验收的 iOS 26.5，保留全部测试、断言和门禁；本机 Xcode 27 与 CI Xcode 26.5 仍有差异。旧 iOS 26.2 的失败证据继续保留，不能把新环境通过解释为旧环境问题已修复，也不能将本机结果代替云端验收。2026-10-18 的[首次云端运行](https://github.com/doublew6/riji-agent/actions/runs/39091642713) 在 Swift discovery 的旧 5 分钟限制处超时，尚未运行测试用例；延长预算后的结果须以新运行证据为准。
 
 本次本机验证及探查记录见[2026-09-18 自动化证据](ios-automation-2026-09-18.md)。
 

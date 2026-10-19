@@ -19,12 +19,12 @@ permissions:
   contents: read
 
 env:
-  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
 
 jobs:
   core:
     if: ${{ inputs.suite != 'full' }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
           retention-days: 14
   ui-smoke:
     if: ${{ inputs.suite != 'full' }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -70,7 +70,7 @@ jobs:
           retention-days: 14
   full:
     if: ${{ inputs.suite == 'full' }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
