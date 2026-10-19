@@ -128,6 +128,9 @@ struct MobileMentorsView: View {
         composerFocused || typeSize.isAccessibilitySize || verticalSizeClass == .compact ||
             (availableHeight > 0 && availableHeight < 580)
     }
+    private var toolbarHeader: Bool {
+        composerFocused || (availableHeight > 0 && availableHeight < 400)
+    }
     private var items: [MobileRoundtableList.Item] {
         (model.roundtableList?.items ?? []).filter { !model.unavailableRoundtableIDs.contains($0.id) }
     }
@@ -183,7 +186,31 @@ struct MobileMentorsView: View {
                 .onChange(of: model.accountIdentity) { selection = nil; composerFocused = false }
         }.tint(MentorPalette.action).id(model.accountIdentity)
     }
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if toolbarHeader {
+            HStack(spacing: 8) {
+                NorthStarAnchorBanner(diary: diary, mobile: model, compact: true, iconOnly: true)
+                if model.capabilities?.capabilities["mentors"] == true {
+                    ForEach(model.capabilities?.mentors ?? []) { mentor in
+                        NavigationLink { MobileChatView(model: model, diary: diary, mentor: mentor) } label: {
+                            MentorPortrait(actor: mentor.id, topCrop: 0.32).frame(width: 40, height: 44)
+                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                                .overlay(alignment: .topTrailing) {
+                                    if model.hasUnreadReply("mentor:" + mentor.id) {
+                                        Circle().fill(MentorPalette.action).frame(width: 6, height: 6)
+                                            .accessibilityHidden(true)
+                                    }
+                                }
+                        }.accessibilityLabel(mentor.name + "，私聊" + (model.hasUnreadReply("mentor:" + mentor.id) ? "，新回复" : ""))
+                            .accessibilityIdentifier("mobileMentor-" + mentor.id)
+                    }
+                }
+            }.buttonStyle(.plain).padding(.horizontal, 20)
+        } else {
+            expandedHeader
+        }
+    }
+    private var expandedHeader: some View {
         VStack(spacing: 0) {
             if model.isSyntheticEnvironment && !compactHeader {
                 Text("演示环境 · 合成回复").font(.caption).foregroundStyle(MentorPalette.secondary)
@@ -611,7 +638,8 @@ struct MobileMemoryDetailView: View {
             } else if model.operation(key)?.result?["deleted"] == .bool(true) { Text("这条记忆已删除，原日记仍保留。")
             } else { Button("读取当前记忆") { Task { await model.refreshMemory(id) } } }
             MobileOperationView(model: model, target: key)
-        }.navigationTitle("记忆详情").navigationBarTitleDisplayMode(.inline)
+        }.accessibilityIdentifier("mobileMemoryDetailForm")
+            .navigationTitle("记忆详情").navigationBarTitleDisplayMode(.inline)
             .task(id: model.epoch) {
                 while !Task.isCancelled, model.connected {
                     if model.operation(key)?.result?["deleted"] != .bool(true) { await model.refreshMemory(id) }

@@ -7,8 +7,10 @@ struct NorthStarAnchorBanner: View {
     @ObservedObject private var anchor: NorthStarAnchorModel
     @State private var showing = false
     let compact: Bool
-    init(diary: DiaryViewModel, mobile: MobileClientModel, compact: Bool = false) {
-        self.diary = diary; self.mobile = mobile; self.anchor = diary.northStar; self.compact = compact
+    let iconOnly: Bool
+    init(diary: DiaryViewModel, mobile: MobileClientModel, compact: Bool = false, iconOnly: Bool = false) {
+        self.diary = diary; self.mobile = mobile; self.anchor = diary.northStar
+        self.compact = compact; self.iconOnly = iconOnly
     }
     private var verified: NorthStarDisplay? {
         guard !diary.sourceTransitionInProgress, !diary.needsFolder,
@@ -17,7 +19,12 @@ struct NorthStarAnchorBanner: View {
     }
     var body: some View {
         Button { showing = true } label: {
-            if compact {
+            if iconOnly {
+                Image(systemName: "sparkle").resizable().scaledToFit().frame(width: 24, height: 24)
+                    .foregroundStyle(MentorPalette.secondary).frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("北极星 · " + (verified?.title ?? "选择本阶段方向"))
+            } else if compact {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkle")
                     if let current = verified {

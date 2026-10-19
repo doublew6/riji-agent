@@ -585,9 +585,10 @@ final class DiaryFlowTests: XCTestCase {
             let startY = visible.minY - messages.frame.minY + visible.height * (earlier ? 0.25 : 0.75)
             let start = origin.withOffset(CGVector(dx: messages.frame.width / 2, dy: startY))
             let end = start.withOffset(CGVector(dx: 0, dy: earlier ? distance : -distance))
-            // Cross enough of the viewport to overcome touch slop even when the
-            // selection bar leaves little room; both endpoints remain inside it.
-            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+            // Short chat viewports need controlled scrolling: XCTest's .slow
+            // velocity can still fling a tall message beyond the readable area.
+            start.press(forDuration: 0.05, thenDragTo: end,
+                        withVelocity: XCUIGestureVelocity(rawValue: 40), thenHoldForDuration: 0.2)
         }
         attachMentorScreenshot("Inline message scroll — unresolved target")
         let hierarchy = XCTAttachment(string: app.debugDescription)
@@ -2575,11 +2576,11 @@ final class DiaryFlowTests: XCTestCase {
                       ("unit", "practice"), ("target", "4"), ("period", "This month"), ("stage", "Building a rhythm")]
         for (key, value) in fields {
             let field = app.descendants(matching: .any).matching(identifier: "goal-" + key).firstMatch
-            revealFormControl(field, in: app.collectionViews.firstMatch, below: app.navigationBars.firstMatch)
+            revealFormControl(field, in: app.collectionViews["northStarDefinitionForm"], below: app.navigationBars["北极星指标"])
             field.tap(); field.typeText(value)
         }
         let preview = app.buttons["previewNorthStar"]
-        revealFormControl(preview, in: app.collectionViews.firstMatch, below: app.navigationBars.firstMatch); preview.tap()
+        revealFormControl(preview, in: app.collectionViews["northStarDefinitionForm"], below: app.navigationBars["北极星指标"]); preview.tap()
         let confirm = app.buttons["confirmNorthStar"]; reveal(confirm); confirm.tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: confirm)
         waitForExpectations(timeout: 5)
@@ -2630,7 +2631,7 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func revealMemoryCorrectionControl(_ element: XCUIElement) {
-        revealFormControl(element, in: app.collectionViews.firstMatch, below: app.navigationBars["记忆详情"])
+        revealFormControl(element, in: app.collectionViews["mobileMemoryDetailForm"], below: app.navigationBars["记忆详情"])
     }
 
     private func revealFormControl(_ element: XCUIElement, in form: XCUIElement, below navigation: XCUIElement) {
@@ -2658,7 +2659,7 @@ final class DiaryFlowTests: XCTestCase {
             XCTAssertGreaterThan(height, 60)
             let frame = element.exists ? element.frame : .null
             if isFiniteFrame(frame), bounds.contains(frame), frame.minY >= top, frame.maxY <= bottom,
-               element.isHittable { return }
+               element.isEnabled, element.isHittable { return }
             // Start inside the Form gutter, above the entire keyboard and candidate bar.
             // An application-wide swipe can start on the keyboard on smaller phones.
             let towardEarlier = isFiniteFrame(frame) && frame.minY < top
@@ -2815,14 +2816,14 @@ final class DiaryFlowTests: XCTestCase {
         // must not hide an empty or malformed first exporter.
         _ = settingsExportFilename()
         let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
-        let cancel = picker.buttons.matching(NSPredicate(format: "label == '取消' OR label == 'Cancel'")).firstMatch
-        if !cancel.exists {
-            let back = picker.buttons["BackButton"]
-            XCTAssertTrue(back.waitForExistence(timeout: 5)); XCTAssertTrue(back.isHittable); back.tap()
+        guard var state = stableFilesNavigation(picker) else { return original }
+        if state.title == "我的iPhone" {
+            tapFilesNavigationAction(state, in: picker)
+            guard let root = stableFilesNavigation(picker, requiringBrowse: true) else { return original }
+            state = root
         }
-        // Files is a remote system view: use its scoped native button rather
-        // than requiring it to appear in the app-owned snapshot used for menus.
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(cancel.isHittable); cancel.tap()
+        XCTAssertEqual(state.title, "浏览")
+        tapFilesNavigationAction(state, in: picker)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !picker.exists }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
         XCTAssertTrue(app.buttons["settingsExportMarkdown"].isEnabled)
@@ -2839,6 +2840,74 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(input.value as? String, expected); waitForStatus("已保存在手机")
         app.buttons["收起键盘"].tap()
         return expected
+    }
+
+    private struct FilesNavigationState: Equatable {
+        let title: String
+        let identifier: String
+        let label: String
+        let actionFrame: CGRect
+        let navigationFrame: CGRect
+    }
+
+    private func stableFilesNavigation(
+        _ navigation: XCUIElement, requiringBrowse: Bool = false
+    ) -> FilesNavigationState? {
+        let bounds = app.frame
+        var previous: FilesNavigationState?
+        var captured: FilesNavigationState?
+        // Files restores its previous directory asynchronously. An initial
+        // Browse/Cancel snapshot must not decide the route during that transition.
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let snapshot = try? navigation.snapshot(),
+                  let state = self.filesNavigationState(snapshot, within: bounds),
+                  !requiringBrowse || state.title == "浏览" else {
+                previous = nil; return false
+            }
+            let stable = previous == state
+            previous = state
+            if stable { captured = state }
+            return stable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed,
+                       "Files must expose the same complete navigation state in two consecutive snapshots")
+        return captured
+    }
+
+    private func filesNavigationState(
+        _ snapshot: XCUIElementSnapshot, within bounds: CGRect
+    ) -> FilesNavigationState? {
+        var nodes = snapshot.children
+        var titles: [String] = []
+        var back: [XCUIElementSnapshot] = []
+        var cancel: [XCUIElementSnapshot] = []
+        while let node = nodes.popLast() {
+            if node.elementType == .staticText, ["浏览", "我的iPhone"].contains(node.label) { titles.append(node.label) }
+            if node.elementType == .button {
+                if node.identifier == "BackButton" { back.append(node) }
+                if ["取消", "Cancel"].contains(node.label) { cancel.append(node) }
+            }
+            nodes.append(contentsOf: node.children)
+        }
+        guard titles.count == 1, let title = titles.first else { return nil }
+        let actions = title == "浏览" ? cancel : back
+        let other = title == "浏览" ? back : cancel
+        guard actions.count == 1, other.isEmpty, let action = actions.first,
+              action.isEnabled, isFiniteFrame(snapshot.frame), isFiniteFrame(action.frame),
+              bounds.contains(action.frame), snapshot.frame.contains(action.frame) else { return nil }
+        return FilesNavigationState(title: title, identifier: action.identifier, label: action.label,
+                                    actionFrame: action.frame, navigationFrame: snapshot.frame)
+    }
+
+    private func tapFilesNavigationAction(_ state: FilesNavigationState, in navigation: XCUIElement) {
+        // Keep the action inside the remote system navigation bar. Never retry
+        // a tap or substitute a same-label element from the app-owned tree.
+        let matches = navigation.buttons.matching(NSPredicate(
+            format: "identifier == %@ AND label == %@", state.identifier, state.label))
+        guard matches.count == 1 else { XCTFail("Files must retain exactly one captured navigation action"); return }
+        let action = matches.element
+        XCTAssertTrue(action.isEnabled); XCTAssertTrue(action.isHittable)
+        action.tap()
     }
 
     private func prepareSystemFilesLocalLocation() {

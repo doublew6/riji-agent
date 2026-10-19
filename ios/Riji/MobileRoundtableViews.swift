@@ -193,8 +193,6 @@ struct MobileGroupChatView: View {
                 .refreshable { await refresh() }
                 .task(id: identifier) { initializeReading(); restoreReading(using: proxy) }
                 .onChange(of: value?.messages.map(\.id)) { restoreReading(using: proxy) }
-            }.overlay(alignment: .bottomTrailing) {
-                newReplyButton.padding(.trailing, 16).padding(.bottom, 8)
             }
             composer
         }.modifier(MobileRoundtablePresentation(diary: diary, model: model, title: title, embedded: embedded))
@@ -305,8 +303,13 @@ struct MobileGroupChatView: View {
                     .disabled(value == nil || !model.canMutateRoundtable || !["completed", "partial", "stopped"].contains(value?.status ?? "") || model.draft(draftKey).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             let responders = model.groupResponders(model.draft(draftKey), members: members)
-            Text(responders.isEmpty ? "大家回应" : "仅" + responders.map { roundtableNames[$0] ?? "导师" }.joined(separator: "、") + "回应 · 群内可见")
-                .font(.caption).foregroundStyle(MentorPalette.secondary).accessibilityIdentifier("groupReplyScope")
+            HStack(spacing: 8) {
+                Text(responders.isEmpty ? "大家回应" : "仅" + responders.map { roundtableNames[$0] ?? "导师" }.joined(separator: "、") + "回应 · 群内可见")
+                    .font(.caption).foregroundStyle(MentorPalette.secondary)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("groupReplyScope")
+                newReplyButton.fixedSize(horizontal: true, vertical: false)
+            }
         }.padding(.horizontal).padding(.vertical, 10).background(MentorPalette.paper)
     }
     private func refresh(older: Bool = false) async {

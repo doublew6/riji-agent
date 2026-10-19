@@ -203,7 +203,8 @@ struct NorthStarsView: View {
                 ForEach(model.goalHistory) { goal in Text("\(goal.day.value) · \(goal.name)\n目标 \(goal.target) \(goal.unit) · \(goal.id.uuidString)") }
             }
             WorkflowNotice(model: model)
-        }.navigationTitle("北极星指标").disabled(model.busy)
+        }.accessibilityIdentifier("northStarDefinitionForm")
+            .navigationTitle("北极星指标").disabled(model.busy)
             .task { await model.loadGoals() }
             .sheet(item: $model.goalPreview) { goal in
                 NavigationStack {
