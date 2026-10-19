@@ -153,14 +153,21 @@ final class DiaryFlowTests: XCTestCase {
         assertInlineGroup(named: name)
     }
 
+    private struct GroupMenuTarget: Equatable {
+        let identifier: String
+        let label: String
+        let frame: CGRect
+        let bounds: CGRect
+    }
+
     private func tapStableGroupMenuEntry(named name: String) {
-        var previous: (frame: CGRect, bounds: CGRect)?
-        var captured: (frame: CGRect, bounds: CGRect)?
+        var previous: GroupMenuTarget?
+        var captured: GroupMenuTarget?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard let visible = self.groupMenuEntryFrame(named: name) else {
                 previous = nil; return false
             }
-            let stable = previous?.frame == visible.frame && previous?.bounds == visible.bounds
+            let stable = previous == visible
             previous = visible
             if stable { captured = visible }
             return stable
@@ -168,13 +175,25 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
                        "Two root snapshots must agree on the unique visible enabled group menu entry")
         guard let visible = captured else { XCTFail("The group menu entry must have a stable captured frame"); return }
-        // Existence does not guarantee a later targeted native-menu snapshot.
-        // Resolve the known label in the root tree, then tap its stable center once.
-        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
-            dx: visible.frame.midX - visible.bounds.minX, dy: visible.frame.midY - visible.bounds.minY)).tap()
+        let evidence = XCTAttachment(string: """
+            Requested group: \(name)
+            Identifier: \(visible.identifier)
+            Label: \(visible.label)
+            Frame: \(visible.frame)
+            App bounds: \(visible.bounds)
+            """)
+        evidence.name = "Stable group menu target before native tap"; evidence.lifetime = .keepAlways; add(evidence)
+        let identity = visible.identifier.isEmpty
+            ? NSPredicate(format: "label == %@ AND (identifier == %@ OR identifier == nil)", visible.label, "")
+            : NSPredicate(format: "identifier == %@ AND label == %@", visible.identifier, visible.label)
+        let matches = app.buttons.matching(identity)
+        let count = matches.count
+        guard count == 1 else { XCTFail("The captured group menu identity must resolve uniquely; found \(count)"); return }
+        // Keep native activation after identity and geometry settle; never retry a tap.
+        matches.element.tap()
     }
 
-    private func groupMenuEntryFrame(named name: String) -> (frame: CGRect, bounds: CGRect)? {
+    private func groupMenuEntryFrame(named name: String) -> GroupMenuTarget? {
         guard let snapshot = try? app.snapshot() else {
             XCTFail("The application must provide a snapshot of the group menu"); return nil
         }
@@ -191,7 +210,7 @@ final class DiaryFlowTests: XCTestCase {
         }
         guard let entry = matches.first, entry.isEnabled, isFiniteFrame(snapshot.frame),
               isFiniteFrame(entry.frame), snapshot.frame.contains(entry.frame) else { return nil }
-        return (entry.frame, snapshot.frame)
+        return GroupMenuTarget(identifier: entry.identifier, label: entry.label, frame: entry.frame, bounds: snapshot.frame)
     }
 
     private func assertInlineInputReachableWithKeyboard() {
