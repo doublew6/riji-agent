@@ -492,10 +492,14 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func beginEditingRoundtableResult(append text: String = "") -> String {
-        revealRoundtableResultEditAction()
+        let preview = app.textViews["roundtableRenderedPreview"]
+        revealRoundtableResultFormElement(preview, allowingPartialText: true, towardTop: true)
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
         let edit = app.buttons["roundtableEditResult"]
+        revealRoundtableResultFormElement(edit)
         XCTAssertTrue(edit.isHittable); edit.tap()
         let editor = app.textViews["roundtableResultText"]
+        revealRoundtableResultFormElement(editor, towardTop: true)
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         let original = editor.value as? String ?? ""
         XCTAssertFalse(original.isEmpty)
@@ -506,8 +510,10 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func finishEditingRoundtableResult() {
-        let finish = app.buttons["roundtableFinishEditingResult"]; reveal(finish); finish.tap()
+        let finish = app.buttons["roundtableFinishEditingResult"]
+        revealRoundtableResultFormElement(finish); finish.tap()
         let preview = app.descendants(matching: .any).matching(identifier: "roundtableRenderedPreview").firstMatch
+        revealRoundtableResultFormElement(preview, allowingPartialText: true, towardTop: true)
         XCTAssertTrue(preview.waitForExistence(timeout: 10))
     }
 
@@ -519,8 +525,11 @@ final class DiaryFlowTests: XCTestCase {
 
     private func exactRoundtableResultPreview(_ selectedText: String) -> String {
         let disclosure = app.buttons["查看确切 Markdown（含来源记录）"]
-        reveal(disclosure); disclosure.tap()
+        revealRoundtableResultFormElement(disclosure); disclosure.tap()
         let preview = app.staticTexts["roundtableExactMarkdown"]
+        // DisclosureGroup can expand while its lazy text row remains off-screen.
+        // Mount that row by scrolling the Form before reading the entire label.
+        revealRoundtableResultFormElement(preview, allowingPartialText: true)
         XCTAssertTrue(preview.waitForExistence(timeout: 5))
         let block = preview.label
         let endMarker = "<!-- /riji:ai-discussion-result -->"
@@ -579,7 +588,7 @@ final class DiaryFlowTests: XCTestCase {
                        "Leaving an unprepared edit must not silently lose its latest text")
         finishEditingRoundtableResult()
         let cancel = app.buttons["roundtableCancelSave"]
-        app.swipeUp()
+        revealRoundtableResultFormElement(cancel)
         XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(cancel.isEnabled)
         let frame = cancel.frame
         XCTAssertGreaterThan(frame.width, 0); XCTAssertGreaterThan(frame.height, 0)
@@ -909,7 +918,7 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertTrue(exactBlock.contains("Synthetic reviewed clarification."))
         verifyRetainedPreviewAcrossGroups(groupName: groupName, text: selectedText, exactBlock: exactBlock)
         let confirm = app.buttons["roundtableConfirmSave"]
-        reveal(confirm); XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        revealRoundtableResultFormElement(confirm); XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
         attachMentorScreenshot("Group result — explicit local preview before confirmation")
@@ -939,26 +948,59 @@ final class DiaryFlowTests: XCTestCase {
                       "The selected message must open its explicit save preview")
     }
 
-    private func revealRoundtableResultEditAction() {
-        let preview = app.textViews["roundtableRenderedPreview"]
-        XCTAssertTrue(preview.waitForExistence(timeout: 10))
-        let form = app.collectionViews.containing(.textView, identifier: "roundtableRenderedPreview").firstMatch
+    private func revealRoundtableResultFormElement(
+        _ element: XCUIElement, allowingPartialText: Bool = false, towardTop: Bool = false
+    ) {
+        XCTAssertTrue(app.navigationBars["保存到日记"].waitForExistence(timeout: 5))
+        // The sheet has one Form. Do not anchor this query to a lazy preview row:
+        // that row disappears during editing and when scrolling past long text.
+        let form = app.collectionViews.firstMatch
         XCTAssertTrue(form.waitForExistence(timeout: 5))
-        let edit = app.buttons["roundtableEditResult"]
-        for _ in 0..<6 {
-            let viewport = form.frame.intersection(app.frame)
-            let top = max(viewport.minY, app.navigationBars["保存到日记"].frame.maxY) + 8
-            let bottom = viewport.maxY - 20
-            XCTAssertGreaterThan(bottom - top, 100)
-            if edit.exists, edit.frame.minY >= top, edit.frame.maxY <= bottom, edit.isHittable { return }
-            // The lazy Form does not mount the edit row below the long preview.
-            // Scroll its gutter, outside the embedded Markdown text view.
+        for _ in 0..<10 {
+            let viewport = roundtableResultFormViewport(form)
+            XCTAssertGreaterThan(viewport.height, 100)
+            var scrollTowardTop = towardTop
+            if element.exists {
+                let frame = element.frame
+                if frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite,
+                   frame.height.isFinite, !frame.isEmpty {
+                    let visible = frame.intersection(viewport)
+                    if allowingPartialText, visible.width > 0, visible.height >= min(44, frame.height) { return }
+                    if viewport.contains(frame), element.isEnabled, element.isHittable { return }
+                    scrollTowardTop = frame.minY < viewport.minY
+                }
+            }
+            // Stay in the Form gutter so the gesture cannot scroll the embedded
+            // Markdown preview or text editor instead of mounting the next row.
             let origin = form.coordinate(withNormalizedOffset: .zero)
-            let start = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.8))
-            let end = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.3))
+            let upper = origin.withOffset(CGVector(dx: 12, dy: viewport.minY - form.frame.minY + viewport.height * 0.25))
+            let lower = origin.withOffset(CGVector(dx: 12, dy: viewport.minY - form.frame.minY + viewport.height * 0.75))
+            let start = scrollTowardTop ? upper : lower
+            let end = scrollTowardTop ? lower : upper
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
-        XCTFail("The save preview must reveal its edit action inside the visible form")
+        XCTFail("The save Form must reveal the requested content or complete action before using it: " + element.identifier)
+    }
+
+    private func roundtableResultFormViewport(_ form: XCUIElement) -> CGRect {
+        let bounds = form.frame.intersection(app.frame)
+        let top = max(bounds.minY, app.navigationBars["保存到日记"].frame.maxY) + 8
+        var bottom = bounds.maxY - 20
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.exists {
+            var keyboardTop = keyboard.frame.minY
+            // The candidate/assistant rows can extend above Keyboard on iOS 26.
+            let inputView = app.otherElements.matching(identifier: "inputView").firstMatch
+            if inputView.exists, inputView.frame.intersects(keyboard.frame) {
+                keyboardTop = min(keyboardTop, inputView.frame.minY)
+            }
+            let assistant = app.otherElements.matching(identifier: "SystemInputAssistantView").firstMatch
+            if assistant.exists, assistant.frame.maxY >= keyboard.frame.minY - 1 {
+                keyboardTop = min(keyboardTop, assistant.frame.minY)
+            }
+            bottom = min(bottom, keyboardTop - 8)
+        }
+        return CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
     }
 
     private func verifyRetainedPreviewAcrossGroups(groupName: String, text: String, exactBlock: String) {
@@ -1025,7 +1067,7 @@ final class DiaryFlowTests: XCTestCase {
         attachMentorScreenshot("Legacy roundtable — readable exact-content preview before confirmation")
         let exactBlock = exactRoundtableResultPreview(selectedText)
         let write = app.buttons["roundtableConfirmSave"]
-        app.swipeUp()
+        revealRoundtableResultFormElement(write)
         XCTAssertTrue(write.waitForExistence(timeout: 10))
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: write)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
@@ -3086,9 +3128,9 @@ extension DiaryFlowTests {
         let edit = app.buttons["只编辑这一处"].firstMatch; reveal(edit); edit.tap()
         let fragment = app.textViews["editDiff-0"]; reveal(fragment)
         let fragmentBefore = fragment.value as? String ?? ""
-        XCTAssertTrue(fragmentBefore.contains("External simulated edit"))
+        XCTAssertEqual(Data(fragmentBefore.utf8), Data("External simulated edit\r\n".utf8))
         let suffix = "Reviewed fragment e\u{301} 🧠"
-        _ = appendRecoveryText(fragment, suffix)
+        appendBodyConflictFragment(fragment, suffix)
         let close = app.buttons["closeBodyMerge"]; close.tap()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         app.terminate(); app.launch(); XCTAssertTrue(input.waitForExistence(timeout: 10))
@@ -3105,6 +3147,18 @@ extension DiaryFlowTests {
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertEqual(Data((input.value as? String ?? "").utf8), Data(expected.utf8))
+    }
+
+    private func appendBodyConflictFragment(_ editor: XCUIElement, _ suffix: String) {
+        let before = editor.value as? String ?? ""
+        editor.tap(); editor.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        // Command-down does not move this native fragment editor on the CI runtime.
+        // Unmodified arrows saturate at the end; UTF-16 length bounds all caret steps.
+        for _ in 0..<before.utf16.count { editor.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: []) }
+        XCTAssertEqual(Data((editor.value as? String ?? "").utf8), Data(before.utf8), "Positioning the caret must not change the fragment")
+        editor.typeText(suffix)
+        XCTAssertEqual(Data((editor.value as? String ?? "").utf8), Data((before + suffix).utf8))
     }
 
     func testCompetingExternalEditsOfferLatestAndLocalChoicesWithoutReauthorization() {
