@@ -46,12 +46,24 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["收起键盘"].tap()
     }
 
-    private func reveal(_ element: XCUIElement) {
+    private func reveal(_ element: XCUIElement, requiringHitPoint: Bool = true) {
         for _ in 0..<7 {
-            if element.isHittable { return }
+            if hasVisibleFrame(element), !requiringHitPoint || element.isHittable { return }
             app.swipeUp()
         }
-        XCTAssertTrue(element.isHittable)
+        guard hasVisibleFrame(element) else {
+            XCTFail("The requested control must have a visible frame before checking its hit point"); return
+        }
+        XCTAssertTrue(!requiringHitPoint || element.isHittable)
+    }
+
+    private func hasVisibleFrame(_ element: XCUIElement) -> Bool {
+        guard element.exists else { return false }
+        let frame = element.frame
+        // SwiftUI can expose an unmaterialized row with an infinite or empty frame.
+        // Asking XCTest for its hit point then throws instead of returning false.
+        return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
+            && !frame.isEmpty && app.frame.intersects(frame)
     }
 
     private func revealAboveToolbar(_ element: XCUIElement) {
@@ -480,8 +492,9 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func beginEditingRoundtableResult(append text: String = "") -> String {
+        revealRoundtableResultEditAction()
         let edit = app.buttons["roundtableEditResult"]
-        XCTAssertTrue(edit.waitForExistence(timeout: 10)); reveal(edit); edit.tap()
+        XCTAssertTrue(edit.isHittable); edit.tap()
         let editor = app.textViews["roundtableResultText"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         let original = editor.value as? String ?? ""
@@ -926,6 +939,28 @@ final class DiaryFlowTests: XCTestCase {
                       "The selected message must open its explicit save preview")
     }
 
+    private func revealRoundtableResultEditAction() {
+        let preview = app.textViews["roundtableRenderedPreview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        let form = app.collectionViews.containing(.textView, identifier: "roundtableRenderedPreview").firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 5))
+        let edit = app.buttons["roundtableEditResult"]
+        for _ in 0..<6 {
+            let viewport = form.frame.intersection(app.frame)
+            let top = max(viewport.minY, app.navigationBars["保存到日记"].frame.maxY) + 8
+            let bottom = viewport.maxY - 20
+            XCTAssertGreaterThan(bottom - top, 100)
+            if edit.exists, edit.frame.minY >= top, edit.frame.maxY <= bottom, edit.isHittable { return }
+            // The lazy Form does not mount the edit row below the long preview.
+            // Scroll its gutter, outside the embedded Markdown text view.
+            let origin = form.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.8))
+            let end = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + (bottom - top) * 0.3))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        XCTFail("The save preview must reveal its edit action inside the visible form")
+    }
+
     private func verifyRetainedPreviewAcrossGroups(groupName: String, text: String, exactBlock: String) {
         let close = app.buttons["roundtableCloseResult"]
         XCTAssertTrue(close.isHittable); close.tap()
@@ -1165,7 +1200,9 @@ final class DiaryFlowTests: XCTestCase {
         let receipt = app.staticTexts["请求整理记忆已完成"]
         XCTAssertTrue(receipt.waitForExistence(timeout: 10)); reveal(receipt)
         let receiptScreenshot = XCTAttachment(screenshot: app.screenshot()); receiptScreenshot.name = "Synthetic memory organization receipt"; receiptScreenshot.lifetime = .keepAlways; add(receiptScreenshot)
-        reveal(organize)
+        // A queued request intentionally disables this control. XCTest on iOS 26
+        // can throw while calculating a disabled SwiftUI button's hit point.
+        reveal(organize, requiringHitPoint: false)
         XCTAssertTrue(app.staticTexts["已排队或正在整理；服务会按预算分批继续，停止的历史项保持停止。"].exists)
         XCTAssertFalse(app.buttons["mobileOrganize"].isEnabled)
     }
@@ -1418,10 +1455,9 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(viewport("y"), position, accuracy: 2)
         XCTAssertEqual(viewport("caret"), caret)
         app.tabBars.buttons["导师"].tap()
-        XCTAssertTrue(app.staticTexts["服务尚未激活"].waitForExistence(timeout: 5))
-        XCTAssertFalse(input.exists)
+        assertDisconnectedDestination("导师")
         app.tabBars.buttons["记忆"].tap()
-        XCTAssertTrue(app.staticTexts["服务尚未激活"].exists)
+        assertDisconnectedDestination("记忆")
         app.tabBars.buttons["设置"].tap()
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
         app.tabBars.buttons["日记"].tap()
@@ -1432,6 +1468,21 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(input.value as? String, saved); XCTAssertEqual(viewport("y"), position, accuracy: 2)
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Diary position after date, destination and directory round trips"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    private func assertDisconnectedDestination(_ title: String) {
+        let identifier = "unavailable-" + title
+        let status = app.staticTexts.matching(identifier: identifier)
+            .matching(NSPredicate(format: "label == %@", "尚未连接")).firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 5)); XCTAssertTrue(status.isHittable)
+        let guidance = app.staticTexts.matching(identifier: identifier)
+            .matching(NSPredicate(format: "label == %@", "尚未启用 AI 服务，请更新个人安装。本地日记可继续使用。")).firstMatch
+        XCTAssertTrue(guidance.exists)
+        let retry = app.buttons.matching(identifier: identifier)
+            .matching(NSPredicate(format: "label == %@", "重试连接")).firstMatch
+        XCTAssertTrue(retry.isHittable); XCTAssertTrue(retry.isEnabled)
+        XCTAssertTrue(app.tabBars.buttons[title].isSelected)
+        XCTAssertFalse(input.exists)
     }
 
     func testApprovedSettingsGroupsKeepDiaryAndRecoveryRoutesReachable() {
@@ -1529,8 +1580,12 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(app.navigationBars["设置"].buttons.count, 0)
         app.buttons["settingsDataAI"].tap(); app.buttons["settingsConnection"].tap()
         let airStatus = app.staticTexts.matching(identifier: "settingsAirStatus")
-            .matching(NSPredicate(format: "label CONTAINS %@", "服务尚未激活")).firstMatch
+            .matching(NSPredicate(format: "label CONTAINS %@", "尚未连接")).firstMatch
         XCTAssertTrue(airStatus.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(airStatus.isHittable)
+        let retry = app.buttons["mobileRetryConnection"]
+        XCTAssertTrue(retry.isHittable); XCTAssertTrue(retry.isEnabled)
+        XCTAssertTrue(app.staticTexts["尚未启用 AI 服务，请更新个人安装。本地日记可继续使用。"].exists)
         XCTAssertFalse(app.buttons["moreMenu"].isHittable)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -2198,9 +2253,22 @@ final class DiaryFlowTests: XCTestCase {
         let form = app.collectionViews.containing(.textField, identifier: "mit-criterion").firstMatch
         XCTAssertTrue(form.waitForExistence(timeout: 5))
         for _ in 0..<8 {
-            let top = max(form.frame.minY, app.navigationBars.firstMatch.frame.maxY) + 8
+            let top = max(form.frame.minY, app.navigationBars["最重要的一件事"].frame.maxY) + 8
             let keyboard = app.keyboards.firstMatch
-            let bottom = min(form.frame.maxY, keyboard.exists ? keyboard.frame.minY : app.frame.maxY) - 8
+            var keyboardTop = keyboard.exists ? keyboard.frame.minY : app.frame.maxY
+            if keyboard.exists {
+                // iOS 26 exposes the candidate row separately from Keyboard. Its
+                // inputView contains both, so the keys' minY is not a safe boundary.
+                let inputView = app.otherElements.matching(identifier: "inputView").firstMatch
+                if inputView.exists, inputView.frame.intersects(keyboard.frame) {
+                    keyboardTop = min(keyboardTop, inputView.frame.minY)
+                }
+                let assistant = app.otherElements.matching(identifier: "SystemInputAssistantView").firstMatch
+                if assistant.exists, assistant.frame.maxY >= keyboard.frame.minY - 1 {
+                    keyboardTop = min(keyboardTop, assistant.frame.minY)
+                }
+            }
+            let bottom = min(form.frame.maxY, keyboardTop) - 8
             let height = bottom - top
             XCTAssertGreaterThan(height, 60)
             if element.exists, element.isHittable, element.frame.minY >= top, element.frame.maxY <= bottom { return }
@@ -2309,12 +2377,35 @@ final class DiaryFlowTests: XCTestCase {
             app.tabBars.buttons["设置"].tap(); app.buttons["settingsExportRecovery"].tap()
             app.buttons["settingsExportMarkdown"].tap()
         } else { app.buttons["moreMenu"].tap(); app.buttons["exportMarkdown"].tap() }
-        saveVoiceFile(named: "Riji-Markdown-Preview-" + container)
+        let exportName = "Riji-Markdown-Preview-" + container
+        if fromSettings { saveSettingsMarkdownFile(named: exportName) }
+        else { saveVoiceFile(named: exportName) }
         let receipt = fromSettings ? app.staticTexts["settingsExportStatus"] : status
         expectation(for: NSPredicate(format: "label CONTAINS %@", "Markdown 已导出"), evaluatedWith: receipt)
         waitForExpectations(timeout: 10)
         let digest = SHA256.hash(data: Data(checked.utf8)).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(receipt.value as? String, digest, "Rendering must never become a lossy Markdown serialization")
+    }
+
+    private func saveSettingsMarkdownFile(named name: String) {
+        // The system save action has no DOCPicker.actionButton identifier on the CI runtime.
+        let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+        let save = picker.buttons["保存"]
+        XCTAssertTrue(save.waitForExistence(timeout: 10))
+        let filename = app.textFields["DOCPicker.filenameTextField"]
+        guard filename.waitForExistence(timeout: 20) else {
+            attachMentorScreenshot("Settings Markdown export — missing system filename field")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "Settings Markdown export — system picker hierarchy"
+            hierarchy.lifetime = .keepAlways; add(hierarchy)
+            XCTFail("The system exporter must expose its filename field before saving a unique file"); return
+        }
+        filename.tap()
+        let previous = filename.value as? String ?? ""
+        filename.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count))
+        filename.typeText(name)
+        XCTAssertEqual(filename.value as? String, name)
+        XCTAssertTrue(save.isEnabled); XCTAssertTrue(save.isHittable); save.tap()
     }
 
     func testLocalVaultTreeOpensOriginalFilesReadOnlyAndRestoresItsBookmark() {
