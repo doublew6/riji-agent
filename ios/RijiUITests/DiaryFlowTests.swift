@@ -4,6 +4,7 @@ import CryptoKit
 final class DiaryFlowTests: XCTestCase {
     private var app: XCUIApplication!
     private var container: String!
+    private var bodyReviewGeometry: [String] = []
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -224,6 +225,20 @@ final class DiaryFlowTests: XCTestCase {
         }
         XCTAssertLessThan(app.buttons["mobileGroupSwitcher"].frame.maxY, groupComposer.frame.minY,
                           "Switching and writing must both remain visible in the same home viewport")
+        assertInlineMessageViewportWithKeyboard()
+    }
+
+    private func assertInlineMessageViewportWithKeyboard() {
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        XCTAssertTrue(groupComposer.isHittable)
+        XCTAssertLessThanOrEqual(groupComposer.frame.maxY, keyboard.frame.minY + 1)
+        let messages = app.scrollViews["roundtableMessages"]
+        XCTAssertTrue(messages.exists)
+        XCTAssertGreaterThan(messages.frame.height, 56,
+                             "New replies and selection controls must not collapse the message viewport")
+        XCTAssertGreaterThanOrEqual(messages.frame.minY, app.buttons["mobileGroupSwitcher"].frame.maxY)
+        XCTAssertLessThanOrEqual(messages.frame.maxY, groupComposer.frame.minY)
     }
 
     private func launchMobileFixture(_ mode: String) {
@@ -497,7 +512,7 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertTrue(fact.waitForExistence(timeout: 10)); fact.tap()
         let correction = app.descendants(matching: .any).matching(identifier: "mobileMemoryCorrection").firstMatch
         XCTAssertTrue(correction.waitForExistence(timeout: 5)); correction.tap(); correction.typeText("Synthetic corrected fact")
-        let save = app.buttons["确认纠正"]; reveal(save); save.tap()
+        let save = app.buttons["确认纠正"]; revealMemoryCorrectionControl(save); save.tap()
         app.buttons["mobileSubmitCorrection"].tap()
         XCTAssertTrue(app.staticTexts["Synthetic corrected fact"].waitForExistence(timeout: 10))
         let settingsVisible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: app.tabBars.buttons["设置"])
@@ -655,7 +670,7 @@ final class DiaryFlowTests: XCTestCase {
         input.swipeUp(); attachMentorScreenshot(screenshotName + " — readable diary without machine fields")
         app.buttons["moreMenu"].tap()
         let sources = app.buttons["diaryAISources"]
-        XCTAssertTrue(sources.waitForExistence(timeout: 5)); tapVisibleGroupAction(sources)
+        XCTAssertTrue(sources.waitForExistence(timeout: 5)); tapVisibleGroupAction(sources, nativeButton: true)
         let dismissed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: sources)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
@@ -804,7 +819,7 @@ final class DiaryFlowTests: XCTestCase {
                        "A single selection tap must produce the requested state")
     }
 
-    private func tapVisibleGroupAction(_ element: XCUIElement) {
+    private func tapVisibleGroupAction(_ element: XCUIElement, nativeButton: Bool = false) {
         guard let target = try? element.snapshot() else {
             XCTFail("The requested action must provide its exact accessibility identity"); return
         }
@@ -826,6 +841,17 @@ final class DiaryFlowTests: XCTestCase {
                        "Two snapshots must agree on one fully visible enabled action before tapping")
         guard let frame = capturedFrame, let bounds = capturedBounds else {
             XCTFail("The action must have a stable captured frame"); return
+        }
+        if nativeButton {
+            XCTAssertEqual(target.elementType, .button)
+            XCTAssertFalse(target.identifier.isEmpty)
+            let matches = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label == %@",
+                target.identifier, target.label))
+            XCTAssertEqual(matches.count, 1, "The stable native action must resolve to exactly one button")
+            let evidence = XCTAttachment(string: "id=\(target.identifier); frame=\(frame); bounds=\(bounds)")
+            evidence.name = "Native menu action geometry"; evidence.lifetime = .keepAlways; add(evidence)
+            matches.element.tap()
+            return
         }
         // Resolve the hit point once, outside the snapshot-stability wait. Multiple
         // independent AX queries inside that wait can exhaust its entire budget.
@@ -1042,11 +1068,19 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertEqual(app.staticTexts["groupReplyScope"].label, "大家回应")
         app.buttons["roundtableSend"].tap()
         let advice = app.staticTexts.matching(NSPredicate(format: "label == %@", "这是一段合成测试回复：先选一个可以验证的小行动，再根据实际反馈调整。"))
-        XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
         let firstReply = groupMentionReplies.firstMatch
+        let receivedFirst = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            firstReply.exists || self.app.buttons["groupNewReply"].exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [receivedFirst], timeout: 10), .completed)
+        assertInlineMessageViewportWithKeyboard()
+        if app.buttons["groupNewReply"].exists { showLatestGroupReply() }
+        XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(firstReply.waitForExistence(timeout: 5))
         let firstReplyID = firstReply.identifier
-        if app.buttons["groupNewReply"].exists { showLatestGroupReply() }
+        revealRoundtableMessage(advice.firstMatch)
+        XCTAssertTrue(advice.firstMatch.isHittable)
+        attachMentorScreenshot("Large-text group — reply remains readable after viewing the new message")
         selectGroupMentionAfterMenuSettles(composer)
         XCTAssertTrue(app.staticTexts["groupReplyScope"].label.contains("仅温柔回顾者回应"))
         XCTAssertTrue(app.staticTexts["groupReplyScope"].label.contains("群内可见"))
@@ -1060,9 +1094,12 @@ final class DiaryFlowTests: XCTestCase {
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [received], timeout: 10), .completed,
                        "The new reply must become visible or offer its real unread navigation action")
+        assertInlineMessageViewportWithKeyboard()
         if !newReply.exists, latest.exists { showLatestGroupReply() }
         XCTAssertTrue(newReply.waitForExistence(timeout: 10), "The mentioned mentor must provide a new reply with the exact expected text")
         XCTAssertTrue(advice.firstMatch.waitForExistence(timeout: 10))
+        revealRoundtableMessage(newReply.staticTexts.matching(NSPredicate(format: "label == %@",
+            "这是一段合成测试回复：先选一个可以验证的小行动，再根据实际反馈调整。")).firstMatch)
         XCTAssertFalse(app.buttons["roundtableInvite"].exists)
     }
 
@@ -1407,7 +1444,9 @@ final class DiaryFlowTests: XCTestCase {
         assertInlineGroup()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Synthetic offline retained draft")
-        XCTAssertTrue(app.staticTexts["离线副本 · 草稿仍在本机"].waitForExistence(timeout: 10))
+        let offline = app.staticTexts["离线副本 · 草稿仍在本机"]
+        revealRoundtableMessage(offline, towardEarlier: true)
+        XCTAssertTrue(offline.exists)
         revealRoundtableMessage(app.staticTexts[text])
         XCTAssertTrue(app.staticTexts[text].exists)
         XCTAssertFalse(app.buttons["roundtableSend"].isEnabled)
@@ -1434,7 +1473,7 @@ final class DiaryFlowTests: XCTestCase {
         evidence.tap()
         let correction = app.descendants(matching: .any).matching(identifier: "mobileMemoryCorrection").firstMatch
         XCTAssertTrue(correction.waitForExistence(timeout: 5)); correction.tap(); correction.typeText("Synthetic overview correction")
-        let confirm = app.buttons["确认纠正"]; reveal(confirm); confirm.tap()
+        let confirm = app.buttons["确认纠正"]; revealMemoryCorrectionControl(confirm); confirm.tap()
         XCTAssertTrue(app.staticTexts["你的纠正草稿"].waitForExistence(timeout: 5))
         app.buttons["mobileSubmitCorrection"].tap()
         XCTAssertTrue(app.staticTexts["Synthetic overview correction"].waitForExistence(timeout: 5))
@@ -1463,7 +1502,7 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["mobileOverviewEvidence-synthetic-memory"].tap()
         let correction = app.descendants(matching: .any).matching(identifier: "mobileMemoryCorrection").firstMatch
         XCTAssertTrue(correction.waitForExistence(timeout: 5)); correction.tap(); correction.typeText("Synthetic confirmation candidate")
-        let confirm = app.buttons["确认纠正"]; reveal(confirm); confirm.tap()
+        let confirm = app.buttons["确认纠正"]; revealMemoryCorrectionControl(confirm); confirm.tap()
         let submit = app.buttons["mobileSubmitCorrection"]
         XCTAssertTrue(submit.waitForExistence(timeout: 5))
         let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == false"), object: submit)
@@ -2536,9 +2575,11 @@ final class DiaryFlowTests: XCTestCase {
                       ("unit", "practice"), ("target", "4"), ("period", "This month"), ("stage", "Building a rhythm")]
         for (key, value) in fields {
             let field = app.descendants(matching: .any).matching(identifier: "goal-" + key).firstMatch
-            reveal(field); field.tap(); field.typeText(value)
+            revealFormControl(field, in: app.collectionViews.firstMatch, below: app.navigationBars.firstMatch)
+            field.tap(); field.typeText(value)
         }
-        let preview = app.buttons["previewNorthStar"]; reveal(preview); preview.tap()
+        let preview = app.buttons["previewNorthStar"]
+        revealFormControl(preview, in: app.collectionViews.firstMatch, below: app.navigationBars.firstMatch); preview.tap()
         let confirm = app.buttons["confirmNorthStar"]; reveal(confirm); confirm.tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: confirm)
         waitForExpectations(timeout: 5)
@@ -2585,9 +2626,19 @@ final class DiaryFlowTests: XCTestCase {
 
     private func revealDirectionMITControl(_ element: XCUIElement) {
         let form = app.collectionViews.containing(.textField, identifier: "mit-criterion").firstMatch
+        revealFormControl(element, in: form, below: app.navigationBars["最重要的一件事"])
+    }
+
+    private func revealMemoryCorrectionControl(_ element: XCUIElement) {
+        revealFormControl(element, in: app.collectionViews.firstMatch, below: app.navigationBars["记忆详情"])
+    }
+
+    private func revealFormControl(_ element: XCUIElement, in form: XCUIElement, below navigation: XCUIElement) {
         XCTAssertTrue(form.waitForExistence(timeout: 5))
         for _ in 0..<8 {
-            let top = max(form.frame.minY, app.navigationBars["最重要的一件事"].frame.maxY) + 8
+            let bounds = form.frame.intersection(app.frame)
+            guard isFiniteFrame(bounds) else { XCTFail("The Form must have a finite visible viewport"); return }
+            let top = max(bounds.minY, navigation.frame.maxY) + 8
             let keyboard = app.keyboards.firstMatch
             var keyboardTop = keyboard.exists ? keyboard.frame.minY : app.frame.maxY
             if keyboard.exists {
@@ -2602,17 +2653,21 @@ final class DiaryFlowTests: XCTestCase {
                     keyboardTop = min(keyboardTop, assistant.frame.minY)
                 }
             }
-            let bottom = min(form.frame.maxY, keyboardTop) - 8
+            let bottom = min(bounds.maxY, keyboardTop) - 8
             let height = bottom - top
             XCTAssertGreaterThan(height, 60)
-            if element.exists, element.isHittable, element.frame.minY >= top, element.frame.maxY <= bottom { return }
-            // A partially exposed menu can report hittable while its tap point is under the keyboard.
+            let frame = element.exists ? element.frame : .null
+            if isFiniteFrame(frame), bounds.contains(frame), frame.minY >= top, frame.maxY <= bottom,
+               element.isHittable { return }
+            // Start inside the Form gutter, above the entire keyboard and candidate bar.
+            // An application-wide swipe can start on the keyboard on smaller phones.
+            let towardEarlier = isFiniteFrame(frame) && frame.minY < top
             let origin = form.coordinate(withNormalizedOffset: .zero)
-            let start = origin.withOffset(CGVector(dx: form.frame.width / 2, dy: top - form.frame.minY + height * 0.75))
-            let end = origin.withOffset(CGVector(dx: form.frame.width / 2, dy: top - form.frame.minY + height * 0.25))
+            let start = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + height * (towardEarlier ? 0.25 : 0.75)))
+            let end = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + height * (towardEarlier ? 0.75 : 0.25)))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
-        XCTFail("The MIT control must be fully visible above the keyboard before interaction")
+        XCTFail("The Form control must be fully visible above the keyboard before interaction")
     }
 
     func testDirectMITBodyEditRequiresExplicitPlanReconciliation() {
@@ -3072,10 +3127,10 @@ extension DiaryFlowTests {
         XCTAssertFalse(lastColumn.isHittable)
         let start = input.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.35))
         let end = input.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.35))
-        start.press(forDuration: 0.05, thenDragTo: end)
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         XCTAssertTrue(lastColumn.isHittable, "The wide table must scroll horizontally")
         XCTAssertEqual(input.value as? String, source)
-        end.press(forDuration: 0.05, thenDragTo: start)
+        end.press(forDuration: 0.05, thenDragTo: start, withVelocity: .slow, thenHoldForDuration: 0.2)
         XCTAssertFalse(lastColumn.isHittable, "The table must scroll back without changing dates")
         XCTAssertEqual(input.value as? String, source)
         let viewport = input.label
@@ -3594,6 +3649,11 @@ extension DiaryFlowTests {
     }
 
     private func performBodyReviewAction(_ identifier: String = "confirmBodyMerge", towardEarlier: Bool = false, evidenceName: String? = nil) {
+        bodyReviewGeometry = []
+        defer {
+            let geometry = XCTAttachment(string: bodyReviewGeometry.joined(separator: "\n"))
+            geometry.name = "Body review scroll geometry"; geometry.lifetime = .keepAlways; add(geometry)
+        }
         let navigation = app.navigationBars["核对正文版本"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 5))
         let window = app.windows.containing(.navigationBar, identifier: "核对正文版本").firstMatch
@@ -3652,10 +3712,15 @@ extension DiaryFlowTests {
         }
         var nodes: [XCUIElementSnapshot] = [snapshot]
         var buttons: [XCUIElementSnapshot] = []
+        var geometry = ["time=\(Date().timeIntervalSince1970); form=\(snapshot.frame)"]
         while let node = nodes.popLast() {
             if node.identifier == identifier, node.elementType == .button { buttons.append(node) }
+            if [identifier, "bodyFullVersions", "bodyConflictSource", "bodyConflictMerge"].contains(node.identifier) {
+                geometry.append("\(node.identifier)=\(node.frame); enabled=\(node.isEnabled)")
+            }
             nodes.append(contentsOf: node.children)
         }
+        bodyReviewGeometry.append(geometry.joined(separator: "; "))
         guard buttons.count <= 1 else { XCTFail("The body review must expose only one button for the requested action"); return nil }
         guard let button = buttons.first, button.isEnabled else { return nil }
         let frame = button.frame

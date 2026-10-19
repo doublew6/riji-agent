@@ -305,6 +305,7 @@ struct TodayDiaryView: View {
                 }
                 DisclosureGroup(isExpanded: fullVersions) {
                     Text(model.bodyConflict?.source.map { String(decoding: $0, as: UTF8.self) } ?? "文件尚不存在")
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled).accessibilityIdentifier("bodyConflictSource")
                     TextEditor(text: Binding(get: { model.bodyMergeText }, set: model.updateBodyMerge)).frame(minHeight: 260)
                         .disabled(!model.canEditBodyMerge).accessibilityIdentifier("bodyConflictMerge")
