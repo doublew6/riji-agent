@@ -52,6 +52,8 @@ SIGKILL、主机崩溃或平台强制取消无法由 Python 捕获，可能留�
 
 2026-10-16 已将本轮新增的三个回归登记进默认 smoke 与 CI：群名取消及未修改禁用保存、消息主动多选及取消、私聊/群发送后直接继续输入。对应方法为 `testMobileGroupNameEditorCancelsWithoutChangingNameAndDisablesUnchangedSave`、`testMobileGroupMessageSelectionOnlyAppearsAfterExplicitActionAndCanCancel`、`testMobilePrivateAndGroupSendKeepInputFocusForFollowingDraft`。本轮聚焦执行与完整 smoke 的结果分别记录，不将登记视为远程 CI 已通过。
 
+`testOrdinaryBodyConflictFragmentChoiceEditRecoveryAndSaveExactBytes` 在加载并记录原文后，通过显式启用的一次性 fixture 按钮准备合成冲突。该入口仅限 DEBUG Simulator、有效 UUID namespace、原目录/目录浏览/外部刷新合成场景且未启用 mobile fixture；使用后移除，冷重开前移除启用开关。它复用原有结束输入与原子写入方法，由正常刷新发现冲突，保留逐段编辑、退出恢复、全部精确字节及冷启动断言。其他 smoke 继续覆盖原生冲突菜单和真实 AI 来源菜单；此调整只分离测试数据准备，不代表原生菜单派发问题已修复。
+
 | 风险路径 | `DiaryFlowTests` 方法 |
 | --- | --- |
 | 普通正文冲突逐段采用、编辑、退出恢复、保存及冷重开精确字节 | `testOrdinaryBodyConflictFragmentChoiceEditRecoveryAndSaveExactBytes` |

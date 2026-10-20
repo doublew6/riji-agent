@@ -634,7 +634,10 @@ final class DiaryFlowTests: XCTestCase {
             }
             let origin = messages.coordinate(withNormalizedOffset: .zero)
             let startY = visible.minY - messages.frame.minY + visible.height * (earlier ? 0.25 : 0.75)
-            let start = origin.withOffset(CGVector(dx: messages.frame.width / 2, dy: startY))
+            // The padded gutter belongs to the ScrollView, outside selectable
+            // message text and card menus. Slow center drags can select text.
+            let startX = visible.minX - messages.frame.minX + 4
+            let start = origin.withOffset(CGVector(dx: startX, dy: startY))
             let end = start.withOffset(CGVector(dx: 0, dy: earlier ? distance : -distance))
             // Short chat viewports need controlled scrolling: XCTest's .slow
             // velocity can still fling a tall message beyond the readable area.
@@ -2116,20 +2119,32 @@ final class DiaryFlowTests: XCTestCase {
                 thenDragTo: origin.withOffset(CGVector(dx: 60, dy: 34)))
         }
         swipeHeadingToNextDay()
-        assertSelectedDiary("2026-09-13", content: "# Original template\n")
+        waitForSelectedDiary("2026-09-13", content: "# Original template\n")
         XCTAssertFalse(status.label.contains("已保存在此设备"))
         type("Future first edit", savedStatus: "已保存在此设备")
         let edited = "# Original template\nFuture first edit\n"
         assertSelectedDiary("2026-09-13", content: edited)
         input.swipeRight()
-        assertSelectedDiary("2026-09-12", content: original)
+        waitForSelectedDiary("2026-09-12", content: original)
         app.terminate(); app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         assertSelectedDiary("2026-09-12", content: original)
         swipeHeadingToNextDay()
-        assertSelectedDiary("2026-09-13", content: edited)
+        waitForSelectedDiary("2026-09-13", content: edited)
         waitForStatus("已保存在此设备")
         XCTAssertFalse(app.staticTexts["storageError"].exists)
+    }
+
+    private func waitForSelectedDiary(_ day: String, content: String?, file: StaticString = #filePath, line: UInt = #line) {
+        // A completed native gesture can precede the asynchronous store load and
+        // its UI update. Observe completion without repeating the navigation.
+        guard let content else { XCTFail("The expected diary source must be available", file: file, line: line); return }
+        let completed = NSPredicate { [self] _, _ in
+            app.buttons["selectedDate"].label.contains(day) && (input.value as? String) == content
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: completed, object: nil)], timeout: 5),
+                       .completed, "The requested day and complete source must finish loading", file: file, line: line)
+        assertSelectedDiary(day, content: content, file: file, line: line)
     }
 
     private func assertSelectedDiary(_ day: String, content: String?, file: StaticString = #filePath, line: UInt = #line) {
@@ -3742,10 +3757,17 @@ extension DiaryFlowTests {
     }
 
     func testOrdinaryBodyConflictFragmentChoiceEditRecoveryAndSaveExactBytes() {
+        app.launchEnvironment["RIJI_TEST_PREPARE_BODY_CONFLICT"] = "1"
         launchExternalRefreshFixture()
+        app.launchEnvironment.removeValue(forKey: "RIJI_TEST_PREPARE_BODY_CONFLICT")
         let before = input.value as? String ?? ""
-        app.buttons["moreMenu"].tap(); app.buttons["simulateCompetingEdits"].tap()
+        let prepare = app.buttons["prepareSyntheticBodyConflict"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 5))
+        XCTAssertTrue(prepare.isEnabled)
+        prepare.tap()
         XCTAssertTrue(app.buttons["reviewBodyConflict"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["prepareSyntheticBodyConflict"].exists,
+                       "The one-shot fixture control must disappear after preparing the conflict")
         app.buttons["reviewBodyConflict"].tap()
         XCTAssertTrue(app.staticTexts["bodyDiffSummary"].waitForExistence(timeout: 5))
         let use = app.buttons["useDiff-0"]; reveal(use); use.tap()
@@ -3758,6 +3780,7 @@ extension DiaryFlowTests {
         let close = app.buttons["closeBodyMerge"]; close.tap()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         app.terminate(); app.launch(); XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["prepareSyntheticBodyConflict"].exists)
         XCTAssertTrue(app.buttons["recoverBodyMerge"].waitForExistence(timeout: 10))
         app.buttons["recoverBodyMerge"].tap()
         openRecoveredBodyFullVersions()

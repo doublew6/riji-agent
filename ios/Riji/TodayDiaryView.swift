@@ -20,6 +20,9 @@ struct TodayDiaryView: View {
     @State private var document: MarkdownDocument?
     @State private var showExporter = false
     @State private var protectedEditFeedback = false
+    #if DEBUG && targetEnvironment(simulator)
+    @State private var syntheticConflictPrepared = false
+    #endif
     // DatePicker carries a calendar label, not a local midnight instant.
     private let pickerTimeZone = TimeZone(secondsFromGMT: 0)!
 
@@ -46,6 +49,19 @@ struct TodayDiaryView: View {
                         if model.sourceUnavailable { Button("重新读取原目录") { Task { if model.isOriginalSource { await model.useOriginalDiaries() } else { await model.start() } } } }
                     }.padding(20)
                 }
+                #if DEBUG && targetEnvironment(simulator)
+                if offersSyntheticConflictPreparation {
+                    Button("Prepare synthetic conflict") {
+                        guard offersSyntheticConflictPreparation, model.isReady,
+                              model.isOriginalSource, !model.isBusy else { return }
+                        syntheticConflictPrepared = true
+                        endEditing()
+                        model.simulateExternalRefreshFixture(divergent: true)
+                    }
+                    .disabled(!model.isReady || !model.isOriginalSource || model.isBusy)
+                    .accessibilityIdentifier("prepareSyntheticBodyConflict")
+                }
+                #endif
                 DiaryBodyEditor(text: model.markdown, day: model.selectedDay, editable: model.canEditBody,
                                 foldsSavedAIResults: true,
                                 onProtectedEdit: { protectedEditFeedback = true }, viewports: viewports,
@@ -99,6 +115,16 @@ struct TodayDiaryView: View {
             }
         }
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+    private var offersSyntheticConflictPreparation: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return !syntheticConflictPrepared && model.isExternalRefreshFixture
+            && environment["RIJI_TEST_PREPARE_BODY_CONFLICT"] == "1"
+            && environment["RIJI_TEST_VAULT_BROWSER"] == "1"
+            && environment["RIJI_TEST_MOBILE"] == nil
+    }
+    #endif
 
     private var localAIRecovery: some View {
         NavigationStack {
