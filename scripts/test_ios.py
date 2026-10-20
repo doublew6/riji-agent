@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import signal
 import subprocess
@@ -27,6 +28,7 @@ RUN_TIMEOUT_SECONDS = 50 * 60
 CHILD_STOP_GRACE_SECONDS = 5
 STAGE_TIMEOUT_SECONDS = {
     "boot-status": 180,
+    "ui-boot-status": 180,
     # Listing tests also compiles the package on a fresh CI runner.
     "swift-discovery": 15 * 60,
     "swift-tests": 15 * 60,
@@ -472,9 +474,104 @@ def enumerate_xcode(run: Run, suite: str, udid: str) -> set[str]:
     return expected
 
 
+UI_BUNDLES = (
+    ("Riji.app", "com.riji.local", ("Riji",)),
+    ("RijiUITests-Runner.app", "com.riji.local.uitests.xctrunner",
+     ("RijiUITests-Runner", "PlugIns/RijiUITests.xctest/RijiUITests")),
+)
+
+
+def owned_ui_device(run: Run, choice: dict, phase: str) -> dict:
+    """Revalidate the locked, dedicated device before any UI refresh operation."""
+    lock = run.cache / "runner.lock"
+    try:
+        held, current = os.fstat(run.lock_fd), lock.stat()
+        locked = ((held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+                  and lock.read_text(encoding="utf-8").strip() == str(os.getpid()))
+    except (OSError, TypeError):
+        locked = False
+    if not locked:
+        raise RunnerError("UI binary refresh requires the current runner lock.")
+    udid = choice["device"]["udid"]
+    inventory = run.json_command("ui-device-" + phase, ["xcrun", "simctl", "list", "devices", "-j"])
+    matches = [(runtime, item) for runtime, group in inventory["devices"].items()
+               for item in group if item.get("name") == DEVICE_NAME or item.get("udid") == udid]
+    if len(matches) != 1:
+        raise RunnerError("UI binary refresh requires one unchanged dedicated device.")
+    runtime, device = matches[0]
+    if (device.get("udid") != udid or device.get("name") != DEVICE_NAME
+            or runtime != choice["runtime"]["identifier"]
+            or device.get("deviceTypeIdentifier") != choice["type"]["identifier"]
+            or not device.get("isAvailable") or device.get("state") != "Booted"):
+        raise RunnerError("Dedicated UI device identity or availability changed after enumeration.")
+    data = Path(device.get("dataPath", ""))
+    if not data.is_absolute() or data.name != "data" or data.parent.name != udid:
+        raise RunnerError("Dedicated UI device has no verified data directory.")
+    return device
+
+
+def ui_bundle_hashes(bundle: Path, specification: tuple) -> dict[str, str]:
+    """Capture the app/runner launchers and code, including Debug dylibs if present."""
+    _, identifier, executables = specification
+    try:
+        info = plistlib.loads((bundle / "Info.plist").read_bytes())
+        if bundle.is_symlink() or info.get("CFBundleIdentifier") != identifier:
+            raise RunnerError("UI binary bundle identity does not match the expected product.")
+        if info.get("CFBundleExecutable") != executables[0]:
+            raise RunnerError("UI binary bundle executable does not match the expected product.")
+        paths = [bundle / item for item in executables]
+        paths += [path.with_name(path.name + ".debug.dylib") for path in paths
+                  if path.with_name(path.name + ".debug.dylib").exists()]
+        hashes = {}
+        for path in paths:
+            path.resolve(strict=True).relative_to(bundle.resolve(strict=True))
+            hashes[path.relative_to(bundle).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashes
+    except (OSError, ValueError, plistlib.InvalidFileException) as error:
+        raise RunnerError("UI binary bundle is missing or cannot be verified.") from error
+
+
+def ui_binary_receipt(run: Run, choice: dict, phase: str) -> dict:
+    device = owned_ui_device(run, choice, phase)
+    products = run.cache / "xcode/Build/Products/Debug-iphonesimulator"
+    containers = Path(device["dataPath"]).resolve() / "Containers/Bundle/Application"
+    receipts = {}
+    for specification in UI_BUNDLES:
+        name, identifier, _ = specification
+        built = ui_bundle_hashes(products / name, specification)
+        raw = run.command("ui-container-" + phase + "-" + name,
+                          ["xcrun", "simctl", "get_app_container", device["udid"], identifier, "app"])
+        installed = Path(raw.strip())
+        if (len(raw.strip().splitlines()) != 1 or not installed.is_absolute()
+                or installed.name != name or installed.resolve().parent.parent != containers):
+            raise RunnerError("Installed UI binary is outside the selected device application containers.")
+        actual = ui_bundle_hashes(installed, specification)
+        receipts[identifier] = {"built": built, "installed": actual, "matches": built == actual}
+    write_json(run.artifacts / ("ui-binaries-" + phase + ".json"), receipts)
+    if not all(item["matches"] for item in receipts.values()):
+        raise RunnerError("Installed UI binary hashes do not match this run's built products.")
+    return receipts
+
+
+def refresh_ui_binaries(run: Run, choice: dict) -> dict:
+    """Release runners loaded by enumeration without erasing synthetic test data."""
+    device = owned_ui_device(run, choice, "refresh")
+    products = run.cache / "xcode/Build/Products/Debug-iphonesimulator"
+    for specification in UI_BUNDLES:
+        ui_bundle_hashes(products / specification[0], specification)
+    udid = device["udid"]
+    run.command("ui-device-shutdown", ["xcrun", "simctl", "shutdown", udid])
+    run.command("ui-device-boot", ["xcrun", "simctl", "boot", udid])
+    run.command("ui-boot-status", ["xcrun", "simctl", "bootstatus", udid, "-b"])
+    for name, _, _ in UI_BUNDLES:
+        run.command("ui-install-" + name, ["xcrun", "simctl", "install", udid, str(products / name)])
+    return ui_binary_receipt(run, choice, "before")
+
+
 def execute_xcode(run: Run, suite: str, device: dict) -> dict:
     udid = device["device"]["udid"]
     expected = enumerate_xcode(run, suite, udid)
+    binaries = refresh_ui_binaries(run, device) if suite != "native" else None
     run.command("xcode-tests", xcode_arguments(run, suite, udid), check=False)
     returncode = run.commands[-1]["returncode"]
     bundle = run.artifacts / "tests.xcresult"
@@ -485,6 +582,8 @@ def execute_xcode(run: Run, suite: str, device: dict) -> dict:
     tests = run.json_command("xcode-cases", args + ["tests", "--path", str(bundle), "--compact"])
     if returncode:
         raise RunnerError("xcode-tests failed (exit " + str(returncode) + "); result evidence retained.")
+    if binaries is not None and ui_binary_receipt(run, device, "after") != binaries:
+        raise RunnerError("UI binary products changed during test execution; results are not accepted.")
     return audit_xcode(summary, tests, suite, udid, expected)
 
 

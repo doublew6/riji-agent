@@ -108,14 +108,16 @@ final class DiaryFlowTests: XCTestCase {
             thenDragTo: input.coordinate(withNormalizedOffset: end))
     }
 
-    private var legacyRoundtableEntry: XCUIElement { app.buttons["mobileGroup-00000000-0000-4000-8000-000000000056"] }
+    private var legacyRoundtableIdentifier: String { "mobileGroup-00000000-0000-4000-8000-000000000056" }
+    private var legacyRoundtableEntry: XCUIElement { app.buttons[legacyRoundtableIdentifier] }
     private var groupComposer: XCUIElement { app.descendants(matching: .any).matching(identifier: "roundtableInput").firstMatch }
     private var currentGroup: XCUIElement { app.descendants(matching: .any).matching(identifier: "mobileCurrentGroup").firstMatch }
 
-    private func assertInlineGroup(named name: String? = nil) {
+    private func assertInlineGroup(named name: String? = nil, exactName: Bool = false) {
         XCTAssertTrue(currentGroup.waitForExistence(timeout: 10))
         if let name {
-            let named = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", name), object: currentGroup)
+            let predicate = NSPredicate(format: exactName ? "label == %@" : "label CONTAINS %@", name)
+            let named = XCTNSPredicateExpectation(predicate: predicate, object: currentGroup)
             XCTAssertEqual(XCTWaiter.wait(for: [named], timeout: 10), .completed)
         }
         XCTAssertTrue(app.navigationBars["导师"].staticTexts["导师"].exists)
@@ -134,8 +136,17 @@ final class DiaryFlowTests: XCTestCase {
 
     private func selectLegacyRoundtable() {
         openGroupSwitcher()
-        XCTAssertTrue(legacyRoundtableEntry.waitForExistence(timeout: 5)); legacyRoundtableEntry.tap()
-        assertInlineGroup()
+        // Use the same five-second stability gate as other group choices, but
+        // preserve this caller's one native tap and select by its exact fixture ID.
+        tapStableGroupMenuEntry(named: "已有的合成圆桌记录", identifier: legacyRoundtableIdentifier, nativeTap: true)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !self.legacyRoundtableEntry.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
+                       "Choosing the legacy group must dismiss its menu before checking the destination")
+        // The legacy fixture has no explicit detail title; its loaded displayTitle
+        // is distinct from the list's first-message title.
+        assertInlineGroup(named: "圆桌记录", exactName: true)
     }
 
     private func selectSyntheticGroup(_ name: String, archived: Bool = false) {
@@ -161,11 +172,11 @@ final class DiaryFlowTests: XCTestCase {
         let bounds: CGRect
     }
 
-    private func tapStableGroupMenuEntry(named name: String) {
+    private func tapStableGroupMenuEntry(named name: String, identifier: String? = nil, nativeTap: Bool = false) {
         var previous: GroupMenuTarget?
         var captured: GroupMenuTarget?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard let visible = self.groupMenuEntryFrame(named: name) else {
+            guard let visible = self.groupMenuEntryFrame(named: name, identifier: identifier) else {
                 previous = nil; return false
             }
             let stable = previous == visible
@@ -192,23 +203,32 @@ final class DiaryFlowTests: XCTestCase {
         guard count == 1 else { XCTFail("The captured group menu identity must resolve uniquely; found \(count)"); return }
         // A single deliberate touch must activate the settled native menu. Keep
         // dismissal and conversation assertions in the caller; never retry it.
-        matches.element.press(forDuration: 0.15)
+        if nativeTap {
+            XCTAssertTrue(matches.element.isHittable, "The stable exact group entry must have a native hit target")
+            matches.element.tap()
+        } else { matches.element.press(forDuration: 0.15) }
     }
 
-    private func groupMenuEntryFrame(named name: String) -> GroupMenuTarget? {
-        guard let snapshot = try? app.snapshot() else {
-            XCTFail("The application must provide a snapshot of the group menu"); return nil
-        }
+    private func groupMenuEntryFrame(named name: String, identifier: String? = nil) -> GroupMenuTarget? {
         let labels = syntheticGroupMenuLabels(name)
+        return uniqueVisibleButton { node in
+            if let identifier { return node.identifier == identifier }
+            return labels.contains(node.label) && (node.identifier.isEmpty || node.identifier.hasPrefix("mobileGroup-"))
+        }
+    }
+
+    private func uniqueVisibleButton(matching identity: (XCUIElementSnapshot) -> Bool) -> GroupMenuTarget? {
+        guard let snapshot = try? app.snapshot() else {
+            XCTFail("The application must provide a snapshot of the requested button"); return nil
+        }
         var nodes: [XCUIElementSnapshot] = [snapshot]
         var matches: [XCUIElementSnapshot] = []
         while let node = nodes.popLast() {
-            if node.elementType == .button, labels.contains(node.label),
-               node.identifier.isEmpty || node.identifier.hasPrefix("mobileGroup-") { matches.append(node) }
+            if node.elementType == .button, identity(node) { matches.append(node) }
             nodes.append(contentsOf: node.children)
         }
         guard matches.count <= 1 else {
-            XCTFail("A group name must identify exactly one native menu button"); return nil
+            XCTFail("The requested identity must match exactly one visible native button"); return nil
         }
         guard let entry = matches.first, entry.isEnabled, isFiniteFrame(snapshot.frame),
               isFiniteFrame(entry.frame), snapshot.frame.contains(entry.frame) else { return nil }
@@ -3463,6 +3483,28 @@ extension DiaryFlowTests {
         XCTAssertFalse(app.buttons["reviewCloudVersions"].exists)
     }
 
+    private func tapStableDirectoryFile(_ identifier: String) {
+        var previous: GroupMenuTarget?
+        var captured: GroupMenuTarget?
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let visible = self.uniqueVisibleButton(matching: { $0.identifier == identifier }) else {
+                previous = nil; return false
+            }
+            let stable = previous == visible
+            previous = visible
+            if stable { captured = visible }
+            return stable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "The exact directory file must be unique, enabled and fully visible in two stable snapshots")
+        guard let target = captured else { XCTFail("The directory file must have a stable target before tapping"); return }
+        let rows = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label == %@", target.identifier, target.label))
+        XCTAssertEqual(rows.count, 1, "The stable directory file must still resolve uniquely")
+        XCTAssertTrue(rows.element.isEnabled)
+        XCTAssertTrue(rows.element.isHittable, "The stable file must have a native hit target before its single tap")
+        rows.element.tap()
+    }
+
     func testOriginalHomeManualEditingSavesAndColdReopensExactSource() {
         app.terminate()
         app.launchEnvironment["RIJI_TEST_ORIGINAL_VAULT"] = "1"
@@ -3489,8 +3531,8 @@ extension DiaryFlowTests {
         app.buttons["diaryDirectory"].tap()
         app.buttons["vault-folder-daily"].tap()
         app.buttons["vault-folder-daily/nested"].tap()
-        let nested = app.buttons["vault-file-daily/nested/2026-09-11.md"]
-        XCTAssertTrue(nested.waitForExistence(timeout: 5)); nested.tap()
+        let nestedIdentifier = "vault-file-daily/nested/2026-09-11.md"
+        tapStableDirectoryFile(nestedIdentifier)
         expectation(for: NSPredicate(format: "value CONTAINS %@", "Nested original synthetic"), evaluatedWith: input)
         waitForExpectations(timeout: 10)
         let nestedBefore = input.value as? String ?? ""
@@ -3502,7 +3544,7 @@ extension DiaryFlowTests {
         app.buttons["diaryDirectory"].tap()
         app.buttons["vault-folder-daily"].tap()
         app.buttons["vault-folder-daily/nested"].tap()
-        XCTAssertTrue(nested.waitForExistence(timeout: 5)); nested.tap()
+        tapStableDirectoryFile(nestedIdentifier)
         expectation(for: NSPredicate(format: "value == %@", nestedBefore + "Nested manual edit\n"), evaluatedWith: input)
         waitForExpectations(timeout: 10)
         XCTAssertFalse(app.staticTexts["storageError"].exists)

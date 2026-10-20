@@ -34,7 +34,7 @@ python3 scripts/test_ios.py --suite ui-smoke --smoke-shard 1/4
 
 ## 隔离与重复运行
 
-runner 仅使用名为 **Riji Automated Tests** 的专用 iPhone Simulator。首次运行从已安装且可用的 iOS runtime 中选最新的兼容 iPhone 类型；已有专用设备则复用其 runtime，不自动升级。发现同名重复设备、不可用设备、非兼容 iPhone 或正在切换状态的设备时停止，让操作者在 Xcode 中核对。它不 erase、uninstall、克隆、清理或关闭任何 Simulator，不使用 **Riji Development iPhone**。
+runner 仅使用名为 **Riji Automated Tests** 的专用 iPhone Simulator。首次运行从已安装且可用的 iOS runtime 中选最新的兼容 iPhone 类型；已有专用设备则复用其 runtime，不自动升级。发现同名重复设备、不可用设备、非兼容 iPhone 或正在切换状态的设备时停止，让操作者在 Xcode 中核对。它不 erase、uninstall、克隆或清理任何 Simulator，不使用 **Riji Development iPhone**。包含 UI 的 suite 在枚举完成后，重新核对当前锁与专用设备的名称、UDID、runtime 和机型，只重启这台专用设备以释放枚举加载的测试 runner；不重启其他设备或共享 Simulator 服务，保留合成测试数据。随后明确安装本轮构建的 App 和 UI runner，并在测试前后分别重新查询安装位置、核对核心二进制（含 Debug dylib）的 SHA-256。设备归属、安装或哈希核对失败即停止验收；`native` 与 `core` 不新增此重启步骤。
 
 所有 Xcode 枚举与测试使用专用设备的明确 UDID，关闭并行测试，只允许一个测试 Simulator/worker。测试方法使用 UUID namespace、合成 Markdown/音频及注入的 mobile transport；不连接真实 Air、AI、Feishu 或原 vault，也不访问手机。runner 不把继承的 `RIJI_*` 或 `SIMCTL_CHILD_*` 配置传给工具。真实 iCloud 目录授权、物理手机输入/听写、实际连接/模型和 Air 部署属于[个人 MVP 独立验收](ios-personal-mvp-acceptance.md)。
 
@@ -98,6 +98,7 @@ SIGKILL、主机崩溃或平台强制取消无法由 Python 捕获，可能留�
 - `swift-inventory.json`、`swift-tests.log` 与 `swift-results.json`：Swift 实际发现清单与逐测试 started/passed 终态。兼容 Xcode 26/27 的 XCTest 命名格式，身份保留 target/class/method，同名类和方法在不同 target 中独立计数；无法审计的 test-shaped discovery 行直接失败，不假称支持 Swift Testing。逐项比对所有目标，末尾未选择 suite 的 `Executed 0` 不会覆盖前面的真实结果。
 - `source-inputs-before.json` 与 `source-inputs-after.json`：执行前后对 runner 和 iOS Swift 源码/测试、Xcode project/shared scheme、非私有 build config、Info.plist、依赖锁定文件、asset 资源及跨语言 AI 来源 fixture 计算 SHA-256，包含未跟踪文件。新增、删除或字节变化均拒绝通过。排除缓存、生成目录、xcuserdata、隐藏配置、`*.local.*` / `*.private.*` 和 private/secrets/credentials 目录；不读取密钥或本地签名配置。这是前后内容快照，不是文件锁，也不覆盖 SDK、系统组件或排除的私人配置。
 - `xcode-inventory.json` 与 `xcode-requested.json`：完整编译后 Xcode 枚举清单与本次选定清单。枚举会加载测试 runner，因此也只在专用设备执行。
+- `ui-binaries-before.json` 与 `ui-binaries-after.json`：包含 UI 的 suite 记录 App / UI runner 的 bundle ID、相对二进制名及构建/安装 SHA-256；安装容器变化时重新查询，不沿用旧路径。测试命令成功后才生成 `after` 回执；失败轮可能只有 `before`，仍保留原始失败。前后内容也必须一致，防止执行阶段重新构建后静默采用其他字节。它核对磁盘产物与安装身份，不宣称已读取本次进程的实际动态加载路径。枚举仍执行一次，执行命令与测试清单、阶段及整轮预算保持不变。
 - `tests.xcresult`、`xcode-summary.json` 和 `xcode-cases.json`：Native/UI 实际结果、附件及每个方法。汇总与完整结果树交叉检查；任一失败、skip、expected failure、重复、缺失或非目标设备都会失败。`enumeration.xcresult` 仅用于发现，不能当测试通过证据。
 - 默认不启动 Xcode 额外的整机 Simulator 诊断收集，避免测试结束后卡在 `simctl diagnose`；测试结果包、用例日志、截图、录像和源码审计仍保留。需要系统级诊断时，针对故障设备单独采集并记录。
 
@@ -109,7 +110,7 @@ uv run pytest tests/test_ios_test_runner.py
 
 ## CI
 
-[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 将完整 smoke 分为一个 `core` job（当前 658 项 Swift package）与四个 `ui-smoke` job（每片完整 69 项 Native，UI 分别为 11/10/10/10 项）。五个 job 独立执行且全部必须成功，没有 `continue-on-error`；UI matrix 的 `fail-fast: false` 保留每片结果。每片有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名分别带 `core` 或 `ui-smoke-<片号>`，不能用某一片的成功代替 package 或其他片的结果。手动 `workflow_dispatch` 可选 smoke（同样的一个 core 加四片 UI）/full（单轮完整 package + Native + 全量 UI，不分片）。
+[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 将完整 smoke 分为一个 `core` job（当前 659 项 Swift package，以实际发现清单为准）与四个 `ui-smoke` job（每片完整 69 项 Native，UI 分别为 11/10/10/10 项）。五个 job 独立执行且全部必须成功，没有 `continue-on-error`；UI matrix 的 `fail-fast: false` 保留每片结果。每片有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名分别带 `core` 或 `ui-smoke-<片号>`，不能用某一片的成功代替 package 或其他片的结果。手动 `workflow_dispatch` 可选 smoke（同样的一个 core 加四片 UI）/full（单轮完整 package + Native + 全量 UI，不分片）。
 
 只申请 `contents: read`，固定 `macos-26` 和 `/Applications/Xcode_26.5.app/Contents/Developer`，每个 job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。各 suite 继续逐项检查发现清单、实际执行结果、零跳过和源文件前后 SHA-256；`ui-smoke` 的 discovery 仍要求全部 41 项 smoke 存在，再核对本片精确请求集合。[Python workflow](../../.github/workflows/test.yml) 按当前发布范围在 macOS 与 Linux 执行隐私扫描、smoke 和完整测试；Windows 目前不纳入运行平台验收，其服务适配器的 fake-runner 单测继续执行。
 

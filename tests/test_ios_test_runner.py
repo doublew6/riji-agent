@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import re
+import plistlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -272,6 +274,7 @@ def test_failed_xcode_command_cannot_be_overruled_by_passing_result_bundle(tmp_p
     (run.artifacts / "tests.xcresult").mkdir()
     summary, cases = result_documents()
     monkeypatch.setattr(runner, "enumerate_xcode", lambda *args: set())
+    monkeypatch.setattr(runner, "refresh_ui_binaries", lambda *args: {})
 
     def command(name, args, check=True):
         run.commands.append({"returncode": 65})
@@ -738,3 +741,230 @@ def test_child_keeps_runner_lock_after_owner_dies_until_child_exits(tmp_path):
         if owner.poll() is None:
             owner.kill()
         owner.wait(timeout=3)
+
+
+@pytest.fixture
+def ui_binary_environment(tmp_path, monkeypatch):
+    run = make_run(tmp_path)
+    run.cache.mkdir()
+    lock = (run.cache / "runner.lock").open("w+")
+    lock.write(str(os.getpid()) + "\n")
+    lock.flush()
+    run.lock_fd = lock.fileno()
+    data = tmp_path / "Devices" / UDID / "data"
+    data.mkdir(parents=True)
+    sentinel = data / "synthetic-retained.txt"
+    sentinel.write_text("keep synthetic fixture data")
+    actual = device(dataPath=str(data))
+    devices = {"devices": {RUNTIME: [actual]}}
+    choice = {"device": device(), "runtime": {"identifier": RUNTIME}, "type": {"identifier": TYPE}}
+    env = SimpleNamespace(run=run, choice=choice, devices=devices, calls=[], data=data,
+                          products=run.cache / "xcode/Build/Products/Debug-iphonesimulator",
+                          fail_install=False, corrupt_install=False, container_override=None)
+    for name, identifier, executables in runner.UI_BUNDLES:
+        bundle = env.products / name
+        bundle.mkdir(parents=True)
+        (bundle / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": identifier, "CFBundleExecutable": executables[0]}))
+        for executable in executables:
+            code = bundle / executable
+            code.parent.mkdir(parents=True, exist_ok=True)
+            code.write_bytes(("synthetic code: " + executable).encode())
+        (bundle / (executables[0] + ".debug.dylib")).write_bytes(b"synthetic debug code")
+    def command(name, args, check=True):
+        env.calls.append((name, args))
+        if args[2] == "list":
+            return json.dumps(env.devices)
+        if args[2] == "install":
+            if env.fail_install:
+                raise runner.RunnerError("synthetic installation failure")
+            source = Path(args[4])
+            target = data / "Containers/Bundle/Application" / source.stem / source.name
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            if env.corrupt_install:
+                (target / ("Riji" if source.name == "Riji.app" else "RijiUITests-Runner")).write_bytes(b"stale")
+        if args[2] == "get_app_container":
+            specification = next(item for item in runner.UI_BUNDLES if item[1] == args[4])
+            name = specification[0]
+            return env.container_override or str(data / "Containers/Bundle/Application" / Path(name).stem / name)
+        return ""
+
+    monkeypatch.setattr(run, "command", command)
+    try:
+        yield env
+    finally:
+        lock.close()
+
+
+def test_ui_refresh_restarts_only_owned_device_and_preserves_synthetic_data(ui_binary_environment):
+    env = ui_binary_environment
+    receipt = runner.refresh_ui_binaries(env.run, env.choice)
+    assert all(item["matches"] for item in receipt.values())
+    operations = [args[2] for _, args in env.calls]
+    assert operations == ["list", "shutdown", "boot", "bootstatus", "install", "install",
+                          "list", "get_app_container", "get_app_container"]
+    assert all(args[3] == UDID for _, args in env.calls if args[2] != "list")
+    assert (env.data / "synthetic-retained.txt").read_text() == "keep synthetic fixture data"
+    assert not {"erase", "uninstall", "delete"}.intersection(operations)
+    assert runner.STAGE_TIMEOUT_SECONDS["ui-boot-status"] == runner.STAGE_TIMEOUT_SECONDS["boot-status"]
+    raw = (env.run.artifacts / "ui-binaries-before.json").read_text()
+    assert str(env.data) not in raw and str(env.products) not in raw
+    assert any(".debug.dylib" in name for entry in receipt.values() for name in entry["built"])
+
+
+@pytest.mark.parametrize("change", ["name", "udid", "runtime", "type", "available", "state", "duplicate", "data"])
+def test_ui_refresh_rejects_changed_device_before_mutation(ui_binary_environment, change):
+    env = ui_binary_environment
+    item = env.devices["devices"][RUNTIME][0]
+    updates = {"name": {"name": "Riji Development iPhone"}, "udid": {"udid": "other"},
+               "type": {"deviceTypeIdentifier": "other"}, "available": {"isAvailable": False},
+               "state": {"state": "Booting"}, "data": {"dataPath": "relative/data"}}
+    if change == "runtime":
+        env.devices["devices"]["other"] = env.devices["devices"].pop(RUNTIME)
+    elif change == "duplicate":
+        env.devices["devices"][RUNTIME].append(device(udid="duplicate"))
+    else:
+        item.update(updates[change])
+    with pytest.raises(runner.RunnerError):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert all(args[2] == "list" for _, args in env.calls)
+
+
+def test_ui_refresh_requires_current_lock_before_any_tool(ui_binary_environment):
+    env = ui_binary_environment
+    env.run.lock_fd = None
+    with pytest.raises(runner.RunnerError, match="runner lock"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert not env.calls
+
+
+@pytest.mark.parametrize("fault", ["missing", "identity", "executable"])
+def test_ui_refresh_verifies_built_products_before_restart(ui_binary_environment, fault):
+    env = ui_binary_environment
+    bundle = env.products / "Riji.app"
+    if fault == "missing":
+        (bundle / "Riji").unlink()
+    else:
+        info = plistlib.loads((bundle / "Info.plist").read_bytes())
+        info["CFBundleIdentifier" if fault == "identity" else "CFBundleExecutable"] = "unexpected"
+        (bundle / "Info.plist").write_bytes(plistlib.dumps(info))
+    with pytest.raises(runner.RunnerError, match="UI binary bundle"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert all(args[2] == "list" for _, args in env.calls)
+
+
+def test_ui_refresh_install_failure_is_not_swallowed(ui_binary_environment):
+    env = ui_binary_environment
+    env.fail_install = True
+    with pytest.raises(runner.RunnerError, match="installation failure"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert env.calls[-1][1][2] == "install"
+
+
+def test_ui_refresh_rejects_installed_binary_mismatch_and_retains_receipt(ui_binary_environment):
+    env = ui_binary_environment
+    env.corrupt_install = True
+    with pytest.raises(runner.RunnerError, match="hashes do not match"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    receipt = json.loads((env.run.artifacts / "ui-binaries-before.json").read_text())
+    assert not any(item["matches"] for item in receipt.values())
+
+
+@pytest.mark.parametrize("location", ["Dead", "other-device", "relative"])
+def test_ui_refresh_rejects_unowned_or_stale_container(ui_binary_environment, location):
+    env = ui_binary_environment
+    paths = {"Dead": env.data / "Library/Caches/Dead/Riji.app",
+             "other-device": env.data.parent.parent / "other/data/Containers/Bundle/Application/id/Riji.app",
+             "relative": Path("relative/Riji.app")}
+    env.container_override = str(paths[location])
+    with pytest.raises(runner.RunnerError, match="outside the selected device"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+
+
+def test_ui_post_receipt_resolves_current_container_after_relocation(ui_binary_environment):
+    env = ui_binary_environment
+    before = runner.refresh_ui_binaries(env.run, env.choice)
+    application = env.data / "Containers/Bundle/Application"
+    for name, _, _ in runner.UI_BUNDLES:
+        source = application / Path(name).stem / name
+        destination = application / (Path(name).stem + "-new") / name
+        destination.parent.mkdir()
+        source.rename(destination)
+    original = env.run.command
+
+    def relocated(name, args, check=True):
+        result = original(name, args, check)
+        return result.replace("/Riji/", "/Riji-new/").replace("/RijiUITests-Runner/", "/RijiUITests-Runner-new/") if args[2] == "get_app_container" else result
+
+    env.run.command = relocated
+    assert runner.ui_binary_receipt(env.run, env.choice, "after") == before
+
+
+@pytest.mark.parametrize("suite", ["native", "smoke", "ui-smoke", "full"])
+def test_execute_xcode_refreshes_only_ui_suites_and_preserves_test_command(tmp_path, monkeypatch, suite):
+    run = make_run(tmp_path)
+    (run.artifacts / "tests.xcresult").mkdir()
+    summary, cases = result_documents(suite)
+    expected = {node["name"] + "/" + case["nodeIdentifier"].removesuffix("()")
+                for node in cases["testNodes"] for case in node["children"]}
+    stages = []
+    monkeypatch.setattr(runner, "enumerate_xcode", lambda *args: stages.append("enumerate") or expected)
+    monkeypatch.setattr(runner, "refresh_ui_binaries", lambda *args: stages.append("refresh") or {"sha": "same"})
+    monkeypatch.setattr(runner, "ui_binary_receipt", lambda *args: stages.append("verify") or {"sha": "same"})
+
+    def command(name, args, check=True):
+        stages.append(name)
+        assert "test" in args and "test-without-building" not in args
+        run.commands.append({"returncode": 0})
+        return ""
+
+    monkeypatch.setattr(run, "command", command)
+    monkeypatch.setattr(run, "json_command", lambda name, args: summary if name == "xcode-summary" else cases)
+    assert runner.execute_xcode(run, suite, {"device": device()})["passed"] == len(expected)
+    assert stages == (["enumerate", "xcode-tests"] if suite == "native"
+                      else ["enumerate", "refresh", "xcode-tests", "verify"])
+    if suite != "native":
+        monkeypatch.setattr(runner, "ui_binary_receipt", lambda *args: {"sha": "changed"})
+        with pytest.raises(runner.RunnerError, match="products changed"):
+            runner.execute_xcode(run, suite, {"device": device()})
+
+
+@pytest.mark.parametrize("fault", ["missing", "inode", "pid"])
+def test_ui_refresh_rejects_changed_lock_before_tools(ui_binary_environment, fault):
+    env = ui_binary_environment
+    path = env.run.cache / "runner.lock"
+    if fault == "pid":
+        path.write_text("different-owner\n")
+    else:
+        path.unlink()
+        if fault == "inode":
+            path.write_text(str(os.getpid()) + "\n")
+    with pytest.raises(runner.RunnerError, match="runner lock"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert not env.calls
+
+
+@pytest.mark.parametrize("side,fault", [("built", "missing"), ("installed", "missing"),
+                                        ("built", "changed"), ("installed", "changed")])
+def test_ui_debug_dylib_is_part_of_binary_identity(ui_binary_environment, side, fault):
+    env = ui_binary_environment
+    runner.refresh_ui_binaries(env.run, env.choice)
+    bundle = (env.products / "Riji.app" if side == "built" else
+              env.data / "Containers/Bundle/Application/Riji/Riji.app")
+    path = bundle / "Riji.debug.dylib"
+    if fault == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"different synthetic Debug code")
+    with pytest.raises(runner.RunnerError, match="hashes do not match"):
+        runner.ui_binary_receipt(env.run, env.choice, "after")
+
+
+def test_ui_matching_new_products_do_not_equal_pre_execution_receipt(ui_binary_environment):
+    env = ui_binary_environment
+    before = runner.refresh_ui_binaries(env.run, env.choice)
+    for bundle in (env.products / "Riji.app", env.data / "Containers/Bundle/Application/Riji/Riji.app"):
+        (bundle / "Riji.debug.dylib").write_bytes(b"replacement synthetic code")
+    after = runner.ui_binary_receipt(env.run, env.choice, "after")
+    assert after["com.riji.local"]["matches"]
+    assert after != before
