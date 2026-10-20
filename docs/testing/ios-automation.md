@@ -112,7 +112,7 @@ uv run pytest tests/test_ios_test_runner.py
 
 ## CI
 
-[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 将完整 smoke 分为一个 `core` job（当前 659 项 Swift package，以实际发现清单为准）与四个 `ui-smoke` job（每片完整 69 项 Native，UI 分别为 11/10/10/10 项）。五个 job 独立执行且全部必须成功，没有 `continue-on-error`；UI matrix 的 `fail-fast: false` 保留每片结果。每片有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名分别带 `core` 或 `ui-smoke-<片号>`，不能用某一片的成功代替 package 或其他片的结果。手动 `workflow_dispatch` 可选 smoke（同样的一个 core 加四片 UI）/full（单轮完整 package + Native + 全量 UI，不分片）。
+[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 将完整 smoke 分为一个 `core` job（当前 659 项 Swift package，以实际发现清单为准）与四个 `ui-smoke` job（每片完整 70 项 Native，以实际发现清单为准，UI 分别为 11/10/10/10 项）。五个 job 独立执行且全部必须成功，没有 `continue-on-error`；UI matrix 的 `fail-fast: false` 保留每片结果。每片有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名分别带 `core` 或 `ui-smoke-<片号>`，不能用某一片的成功代替 package 或其他片的结果。手动 `workflow_dispatch` 可选 smoke（同样的一个 core 加四片 UI）/full（单轮完整 package + Native + 全量 UI，不分片）。
 
 只申请 `contents: read`，固定 `macos-26` 和 `/Applications/Xcode_26.5.app/Contents/Developer`，每个 job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。各 suite 继续逐项检查发现清单、实际执行结果、零跳过和源文件前后 SHA-256；`ui-smoke` 的 discovery 仍要求全部 41 项 smoke 存在，再核对本片精确请求集合。[Python workflow](../../.github/workflows/test.yml) 按当前发布范围在 macOS 与 Linux 执行隐私扫描、smoke 和完整测试；Windows 目前不纳入运行平台验收，其服务适配器的 fake-runner 单测继续执行。
 

@@ -136,6 +136,10 @@ final class DiaryFlowTests: XCTestCase {
 
     private func selectLegacyRoundtable() {
         openGroupSwitcher()
+        chooseLegacyRoundtable()
+    }
+
+    private func chooseLegacyRoundtable() {
         // Use the same five-second stability gate as other group choices, but
         // preserve this caller's one native tap and select by its exact fixture ID.
         tapStableGroupMenuEntry(named: "已有的合成圆桌记录", identifier: legacyRoundtableIdentifier, nativeTap: true)
@@ -1124,9 +1128,9 @@ final class DiaryFlowTests: XCTestCase {
         assertInlineInputReachableWithKeyboard()
         attachMentorScreenshot("Inline group home — accessibility XXXL with keyboard and switcher")
         openGroupSwitcher()
-        XCTAssertTrue(legacyRoundtableEntry.waitForExistence(timeout: 5)); XCTAssertTrue(legacyRoundtableEntry.isHittable)
+        XCTAssertTrue(legacyRoundtableEntry.waitForExistence(timeout: 5))
         attachMentorScreenshot("Inline group switcher — accessibility XXXL while composing")
-        legacyRoundtableEntry.tap(); assertInlineGroup()
+        chooseLegacyRoundtable()
         XCTAssertNotEqual(composer.value as? String, "A synthetic small next step")
         selectSyntheticGroup(name)
         XCTAssertEqual(composer.value as? String, "A synthetic small next step")

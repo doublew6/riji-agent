@@ -166,19 +166,61 @@ final class NativeBodyEditorTests: XCTestCase {
         throw JournalError.storage
     }
 
-    private func waitUntil(_ context: String = "Native editor did not reach the expected document/viewport state", onTimeout: () -> Void = {}, condition: () -> Bool) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if condition() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
+    private func reachesReadiness(now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                                  sleep: () async throws -> Void = { try await Task.sleep(nanoseconds: 10_000_000) },
+                                  condition: () -> Bool) async throws -> Bool {
+        let deadline = now() + 3
+        while now() < deadline {
+            if condition() { return true }
+            try await sleep()
         }
+        // A resumed sleep may cross the deadline after the view has become ready.
+        return condition()
+    }
+
+    private func waitUntil(_ context: String = "Native editor did not reach the expected document/viewport state", onTimeout: () -> Void = {}, condition: () -> Bool) async throws {
+        if try await reachesReadiness(condition: condition) { return }
         onTimeout()
         XCTFail(context)
         throw JournalError.storage
     }
 
+    func testReadinessObservesDeadlineWithoutExtraSleepAndPropagatesCancellation() async throws {
+        for (wakeTime, readyAtWake) in [(3.0, true), (3.5, true), (3.5, false)] {
+            var clock = 0.0, ready = false
+            var samples = 0, sleeps = 0, clockReads = 0
+            let reached = try await reachesReadiness(now: { clockReads += 1; return clock }, sleep: {
+                sleeps += 1; clock = wakeTime; ready = readyAtWake
+            }) { samples += 1; return ready }
+            XCTAssertEqual(reached, readyAtWake)
+            XCTAssertEqual(samples, 2); XCTAssertEqual(sleeps, 1); XCTAssertEqual(clockReads, 3)
+            XCTAssertEqual(clock, wakeTime)
+        }
+        var initialSamples = 0, initialSleeps = 0
+        let initiallyReady = try await reachesReadiness(now: { 0 }, sleep: { initialSleeps += 1 }) {
+            initialSamples += 1; return true
+        }
+        XCTAssertTrue(initiallyReady); XCTAssertEqual(initialSamples, 1); XCTAssertEqual(initialSleeps, 0)
+        var cancelled = false, cancellationSamples = 0, cancellationSleeps = 0
+        do {
+            _ = try await reachesReadiness(now: { 0 }, sleep: {
+                cancellationSleeps += 1; throw CancellationError()
+            }) { cancellationSamples += 1; return false }
+        } catch is CancellationError { cancelled = true }
+        XCTAssertTrue(cancelled); XCTAssertEqual(cancellationSamples, 1); XCTAssertEqual(cancellationSleeps, 1)
+    }
+
     private func waitForDocument(_ editor: UITextView, text: String, viewport: DiaryViewport? = nil) async throws {
-        try await waitUntil {
+        try await waitUntil(onTimeout: {
+            let actual = Data(editor.text.utf8), expected = Data(text.utf8)
+            var detail = "observation=failure-time bounds=\(editor.bounds) pendingViewport=\(String(describing: (editor as? MarkdownTextView)?.hasPendingViewport)) actualBytes=\(actual.count) expectedBytes=\(expected.count) exactMatch=\(actual == expected)"
+            if let viewport {
+                detail += " selectionMatch=\(editor.selectedRange == viewport.selection) offsetMatch=\(abs(editor.contentOffset.y - viewport.offset.y) <= 1)"
+            }
+            let evidence = XCTAttachment(string: detail)
+            evidence.name = "Native document readiness — failure-time observation"; evidence.lifetime = .keepAlways
+            self.add(evidence)
+        }) {
             guard editor.bounds.width > 0, editor.bounds.height > 0,
                   (editor as? MarkdownTextView)?.hasPendingViewport == false,
                   Data(editor.text.utf8) == Data(text.utf8) else { return false }
