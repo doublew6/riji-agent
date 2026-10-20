@@ -1089,10 +1089,16 @@ final class DiaryFlowTests: XCTestCase {
         XCTAssertFalse(syntheticGroupRow("Synthetic learning group A").exists,
                        "An archived group must leave the active group choices")
         let archivedMenu = app.buttons["mobileArchivedGroups"]
-        XCTAssertTrue(archivedMenu.waitForExistence(timeout: 5)); tapVisibleGroupAction(archivedMenu)
+        XCTAssertTrue(archivedMenu.waitForExistence(timeout: 5)); tapVisibleGroupAction(archivedMenu, nativeButton: true)
         // UIKit drops the SwiftUI identifier in this nested native menu.
         let archived = app.buttons.matching(NSPredicate(format: "label == %@", "Synthetic learning group A · 草稿")).firstMatch
-        XCTAssertTrue(archived.waitForExistence(timeout: 5)); XCTAssertTrue(archived.isHittable)
+        XCTAssertTrue(archived.waitForExistence(timeout: 5))
+        let archivedReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in archived.exists && archived.isHittable }, object: nil)
+        let readiness = XCTWaiter.wait(for: [archivedReady], timeout: 5)
+        XCTAssertEqual(readiness, .completed,
+                       "The archived choice must become hittable after its submenu opens")
+        guard readiness == .completed else { return }
         attachMentorScreenshot("Archived group choices — retained draft available in the nested menu")
         chooseGroupMenuEntry(archived, named: "Synthetic learning group A")
         let restore = app.buttons["groupRestore"]
