@@ -197,12 +197,7 @@ struct NorthStarsView: View {
                 goalField("指标名称", "name"); goalField("指标口径", "definition"); goalField("单位", "unit")
                 goalField("确认目标", "target"); goalField("目标周期", "period"); goalField("当前阶段", "stage")
                 goalField("当前测量（可留空）", "measurement"); goalField("测量来源与截止时间", "measurementSource")
-                Button("预览北极星版本") { Task {
-                    await model.previewGoal(day: day)
-                    #if DEBUG && targetEnvironment(simulator)
-                    if model.goalPreview != nil { SyntheticTouchTrace.arm(.northStar) }
-                    #endif
-                } }.accessibilityIdentifier("previewNorthStar")
+                Button("预览北极星版本") { Task { await model.previewGoal(day: day) } }.accessibilityIdentifier("previewNorthStar")
             }
             DisclosureGroup("历史版本（\(model.goalHistory.count)）") {
                 ForEach(model.goalHistory) { goal in Text("\(goal.day.value) · \(goal.name)\n目标 \(goal.target) \(goal.unit) · \(goal.id.uuidString)") }
@@ -216,24 +211,7 @@ struct NorthStarsView: View {
                     RijiForm {
                         Text("\(goal.name)\n\(goal.definition)\n单位：\(goal.unit)\n目标：\(goal.target)\n周期：\(goal.period)\n阶段：\(goal.stage)\n测量：\(goal.measurement ?? "尚未记录")\n来源及截止：\(goal.measurementSource ?? "尚未记录")")
                         Text("确认后保存不可变的新版本，历史 MIT 的引用保持原版本。")
-                        Button("确认北极星版本") {
-                            #if DEBUG && targetEnvironment(simulator)
-                            SyntheticTouchTrace.mark(.northStarEnter, busy: model.busy, preview: model.goalPreview != nil)
-                            #endif
-                            Task {
-                                #if DEBUG && targetEnvironment(simulator)
-                                SyntheticTouchTrace.mark(.northStarTaskBegin, busy: model.busy, preview: model.goalPreview != nil)
-                                #endif
-                                await model.confirmGoal()
-                                #if DEBUG && targetEnvironment(simulator)
-                                SyntheticTouchTrace.mark(.northStarTaskEnd, busy: model.busy, preview: model.goalPreview != nil)
-                                SyntheticTouchTrace.stop()
-                                #endif
-                            }
-                            #if DEBUG && targetEnvironment(simulator)
-                            SyntheticTouchTrace.mark(.northStarReturn, busy: model.busy, preview: model.goalPreview != nil)
-                            #endif
-                        }.accessibilityIdentifier("confirmNorthStar")
+                        Button("确认北极星版本") { Task { await model.confirmGoal() } }.accessibilityIdentifier("confirmNorthStar")
                         WorkflowNotice(model: model)
                     }.navigationTitle("核对北极星").toolbar { Button("关闭") { model.goalPreview = nil } }.disabled(model.busy)
                 }

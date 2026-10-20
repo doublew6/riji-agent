@@ -1314,7 +1314,6 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileRoundtableHostInvitationAndLocalSavePreview() {
-        app.launchEnvironment["RIJI_TEST_TOUCH_TRACE"] = "roundtable-selection"
         launchMobileFixture("roundtable")
         let before = input.value as? String ?? ""
         app.tabBars.buttons["导师"].tap()
@@ -2601,10 +2600,6 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testApprovedDirectionHierarchyKeepsGoalVersionsAndMITConfirmation() {
-        app.terminate()
-        app.launchEnvironment["RIJI_TEST_TOUCH_TRACE"] = "north-star-definition"
-        app.launch()
-        XCTAssertTrue(input.waitForExistence(timeout: 10))
         app.buttons["diaryDirectory"].tap()
         let direction = app.buttons["goalsFlow"]; reveal(direction); direction.tap()
         app.buttons["northStarDefinitions"].tap()
@@ -2618,7 +2613,7 @@ final class DiaryFlowTests: XCTestCase {
         let preview = app.buttons["previewNorthStar"]
         revealFormControl(preview, in: app.collectionViews["northStarDefinitionForm"], below: app.navigationBars["北极星指标"]); preview.tap()
         let confirm = app.buttons["confirmNorthStar"]; reveal(confirm); confirm.tap()
-        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: confirm)
+        expectation(for: NSPredicate { _, _ in !self.app.buttons["confirmNorthStar"].exists }, evaluatedWith: nil)
         waitForExpectations(timeout: 5)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let title = app.staticTexts["directionGoalTitle"]
@@ -2825,18 +2820,37 @@ final class DiaryFlowTests: XCTestCase {
         if fromSettings { saveSettingsMarkdownFile(named: exportName) }
         else { saveVoiceFile(named: exportName) }
         let receipt = fromSettings ? app.staticTexts["settingsExportStatus"] : status
-        let settingsPicker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
-        // Files can finish after tap() returns. Resolving an absent receipt's label
-        // blocks inside XCTest, so poll existence before reading the completed export.
+        let digest = SHA256.hash(data: Data(exportedBody.utf8)).map { String(format: "%02x", $0) }.joined()
+        // A disappearing remote Files view must not block the local success receipt.
         let exportCompleted = NSPredicate { _, _ in
-            if fromSettings && settingsPicker.exists { return false }
+            if fromSettings { return self.settingsExportReceiptMatches(digest) }
             guard receipt.exists else { return false }
-            return receipt.label.contains("Markdown 已导出")
+            return receipt.label.contains("Markdown 已导出") && receipt.value as? String == digest
         }
         expectation(for: exportCompleted, evaluatedWith: nil)
         waitForExpectations(timeout: 10)
-        let digest = SHA256.hash(data: Data(exportedBody.utf8)).map { String(format: "%02x", $0) }.joined()
+        if fromSettings {
+            let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                !self.app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].exists
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        }
         XCTAssertEqual(receipt.value as? String, digest, "Rendering must never become a lossy Markdown serialization")
+    }
+
+    private func settingsExportReceiptMatches(_ digest: String) -> Bool {
+        guard let snapshot = try? app.snapshot() else { return false }
+        var nodes = snapshot.children
+        var receipts: [XCUIElementSnapshot] = []
+        var exports: [XCUIElementSnapshot] = []
+        while let node = nodes.popLast() {
+            if node.elementType == .staticText, node.identifier == "settingsExportStatus" { receipts.append(node) }
+            if node.elementType == .button, node.identifier == "settingsExportMarkdown" { exports.append(node) }
+            nodes.append(contentsOf: node.children)
+        }
+        guard receipts.count == 1, exports.count == 1, let receipt = receipts.first,
+              let export = exports.first else { return false }
+        return receipt.label.contains("Markdown 已导出") && receipt.value as? String == digest && export.isEnabled
     }
 
     private func openSettingsMarkdownExporter() {

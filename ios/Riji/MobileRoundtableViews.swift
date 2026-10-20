@@ -717,16 +717,7 @@ struct MobileRoundtableView: View {
                     result = model.roundtableID == identifier && validation != nil
                 }
             }.disabled(!model.canMutateRoundtable).accessibilityIdentifier("roundtableSaveMessage-" + item.id)
-            Button("多选消息…", systemImage: "checkmark.circle") {
-                #if DEBUG && targetEnvironment(simulator)
-                SyntheticTouchTrace.mark(.multiselectEnter, selecting: selecting, count: selection.count)
-                #endif
-                selecting = true; toggleSelection(item)
-                #if DEBUG && targetEnvironment(simulator)
-                SyntheticTouchTrace.mark(.multiselectReturn, selecting: selecting, count: selection.count)
-                SyntheticTouchTrace.stop()
-                #endif
-            }
+            Button("多选消息…", systemImage: "checkmark.circle") { selecting = true; toggleSelection(item) }
                 .accessibilityIdentifier("roundtableMultiSelect-" + item.id)
         }
     }
@@ -869,12 +860,7 @@ private struct RoundtableInvitation: View {
             let previousOperation = model.operation(target)?.id
             await model.roundtableCommand("start_run", conversationID: identifier)
             if let receipt = model.operation(target), receipt.id != previousOperation,
-               receipt.kind == "roundtable_command", receipt.state == "completed" {
-                #if DEBUG && targetEnvironment(simulator)
-                SyntheticTouchTrace.arm(.roundtable)
-                #endif
-                dismiss()
-            }
+               receipt.kind == "roundtable_command", receipt.state == "completed" { dismiss() }
         }
     }
     private var eligibleMemories: [MobileMemory] {

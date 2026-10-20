@@ -8,9 +8,6 @@ struct RijiApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        #if DEBUG && targetEnvironment(simulator)
-        SyntheticTouchTrace.installIfRequested()
-        #endif
         var clock: () -> Date = Date.init
         #if DEBUG
         if let value = ProcessInfo.processInfo.environment["RIJI_TEST_DATE"],
@@ -31,13 +28,7 @@ struct RijiApp: App {
             RijiNavigationView(model: model)
                 .task { model.observeDayChanges(); await model.start() }
                 .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
-                    #if DEBUG && targetEnvironment(simulator)
-                    SyntheticTouchTrace.mark(.foregroundTickBegin)
-                    #endif
                     model.foregroundTick(isActive: scenePhase == .active)
-                    #if DEBUG && targetEnvironment(simulator)
-                    SyntheticTouchTrace.mark(.foregroundTickEnd)
-                    #endif
                 }
                 .onChange(of: scenePhase) { _, phase in
                     handleScenePhase(phase)
