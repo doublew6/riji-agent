@@ -145,6 +145,10 @@ struct DiaryExportRecoveryView: View {
             .background {
                 if let request = exportRequest {
                     SettingsMarkdownExporter(document: request.document) { result in
+                        #if DEBUG && targetEnvironment(simulator)
+                        MarkdownExportTrace.record(.finished, .init(request: request.traceSequence,
+                            requestMatches: exportRequest?.id == request.id, outcome: MarkdownExportTrace.outcome(result)))
+                        #endif
                         guard exportRequest?.id == request.id else { return }
                         if let result { model.exportCompleted(result, document: request.document) }
                         exportRequest = nil
@@ -159,6 +163,13 @@ struct DiaryExportRecoveryView: View {
 private struct SettingsMarkdownExportRequest: Identifiable {
     let id = UUID()
     let document: MarkdownDocument
+    #if DEBUG && targetEnvironment(simulator)
+    let traceSequence: Int
+    init(document: MarkdownDocument) {
+        self.document = document
+        traceSequence = MarkdownExportTrace.prepare(document)
+    }
+    #endif
 }
 
 private struct SettingsMarkdownExporter: View {
@@ -173,9 +184,20 @@ private struct SettingsMarkdownExporter: View {
                           contentTypes: MarkdownDocument.readableContentTypes, defaultFilename: document.filename,
                           onCompletion: { finished($0) }, onCancellation: { finished(nil) })
             .onAppear {
+                #if DEBUG && targetEnvironment(simulator)
+                MarkdownExportTrace.record(.childAppeared, .init(started: started, presented: isPresented))
+                #endif
                 // Build the exporter with its immutable document before presenting it.
                 guard !started else { return }
                 started = true; isPresented = true
             }
+            #if DEBUG && targetEnvironment(simulator)
+            .onChange(of: isPresented) { _, value in
+                MarkdownExportTrace.record(.presentationChanged, .init(started: started, presented: value))
+            }
+            .onDisappear {
+                MarkdownExportTrace.record(.childDisappeared, .init(started: started, presented: isPresented))
+            }
+            #endif
     }
 }

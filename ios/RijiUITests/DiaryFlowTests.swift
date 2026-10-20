@@ -12,6 +12,10 @@ final class DiaryFlowTests: XCTestCase {
         app = XCUIApplication()
         app.launchEnvironment["RIJI_TEST_CONTAINER"] = container
         app.launchEnvironment["RIJI_TEST_DATE"] = "2026-09-12T08:00:00Z"
+        for flag in ["RIJI_TEST_MENU_TRACE", "RIJI_TEST_EXPORT_TRACE"]
+            where ProcessInfo.processInfo.environment[flag] == "1" {
+            app.launchEnvironment[flag] = "1"
+        }
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
@@ -1611,7 +1615,20 @@ final class DiaryFlowTests: XCTestCase {
         let correction = app.descendants(matching: .any).matching(identifier: "mobileMemoryCorrection").firstMatch
         XCTAssertTrue(correction.waitForExistence(timeout: 5)); correction.tap(); correction.typeText("Synthetic version-bound correction")
         // Verify that every injected character reached the field before cold recovery.
-        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Synthetic version-bound correction"), object: correction)
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            // Read one root snapshot instead of remotely matching every AX descendant.
+            guard let snapshot = try? self.app.snapshot() else { return false }
+            var nodes = snapshot.children
+            var fields: [XCUIElementSnapshot] = []
+            while let node = nodes.popLast() {
+                if node.elementType == .textField, node.identifier == "mobileMemoryCorrection" {
+                    fields.append(node)
+                }
+                nodes.append(contentsOf: node.children)
+            }
+            guard fields.count == 1, let field = fields.first else { return false }
+            return field.value as? String == "Synthetic version-bound correction"
+        }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed,
                        "The complete correction draft must reach the field before termination")
         app.terminate()

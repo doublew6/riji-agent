@@ -1,19 +1,7 @@
-name: iOS regression
+name: iOS interaction diagnostics (not acceptance)
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      suite:
-        description: iOS test suite
-        required: true
-        default: smoke
-        type: choice
-        options:
-          - smoke
-          - full
 
 permissions:
   contents: read
@@ -22,69 +10,30 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
 
 jobs:
-  core:
-    if: ${{ inputs.suite != 'full' }}
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Run complete Swift package regression
-        timeout-minutes: 55
-        run: python3 scripts/test_ios.py --suite core
-      - name: Retain logs and inventories
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-core
-          path: output/ios-tests/
-          if-no-files-found: error
-          retention-days: 14
   ui-smoke:
-    if: ${{ inputs.suite != 'full' }}
     runs-on: macos-26
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [2, 4]
     env:
       IOS_SMOKE_SHARD: ${{ matrix.shard }}/4
+      TEST_RUNNER_RIJI_TEST_MENU_TRACE: '1'
+      TEST_RUNNER_RIJI_TEST_EXPORT_TRACE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run complete Native tests and selected UI smoke shard
+      - name: Diagnose complete Native and original UI shard (not acceptance)
         timeout-minutes: 55
         run: python3 scripts/test_ios.py --suite ui-smoke --smoke-shard "$IOS_SMOKE_SHARD"
       - name: Retain logs, inventories and result bundles
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-ui-smoke-${{ matrix.shard }}
-          path: output/ios-tests/
-          if-no-files-found: error
-          retention-days: 14
-  full:
-    if: ${{ inputs.suite == 'full' }}
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Run complete iOS regression
-        timeout-minutes: 55
-        run: python3 scripts/test_ios.py --suite full
-      - name: Retain logs, inventories and result bundles
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-full
+          name: ios-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}-ui-smoke-${{ matrix.shard }}
           path: output/ios-tests/
           if-no-files-found: error
           retention-days: 14

@@ -367,10 +367,17 @@ struct MobileGroupChatView: View {
         }
     }
     private func openResult(_ identifiers: [String]) {
+#if DEBUG && targetEnvironment(simulator)
+        GroupSaveProbe.record(.actionEnter, model: model, conversationID: identifier)
+#endif
         composerFocused = false
         Task {
             let validation = await model.previewRoundtableResult(identifiers, conversationID: identifier)
             result = model.roundtableID == identifier && validation != nil
+#if DEBUG && targetEnvironment(simulator)
+            GroupSaveProbe.record(.resultAssigned, model: model, conversationID: identifier,
+                state: .init(valid: validation != nil, result: result))
+#endif
         }
     }
     private func toggleSelection(_ item: MobileRoundtableMessage) {

@@ -1,5 +1,39 @@
 import Foundation
 import RijiCore
+#if DEBUG && targetEnvironment(simulator)
+import OSLog
+
+@MainActor
+enum GroupSaveProbe {
+    enum Event: String { case actionEnter = "action-enter", previewReturn = "preview-return", resultAssigned = "result-assigned" }
+    enum Outcome: String {
+        case notApplicable, conversationMismatch, resultBusyOrUnresolved, mutationUnavailable
+        case groupSelectionInvalid, receiptValidationMismatch, accepted
+    }
+    struct State {
+        var valid = false
+        var result = false
+        var outcome: Outcome = .notApplicable
+    }
+    private static let enabled: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["RIJI_TEST_MENU_TRACE"] == "1"
+            && UUID(uuidString: environment["RIJI_TEST_CONTAINER"] ?? "") != nil
+            && environment["RIJI_TEST_MOBILE"] == "roundtable"
+            && environment["RIJI_TEST_ORIGINAL_VAULT"] == nil
+    }()
+    private static let logger = Logger(subsystem: "com.riji.ci-probe", category: "group-save")
+    private static var count = 0
+
+    static func record(_ event: Event, model: MobileClientModel, conversationID: String?, state: State = State()) {
+        guard enabled, count < 12 else { return }
+        count += 1
+        let currentMatch = conversationID == nil || conversationID == model.roundtableID
+        let busy = model.busy.contains("roundtable-result:" + (model.roundtableID ?? ""))
+        logger.notice("event=\(event.rawValue, privacy: .public) valid=\(state.valid, privacy: .public) currentIDmatch=\(currentMatch, privacy: .public) result=\(state.result, privacy: .public) busy=\(busy, privacy: .public) offline=\(model.roundtableOffline, privacy: .public) guard=\(state.outcome.rawValue, privacy: .public)")
+    }
+}
+#endif
 
 extension MobileClientModel {
     var canCreateGroup: Bool { connected && foreground && capabilities?.capabilities["group_chat"] == true }
@@ -237,20 +271,40 @@ extension MobileClientModel {
     }
     @discardableResult
     func previewRoundtableResult(_ artifactIDs: [String], conversationID: String? = nil) async -> MobileResultValidation? {
+#if DEBUG && targetEnvironment(simulator)
+        var probeOutcome = GroupSaveProbe.Outcome.conversationMismatch
+        defer { GroupSaveProbe.record(.previewReturn, model: self, conversationID: conversationID,
+            state: .init(valid: probeOutcome == .accepted, outcome: probeOutcome)) }
+#endif
         guard conversationID == nil || conversationID == roundtableID else { return nil }
         let target = "roundtable-result:" + (roundtableID ?? "")
+#if DEBUG && targetEnvironment(simulator)
+        probeOutcome = .resultBusyOrUnresolved
+#endif
         guard !busy.contains(target), !hasUnresolved(target) else { return nil }
         invalidateRoundtableResult()
+#if DEBUG && targetEnvironment(simulator)
+        probeOutcome = .mutationUnavailable
+#endif
         guard canMutateRoundtable, let value = roundtable else { return nil }
+#if DEBUG && targetEnvironment(simulator)
+        probeOutcome = .groupSelectionInvalid
+#endif
         if value.isGroup && !canSaveGroupResults(artifactIDs) { return nil }
         let operation = MobilePendingOperation(kind: "roundtable_result", target: target,
             path: ["roundtables", value.conversationId, "result-preview"], body: ["artifact_ids": .array(artifactIDs.map(MobileJSON.string))])
         await mutate(operation)
+#if DEBUG && targetEnvironment(simulator)
+        probeOutcome = .receiptValidationMismatch
+#endif
         guard roundtableID == value.conversationId,
               let receipt = local?.operations.first(where: { $0.id == operation.id }), receipt.state == "completed",
               let validation = resultValidation, receipt.result?["result_id"]?.string == validation.resultId,
               validation.provenance.problemId == value.conversationId,
               validation.provenance.artifactIds.sorted() == artifactIDs.sorted() else { return nil }
+#if DEBUG && targetEnvironment(simulator)
+        probeOutcome = .accepted
+#endif
         return validation
     }
     func canSaveGroupResults(_ identifiers: [String]) -> Bool {

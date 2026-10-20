@@ -587,7 +587,45 @@ def execute_xcode(run: Run, suite: str, device: dict) -> dict:
     return audit_xcode(summary, tests, suite, udid, expected)
 
 
+def collect_ci_probe_log(run: Run, choice: dict) -> dict:
+    """Temporary diagnostic capture; never substitute these logs for test results."""
+    device = owned_ui_device(run, choice, "probe-log")
+    raw = run.command("ci-probe-log", ["xcrun", "simctl", "spawn", device["udid"],
+                      "log", "show", "--last", "60m", "--style", "json",
+                      "--predicate", 'subsystem == "com.riji.ci-probe"'])
+    payload = re.sub(r"\Agetpwuid_r did not find a match for uid [0-9]+\r?\n", "", raw, count=1)
+    entries = json.loads(payload)
+    if not isinstance(entries, list):
+        raise RunnerError("Diagnostic log output is not a JSON event array.")
+    if any(not isinstance(entry, dict) or any(not isinstance(entry.get(key), str)
+               for key in ("timestamp", "subsystem", "category", "eventMessage")) for entry in entries):
+        raise RunnerError("Diagnostic log output contains a malformed event.")
+    execution = next((item for item in run.commands if item["name"] == "xcode-tests"), None)
+    if execution is None:
+        raise RunnerError("No test execution window exists for the diagnostic capture.")
+    started = datetime.fromisoformat(execution["started_at"])
+    finished = datetime.fromisoformat(execution["finished_at"])
+    current = [entry for entry in entries if entry.get("subsystem") == "com.riji.ci-probe"
+               and started <= datetime.fromisoformat(entry["timestamp"]) <= finished]
+    required = set()
+    if any(name.endswith("testMobileGroupResultPreviewRequiresConfirmationAndKeepsExactSelection") for name in run.smoke_tests):
+        required.add("group-save")
+    if any(name.endswith("testSettingsExportsTheExactCurrentMarkdownThroughSystemFiles") for name in run.smoke_tests):
+        required.add("markdown-export")
+    categories = {entry.get("category") for entry in current}
+    if not required or not required.issubset(categories):
+        raise RunnerError("Current test-window diagnostic events are missing for the selected target.")
+    return {"status": "collected", "log": "ci-probe-log.log", "entries": len(entries),
+            "current_probe_entries": len(current), "required_categories": sorted(required),
+            "observed_categories": sorted(category for category in categories if category),
+            "acceptance_eligible": False, "event_sequence_audit_required": True}
+
+
 def execute_suite(run: Run, suite: str, report: dict) -> None:
+    diagnostic = suite == "ui-smoke" and all(run.environment.get(name) == "1" for name in (
+        "TEST_RUNNER_RIJI_TEST_MENU_TRACE", "TEST_RUNNER_RIJI_TEST_EXPORT_TRACE"))
+    if diagnostic:
+        report.update(diagnostic_only=True, acceptance_eligible=False)
     report["environment"] = check_tools(run)
     if suite != "core":
         report["device"] = prepare_device(run)
@@ -595,7 +633,23 @@ def execute_suite(run: Run, suite: str, report: dict) -> None:
         report["package"] = execute_package(run)
         write_json(run.artifacts / "summary.json", report)
     if suite != "core":
-        report["xcode"] = execute_xcode(run, suite, report["device"])
+        try:
+            report["xcode"] = execute_xcode(run, suite, report["device"])
+        finally:
+            if diagnostic:
+                original_error = sys.exc_info()[0] is not None
+                try:
+                    report["probe_log"] = collect_ci_probe_log(run, report["device"])
+                    write_json(run.artifacts / "ci-probe-status.json", report["probe_log"])
+                except (Exception, KeyboardInterrupt) as error:
+                    report["probe_log"] = {"status": "failed", "error": str(error) or "Interrupted",
+                                           "acceptance_eligible": False}
+                    try:
+                        write_json(run.artifacts / "ci-probe-status.json", report["probe_log"])
+                    except (Exception, KeyboardInterrupt) as status_error:
+                        report["probe_log"]["status_write_error"] = type(status_error).__name__
+                    if not original_error:
+                        raise RunnerError("Diagnostic log capture failed; see summary and command logs.") from error
 
 
 def source_manifest(root: Path) -> dict[str, str]:
