@@ -173,10 +173,18 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func tapStableGroupMenuEntry(named name: String, identifier: String? = nil, nativeTap: Bool = false) {
-        var previous: GroupMenuTarget?
-        var captured: GroupMenuTarget?
+        guard !nativeTap || identifier?.isEmpty == false else {
+            XCTFail("A native group tap must name its exact fixture identifier"); return
+        }
+        let labels = syntheticGroupMenuLabels(name)
+        var previous: NativeMenuTarget?
+        var captured: NativeMenuTarget?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard let visible = self.groupMenuEntryFrame(named: name, identifier: identifier) else {
+            let candidate = nativeTap
+                ? self.visibleNativeMenuOption { $0.identifier == identifier && labels.contains($0.label) }
+                : self.groupMenuEntryFrame(named: name, identifier: identifier)
+                    .map { NativeMenuTarget(action: $0, viewport: $0.bounds) }
+            guard let visible = candidate else {
                 previous = nil; return false
             }
             let stable = previous == visible
@@ -184,15 +192,18 @@ final class DiaryFlowTests: XCTestCase {
             if stable { captured = visible }
             return stable
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+        let result = XCTWaiter.wait(for: [ready], timeout: 5)
+        XCTAssertEqual(result, .completed,
                        "Two root snapshots must agree on the unique visible enabled group menu entry")
-        guard let visible = captured else { XCTFail("The group menu entry must have a stable captured frame"); return }
+        guard result == .completed, let target = captured else { return }
+        let visible = target.action
         let evidence = XCTAttachment(string: """
             Requested group: \(name)
             Identifier: \(visible.identifier)
             Label: \(visible.label)
             Frame: \(visible.frame)
             App bounds: \(visible.bounds)
+            Validated viewport: \(target.viewport)
             """)
         evidence.name = "Stable group menu target before native tap"; evidence.lifetime = .keepAlways; add(evidence)
         let identity = visible.identifier.isEmpty
@@ -204,8 +215,9 @@ final class DiaryFlowTests: XCTestCase {
         // A single deliberate touch must activate the settled native menu. Keep
         // dismissal and conversation assertions in the caller; never retry it.
         if nativeTap {
-            XCTAssertTrue(matches.element.isHittable, "The stable exact group entry must have a native hit target")
-            matches.element.tap()
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: visible.frame.midX - visible.bounds.minX,
+                dy: visible.frame.midY - visible.bounds.minY)).tap()
         } else { matches.element.press(forDuration: 0.15) }
     }
 
@@ -1918,25 +1930,69 @@ final class DiaryFlowTests: XCTestCase {
         let filter = app.buttons["mobileThemeFilter"]
         revealMemoryThemeFilter(filter); filter.tap()
         let option = app.buttons[title]
-        XCTAssertTrue(option.waitForExistence(timeout: 5))
-        var previousFrame = CGRect.null
+        guard option.waitForExistence(timeout: 5) else {
+            XCTFail("The requested native picker option must appear"); return
+        }
+        var previous: NativeMenuTarget?
+        var captured: NativeMenuTarget?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard option.exists else { return false }
-            let frame = option.frame
-            guard self.isFiniteFrame(frame), self.app.frame.insetBy(dx: 8, dy: 44).contains(frame) else { return false }
-            let stable = previousFrame == frame
-            previousFrame = frame
-            return stable && option.isEnabled && option.isHittable
+            guard let visible = self.visibleNativeMenuOption(matching: { $0.label == title }) else {
+                previous = nil; return false
+            }
+            let stable = previous == visible
+            previous = visible
+            if stable { captured = visible }
+            return stable
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+        let result = XCTWaiter.wait(for: [ready], timeout: 5)
+        XCTAssertEqual(result, .completed,
                        "The native picker option must have a stable visible hit target before selection")
-        option.tap()
+        guard result == .completed, let target = captured?.action else { return }
+        // The native menu can expose a visible cell without an AX activation point.
+        // One real tap and the original selection/dismissal assertions verify its hit.
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: target.frame.midX - target.bounds.minX,
+            dy: target.frame.midY - target.bounds.minY)).tap()
         let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             filter.exists && filter.label.contains("分类筛选") && filter.label.hasSuffix(title)
         }, object: filter)
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
         XCTAssertEqual(XCTWaiter.wait(for: [selected, dismissed], timeout: 5), .completed,
                        "Filtering must commit the selected category and dismiss the native menu before inspecting cards")
+    }
+
+    private struct NativeMenuTarget: Equatable {
+        let action: GroupMenuTarget
+        let viewport: CGRect
+    }
+
+    private func visibleNativeMenuOption(matching identity: (XCUIElementSnapshot) -> Bool) -> NativeMenuTarget? {
+        guard let snapshot = try? app.snapshot(), isFiniteFrame(snapshot.frame) else {
+            XCTFail("The native menu must provide an application snapshot"); return nil
+        }
+        var nodes: [(XCUIElementSnapshot, XCUIElementSnapshot?)] = [(snapshot, nil)]
+        var matches: [(XCUIElementSnapshot, CGRect)] = []
+        while let (node, parent) = nodes.popLast() {
+            if node.elementType == .collectionView, let parent, parent.elementType == .other {
+                // Native menu cells contain their option buttons directly. The
+                // menu's enclosing viewport can be shorter than its collection.
+                let options = node.children.filter { $0.elementType == .cell }
+                    .flatMap { $0.children.filter { $0.elementType == .button && identity($0) } }
+                let viewport = isFiniteFrame(node.frame) && isFiniteFrame(parent.frame)
+                    ? node.frame.intersection(parent.frame) : .null
+                matches.append(contentsOf: options.map { ($0, viewport) })
+            }
+            nodes.append(contentsOf: node.children.map { ($0, node) })
+        }
+        guard matches.count <= 1 else {
+            XCTFail("The requested native menu option must be unique"); return nil
+        }
+        guard let (option, viewport) = matches.first,
+              option.isEnabled, isFiniteFrame(option.frame), isFiniteFrame(viewport),
+              snapshot.frame.insetBy(dx: 8, dy: 44).contains(option.frame),
+              viewport.contains(option.frame) else { return nil }
+        return NativeMenuTarget(action: GroupMenuTarget(identifier: option.identifier, label: option.label,
+            frame: option.frame, bounds: snapshot.frame), viewport: viewport)
     }
 
     private func revealMemoryThemeFilter(_ filter: XCUIElement) {
