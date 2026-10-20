@@ -21,9 +21,19 @@ final class DiaryFlowTests: XCTestCase {
     private var status: XCUIElement { app.staticTexts["templateLabel"] }
 
     private func waitForStatus(_ value: String) {
-        let predicate = NSPredicate(format: "label CONTAINS %@", value)
-        expectation(for: predicate, evaluatedWith: status)
-        waitForExpectations(timeout: 10)
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            // Keep remote element descriptions out of this bounded observation.
+            guard let snapshot = try? self.app.snapshot() else { return false }
+            var nodes = snapshot.children
+            var labels: [XCUIElementSnapshot] = []
+            while let node = nodes.popLast() {
+                if node.elementType == .staticText, node.identifier == "templateLabel" { labels.append(node) }
+                nodes.append(contentsOf: node.children)
+            }
+            return labels.count == 1 && labels[0].label.contains(value)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 10), .completed,
+                       "The current diary status must contain the expected save state")
     }
 
     private func type(_ value: String, savedStatus: String = "已保存在手机") {
@@ -4017,7 +4027,25 @@ extension DiaryFlowTests {
         for _ in 0..<before.utf16.count { editor.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: []) }
         XCTAssertEqual(Data((editor.value as? String ?? "").utf8), Data(before.utf8), "Positioning the caret must not change the fragment")
         editor.typeText(suffix)
-        XCTAssertEqual(Data((editor.value as? String ?? "").utf8), Data((before + suffix).utf8))
+        // XCTest can return from typing while UIKit is still receiving key events.
+        // Observe fresh snapshots without injecting the suffix a second time.
+        let expected = Data((before + suffix).utf8)
+        var observed: Data?
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let snapshot = try? self.app.snapshot() else { return false }
+            var nodes = snapshot.children
+            var fields: [XCUIElementSnapshot] = []
+            while let node = nodes.popLast() {
+                if node.elementType == .textView, node.identifier == "editDiff-0" { fields.append(node) }
+                nodes.append(contentsOf: node.children)
+            }
+            guard fields.count == 1, let value = fields.first?.value as? String else { return false }
+            observed = Data(value.utf8)
+            return observed == expected
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [entered], timeout: 5), .completed,
+                       "Every injected fragment byte must arrive before cold recovery")
+        XCTAssertEqual(observed, expected)
     }
 
     func testCompetingExternalEditsOfferLatestAndLocalChoicesWithoutReauthorization() {
