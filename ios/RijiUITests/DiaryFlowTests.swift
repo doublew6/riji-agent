@@ -1314,6 +1314,7 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileRoundtableHostInvitationAndLocalSavePreview() {
+        app.launchEnvironment["RIJI_TEST_TOUCH_TRACE"] = "roundtable-selection"
         launchMobileFixture("roundtable")
         let before = input.value as? String ?? ""
         app.tabBars.buttons["导师"].tap()
@@ -2600,6 +2601,10 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testApprovedDirectionHierarchyKeepsGoalVersionsAndMITConfirmation() {
+        app.terminate()
+        app.launchEnvironment["RIJI_TEST_TOUCH_TRACE"] = "north-star-definition"
+        app.launch()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
         app.buttons["diaryDirectory"].tap()
         let direction = app.buttons["goalsFlow"]; reveal(direction); direction.tap()
         app.buttons["northStarDefinitions"].tap()

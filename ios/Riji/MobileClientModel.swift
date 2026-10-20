@@ -699,6 +699,10 @@ extension MobileClientModel {
     }
     func refreshChatInbox() async {
         guard let request = try? context("chat-inbox") else { return }
+        #if DEBUG && targetEnvironment(simulator)
+        SyntheticTouchTrace.mark(.inboxBegin)
+        defer { SyntheticTouchTrace.mark(.inboxEnd) }
+        #endif
         do {
             let value: MobileCapabilities = try await request.3.request(["capabilities"])
             let expected = Set(["gentle_reviewer", "blunt_coach", "future_self", "wang_yangming"])

@@ -158,3 +158,209 @@ actor MobileRoundtableFixture {
     }
 }
 #endif
+
+#if DEBUG && targetEnvironment(simulator)
+import UIKit
+import ObjectiveC.runtime
+// Temporary metadata-only diagnosis. Explicit synthetic fixtures arm only at the target stage.
+@MainActor enum SyntheticTouchTrace {
+    enum Mode: String { case roundtable = "roundtable-selection", northStar = "north-star-definition" }
+    enum Action: String, Sendable {
+        case armed, multiselectEnter, multiselectReturn, northStarEnter, northStarReturn
+        case northStarTaskBegin, northStarTaskEnd, inboxBegin, inboxEnd, foregroundTickBegin, foregroundTickEnd
+        case incompleteTouchSnapshot, stopped
+    }
+    private struct Ancestor: Sendable {
+        let name: String
+        let gestures: [String]
+        let states: [Int]
+    }
+    private struct TouchMetadata: Sendable {
+        let stage: String
+        let eventTime: Double
+        let touchTime: Double
+        let handledTime: Double
+        let phase: Int
+        let x: Double
+        let y: Double
+        let window: String
+        let target: String
+        let ancestors: [Ancestor]
+    }
+    private struct ActionMetadata: Sendable {
+        let action: Action
+        let time: Double
+        let busy: Bool?
+        let preview: Bool?
+        let selecting: Bool?
+        let count: Int?
+    }
+    private enum Entry: Sendable { case touch(TouchMetadata), action(ActionMetadata) }
+    struct PendingTouch {
+        let touch: UITouch
+        let eventTime: Double
+        let ancestors: [UIView]
+    }
+    private static var installedMode: Mode?
+    private static var didArm = false
+    private static var armed = false
+    private static var deadline = 0.0
+    private static var activeTouches: Set<ObjectIdentifier> = []
+    private static var entries: [Entry] = []
+    private static var flushScheduled = false
+    private static var forceFlush = false
+    private static var watchdogScheduled = false
+    private static var emittedEntries = 0
+    private static let output = DispatchQueue(label: "riji.synthetic-touch-trace")
+
+    static func installIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard installedMode == nil,
+              environment["RIJI_TEST_CONTAINER"].flatMap(UUID.init(uuidString:)) != nil,
+              environment["RIJI_TEST_ORIGINAL_VAULT"] == nil,
+              let mode = environment["RIJI_TEST_TOUCH_TRACE"].flatMap(Mode.init(rawValue:)) else { return }
+        let permitted = mode == .roundtable ? environment["RIJI_TEST_MOBILE"] == "roundtable"
+            : environment["RIJI_TEST_MOBILE"] == nil
+        guard permitted,
+              let original = class_getInstanceMethod(UIWindow.self, #selector(UIWindow.sendEvent(_:))),
+              let trace = class_getInstanceMethod(UIWindow.self, #selector(UIWindow.riji_traceSyntheticTouch(_:))) else { return }
+        method_exchangeImplementations(original, trace)
+        installedMode = mode
+    }
+
+    static func arm(_ mode: Mode) {
+        guard installedMode == mode, !didArm else { return }
+        didArm = true; armed = true
+        deadline = ProcessInfo.processInfo.systemUptime + 120
+        mark(.armed)
+    }
+
+    static func mark(_ action: Action, busy: Bool? = nil, preview: Bool? = nil,
+                     selecting: Bool? = nil, count: Int? = nil) {
+        guard isRecording else { return }
+        append(.action(ActionMetadata(action: action, time: ProcessInfo.processInfo.systemUptime,
+                                     busy: busy, preview: preview, selecting: selecting, count: count)))
+        scheduleFlush()
+    }
+
+    static func stop() {
+        mark(.stopped, count: activeTouches.count)
+        armed = false
+        // The next main-queue turn runs after the current event's after-record is appended.
+        scheduleFlush(force: true)
+    }
+
+    private static var isRecording: Bool {
+        armed && ProcessInfo.processInfo.systemUptime <= deadline && emittedEntries < 1_024
+    }
+
+    static func capture(_ event: UIEvent, in window: UIWindow) -> [PendingTouch] {
+        guard event.type == .touches, isRecording || !activeTouches.isEmpty else { return [] }
+        var pending: [PendingTouch] = []
+        for touch in (event.allTouches ?? []).prefix(4) where touch.window === window {
+            guard [.began, .ended, .cancelled].contains(touch.phase) else { continue }
+            let identity = ObjectIdentifier(touch)
+            if touch.phase == .began {
+                guard isRecording, activeTouches.count < 4 || activeTouches.contains(identity) else { continue }
+                activeTouches.insert(identity)
+            } else if !activeTouches.contains(identity) { continue }
+            var ancestors: [UIView] = []
+            var view = touch.view
+            while let current = view, ancestors.count < 24 {
+                ancestors.append(current); view = current.superview
+            }
+            let record = PendingTouch(touch: touch, eventTime: event.timestamp, ancestors: ancestors)
+            append(.touch(metadata(record, in: window, stage: "before")))
+            pending.append(record)
+        }
+        return pending
+    }
+
+    static func finish(_ pending: [PendingTouch], in window: UIWindow) {
+        for record in pending {
+            append(.touch(metadata(record, in: window, stage: "after")))
+            if [.ended, .cancelled].contains(record.touch.phase) {
+                activeTouches.remove(ObjectIdentifier(record.touch))
+            }
+        }
+        scheduleFlush()
+    }
+
+    private static func metadata(_ record: PendingTouch, in window: UIWindow, stage: String) -> TouchMetadata {
+        let point = record.touch.location(in: window)
+        let ancestors = record.ancestors.map { view in
+            let gestures = Array((view.gestureRecognizers ?? []).prefix(8))
+            return Ancestor(name: className(view), gestures: gestures.map(className),
+                            states: gestures.map { $0.state.rawValue })
+        }
+        return TouchMetadata(stage: stage, eventTime: record.eventTime, touchTime: record.touch.timestamp,
+            handledTime: ProcessInfo.processInfo.systemUptime, phase: record.touch.phase.rawValue,
+            x: Double(point.x), y: Double(point.y), window: className(window),
+            target: record.touch.view.map(className) ?? "none", ancestors: ancestors)
+    }
+
+    private static func className(_ object: NSObject) -> String {
+        String(NSStringFromClass(type(of: object)).prefix(160))
+    }
+
+    private static func append(_ entry: Entry) {
+        if entries.count == 192 { entries.removeFirst() }
+        entries.append(entry)
+        scheduleWatchdog()
+    }
+
+    private static func scheduleWatchdog() {
+        guard !watchdogScheduled, !activeTouches.isEmpty, emittedEntries < 1_024 else { return }
+        watchdogScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            watchdogScheduled = false
+            guard !activeTouches.isEmpty, !entries.isEmpty else { return }
+            append(.action(ActionMetadata(action: .incompleteTouchSnapshot,
+                time: ProcessInfo.processInfo.systemUptime, busy: nil, preview: nil,
+                selecting: nil, count: activeTouches.count)))
+            // Preserve missing-end evidence without changing touches or their tracked state.
+            scheduleFlush(force: true)
+        }
+    }
+
+    private static func scheduleFlush(force: Bool = false) {
+        if force { forceFlush = true }
+        guard !flushScheduled, activeTouches.isEmpty || forceFlush, !entries.isEmpty else { return }
+        flushScheduled = true
+        DispatchQueue.main.async {
+            flushScheduled = false
+            guard activeTouches.isEmpty || forceFlush else { return }
+            forceFlush = false
+            let batch = Array(entries.suffix(max(0, 1_024 - emittedEntries)))
+            entries.removeAll(keepingCapacity: true)
+            emittedEntries += batch.count
+            output.async { for entry in batch { print(format(entry)) } }
+        }
+    }
+
+    nonisolated private static func format(_ entry: Entry) -> String {
+        switch entry {
+        case .touch(let value):
+            let chain = value.ancestors.map { ancestor in
+                ancestor.name + "[" + zip(ancestor.gestures, ancestor.states).map { "\($0):\($1)" }.joined(separator: ",") + "]"
+            }.joined(separator: ">")
+            return "[DEBUG-touch-dispatch] \(value.stage) event=\(value.eventTime) touch=\(value.touchTime) handled=\(value.handledTime) phase=\(value.phase) point=(\(value.x),\(value.y)) window=\(value.window) target=\(value.target) ancestors=\(chain)"
+        case .action(let value):
+            return "[DEBUG-touch-action] \(value.action.rawValue) handled=\(value.time) busy=\(flag(value.busy)) preview=\(flag(value.preview)) selecting=\(flag(value.selecting)) count=\(value.count.map(String.init) ?? "none")"
+        }
+    }
+
+    nonisolated private static func flag(_ value: Bool?) -> String {
+        value.map { $0 ? "true" : "false" } ?? "none"
+    }
+}
+
+private extension UIWindow {
+    @objc func riji_traceSyntheticTouch(_ event: UIEvent) {
+        let pending = SyntheticTouchTrace.capture(event, in: self)
+        // The exchanged selector forwards to the original implementation exactly once.
+        riji_traceSyntheticTouch(event)
+        SyntheticTouchTrace.finish(pending, in: self)
+    }
+}
+#endif
