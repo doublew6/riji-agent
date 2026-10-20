@@ -909,8 +909,7 @@ final class NativeBodyEditorTests: XCTestCase {
     }
 
     func testActualRecoveryEditorsCommitNativeCompositionBeforeExplicitCapture() async throws {
-        // Temporary fixed-count stress for the instrumented recovery-lifecycle diagnosis.
-        for merge in (0..<10).flatMap({ _ in [false, true] }) {
+        for merge in [false, true] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("RecoveryComposition-\(UUID())")
             defer { try? FileManager.default.removeItem(at: root) }
             let store = try LocalJournalStore(journalDirectory: root.appendingPathComponent("Journals"), stateDirectory: root.appendingPathComponent("State"))

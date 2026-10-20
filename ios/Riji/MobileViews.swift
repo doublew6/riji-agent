@@ -271,15 +271,7 @@ struct MobileMentorsView: View {
     }
 
     private func groupChoice(_ item: MobileRoundtableList.Item) -> some View {
-        Button {
-            #if DEBUG && targetEnvironment(simulator)
-            SyntheticMenuActionTrace.record(.groupChoiceEnter)
-            #endif
-            selectGroup(item.id)
-            #if DEBUG && targetEnvironment(simulator)
-            SyntheticMenuActionTrace.record(.groupChoiceReturn)
-            #endif
-        } label: {
+        Button { selectGroup(item.id) } label: {
             let draft = !model.draft("roundtable:" + item.id).isEmpty
             let unread = model.hasUnreadReply("roundtable:" + item.id)
             Label(item.title + (draft ? " · 草稿" : "") + (unread ? " · 新回复" : ""),

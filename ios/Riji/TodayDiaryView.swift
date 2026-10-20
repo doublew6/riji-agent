@@ -379,13 +379,7 @@ struct TodayDiaryView: View {
                 }
                 #endif
                 Button("AI 讨论来源", systemImage: "text.bubble") {
-                    #if DEBUG && targetEnvironment(simulator)
-                    SyntheticMenuActionTrace.record(.aiSourcesEnter)
-                    #endif
                     aiSources.open(model, committing: endEditing)
-                    #if DEBUG && targetEnvironment(simulator)
-                    SyntheticMenuActionTrace.record(.aiSourcesReturn)
-                    #endif
                 }.accessibilityIdentifier("diaryAISources")
                 if model.hasCloudRecovery {
                     Button("查看版本备份", systemImage: "clock.arrow.circlepath") {

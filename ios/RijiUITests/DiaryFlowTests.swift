@@ -967,7 +967,6 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileGroupsEmptyCreationRenameIndependentDraftsAndColdReturn() {
-        app.launchEnvironment["RIJI_TEST_MENU_EVENT_TRACE"] = "1"
         launchMobileFixture("roundtable")
         app.tabBars.buttons["导师"].tap(); assertInlineGroup()
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "mobileMentor-")).count, 4)
@@ -1167,7 +1166,6 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileGroupResultPreviewRequiresConfirmationAndKeepsExactSelection() {
-        app.launchEnvironment["RIJI_TEST_MENU_EVENT_TRACE"] = "1"
         launchMobileFixture("roundtable")
         let before = input.value as? String ?? ""
         app.tabBars.buttons["导师"].tap(); createSyntheticGroup()
