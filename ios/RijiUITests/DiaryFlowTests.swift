@@ -890,10 +890,22 @@ final class DiaryFlowTests: XCTestCase {
                        "A single selection tap must produce the requested state")
     }
 
-    private func tapVisibleGroupAction(_ element: XCUIElement, nativeButton: Bool = false) {
-        guard let target = try? element.snapshot() else {
-            XCTFail("The requested action must provide its exact accessibility identity"); return
+    private typealias GroupActionIdentity = (elementType: XCUIElement.ElementType, identifier: String, label: String)
+
+    private func groupActionIdentity(_ element: XCUIElement, knownLabel: String?) -> GroupActionIdentity? {
+        if let knownLabel { return (.button, "", knownLabel) }
+        do {
+            let snapshot = try element.snapshot()
+            return (snapshot.elementType, snapshot.identifier, snapshot.label)
+        } catch {
+            let failure = error as NSError
+            XCTFail("The requested action must provide its exact accessibility identity (\(failure.domain), code \(failure.code))")
+            return nil
         }
+    }
+
+    private func tapVisibleGroupAction(_ element: XCUIElement, nativeButton: Bool = false, knownLabel: String? = nil) {
+        guard let target = groupActionIdentity(element, knownLabel: knownLabel) else { return }
         XCTAssertTrue(!target.identifier.isEmpty || !target.label.isEmpty)
         var previousFrame: CGRect?
         var previousBounds: CGRect?
@@ -934,7 +946,7 @@ final class DiaryFlowTests: XCTestCase {
             dx: frame.midX - bounds.minX, dy: frame.midY - bounds.minY)).tap()
     }
 
-    private func visibleGroupActionSnapshot(matching target: XCUIElementSnapshot) -> (frame: CGRect, bounds: CGRect)? {
+    private func visibleGroupActionSnapshot(matching target: GroupActionIdentity) -> (frame: CGRect, bounds: CGRect)? {
         guard let snapshot = try? app.snapshot() else {
             XCTFail("The application must provide an accessibility snapshot for the action"); return nil
         }
@@ -2736,7 +2748,7 @@ final class DiaryFlowTests: XCTestCase {
         let section = app.buttons["mitSection"]
         revealDirectionMITControl(section); section.tap()
         let morning = app.buttons["🌅 Morning"]
-        XCTAssertTrue(morning.waitForExistence(timeout: 5)); tapVisibleGroupAction(morning)
+        XCTAssertTrue(morning.waitForExistence(timeout: 5)); tapVisibleGroupAction(morning, knownLabel: "🌅 Morning")
         let chosen = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             !morning.exists && section.label.contains("🌅 Morning")
         }, object: nil)
