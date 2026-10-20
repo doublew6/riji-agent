@@ -1978,10 +1978,20 @@ final class DiaryFlowTests: XCTestCase {
         guard option.waitForExistence(timeout: 5) else {
             XCTFail("The requested native picker option must appear"); return
         }
+        guard tapStableNativeMenuOption(matching: { $0.label == title }) else { return }
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            filter.exists && filter.label.contains("分类筛选") && filter.label.hasSuffix(title)
+        }, object: filter)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected, dismissed], timeout: 5), .completed,
+                       "Filtering must commit the selected category and dismiss the native menu before inspecting cards")
+    }
+
+    private func tapStableNativeMenuOption(matching identity: @escaping (XCUIElementSnapshot) -> Bool) -> Bool {
         var previous: NativeMenuTarget?
         var captured: NativeMenuTarget?
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard let visible = self.visibleNativeMenuOption(matching: { $0.label == title }) else {
+            guard let visible = self.visibleNativeMenuOption(matching: identity) else {
                 previous = nil; return false
             }
             let stable = previous == visible
@@ -1991,19 +2001,14 @@ final class DiaryFlowTests: XCTestCase {
         }, object: nil)
         let result = XCTWaiter.wait(for: [ready], timeout: 5)
         XCTAssertEqual(result, .completed,
-                       "The native picker option must have a stable visible hit target before selection")
-        guard result == .completed, let target = captured?.action else { return }
+                       "The native menu option must have a stable visible hit target before selection")
+        guard result == .completed, let target = captured?.action else { return false }
         // The native menu can expose a visible cell without an AX activation point.
-        // One real tap and the original selection/dismissal assertions verify its hit.
+        // One real tap and the caller's functional assertions verify its hit.
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
             dx: target.frame.midX - target.bounds.minX,
             dy: target.frame.midY - target.bounds.minY)).tap()
-        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            filter.exists && filter.label.contains("分类筛选") && filter.label.hasSuffix(title)
-        }, object: filter)
-        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
-        XCTAssertEqual(XCTWaiter.wait(for: [selected, dismissed], timeout: 5), .completed,
-                       "Filtering must commit the selected category and dismiss the native menu before inspecting cards")
+        return true
     }
 
     private struct NativeMenuTarget: Equatable {
@@ -3841,7 +3846,10 @@ extension DiaryFlowTests {
     func testActiveExternalFileRefreshAllowsContinuedEditingAndColdReopen() {
         launchExternalRefreshFixture()
         let before = input.value as? String ?? ""
-        app.buttons["moreMenu"].tap(); app.buttons["simulateExternalEdit"].tap()
+        app.buttons["moreMenu"].tap()
+        guard tapStableNativeMenuOption(matching: {
+            $0.identifier == "simulateExternalEdit" && $0.label == "Synthetic external edit"
+        }) else { return }
         let refreshed = before + "External simulated edit\r\n"
         expectation(for: NSPredicate(format: "value == %@", refreshed), evaluatedWith: input)
         waitForExpectations(timeout: 10)
