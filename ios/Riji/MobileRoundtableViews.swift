@@ -226,7 +226,7 @@ struct MobileGroupChatView: View {
                     visibleMessageID = latest; model.markReplyRead(draftKey, visibleMessageID: latest)
                 }
             } } label: {
-                Label("新回复", systemImage: "arrow.down").font(.caption)
+                Text("新回复").font(.caption)
                     .padding(.horizontal, 12).frame(minHeight: 44)
                     .background(MentorPalette.surface, in: Capsule())
                     .overlay(Capsule().stroke(MentorPalette.border, lineWidth: 0.7))

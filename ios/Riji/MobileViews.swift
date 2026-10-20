@@ -123,6 +123,7 @@ struct MobileMentorsView: View {
         selection?.account == model.accountIdentity ? selection?.identifier : nil
     }
     @State private var creating = false
+    @State private var showingNorthStar = false
     @State private var composerFocused = false
     private var compactHeader: Bool {
         composerFocused || typeSize.isAccessibilitySize || verticalSizeClass == .compact ||
@@ -183,13 +184,19 @@ struct MobileMentorsView: View {
                 }
                 .onChange(of: model.roundtableList?.items.map(\.id)) { selectInitialGroup() }
                 .onChange(of: model.unavailableRoundtableIDs) { selectInitialGroup() }
-                .onChange(of: model.accountIdentity) { selection = nil; composerFocused = false }
-        }.tint(MentorPalette.action).id(model.accountIdentity)
+                .onChange(of: model.accountIdentity) {
+                    selection = nil; composerFocused = false; showingNorthStar = false
+                }
+        }.tint(MentorPalette.action)
+            // Keep presentation alive when keyboard focus changes the header branch.
+            .northStarAnchorSheet(isPresented: $showingNorthStar, diary: diary)
+            .id(model.accountIdentity)
     }
     @ViewBuilder private var header: some View {
         if toolbarHeader {
             HStack(spacing: 8) {
-                NorthStarAnchorBanner(diary: diary, mobile: model, compact: true, iconOnly: true)
+                NorthStarAnchorBanner(diary: diary, mobile: model, compact: true, iconOnly: true,
+                                      onOpen: { showingNorthStar = true })
                 if model.capabilities?.capabilities["mentors"] == true {
                     ForEach(model.capabilities?.mentors ?? []) { mentor in
                         NavigationLink { MobileChatView(model: model, diary: diary, mentor: mentor) } label: {
@@ -216,7 +223,8 @@ struct MobileMentorsView: View {
                 Text("演示环境 · 合成回复").font(.caption).foregroundStyle(MentorPalette.secondary)
                     .accessibilityIdentifier("mobileSyntheticNotice")
             }
-            NorthStarAnchorBanner(diary: diary, mobile: model, compact: compactHeader)
+            NorthStarAnchorBanner(diary: diary, mobile: model, compact: compactHeader,
+                                  onOpen: { showingNorthStar = true })
             if model.capabilities?.capabilities["mentors"] == true { directoryStage }
         }.padding(.horizontal, 20).padding(.top, compactHeader ? 0 : 4)
     }

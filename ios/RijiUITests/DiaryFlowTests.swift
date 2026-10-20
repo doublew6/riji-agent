@@ -190,8 +190,9 @@ final class DiaryFlowTests: XCTestCase {
         let matches = app.buttons.matching(identity)
         let count = matches.count
         guard count == 1 else { XCTFail("The captured group menu identity must resolve uniquely; found \(count)"); return }
-        // Keep native activation after identity and geometry settle; never retry a tap.
-        matches.element.tap()
+        // A single deliberate touch must activate the settled native menu. Keep
+        // dismissal and conversation assertions in the caller; never retry it.
+        matches.element.press(forDuration: 0.15)
     }
 
     private func groupMenuEntryFrame(named name: String) -> GroupMenuTarget? {
@@ -261,6 +262,7 @@ final class DiaryFlowTests: XCTestCase {
             XCTAssertTrue(app.buttons["mobileMentor-" + actor].exists)
         }
         attachMentorScreenshot("Approved mentor entrance — forest and warm portraits")
+        verifyNorthStarPickerFromFocusedGroup()
         app.buttons["mobileMentor-future_self"].tap()
         let anchor = app.buttons["northStarAnchor"]
         XCTAssertTrue(anchor.waitForExistence(timeout: 5))
@@ -386,6 +388,35 @@ final class DiaryFlowTests: XCTestCase {
         app.buttons["roundtableSend"].tap()
         XCTAssertTrue(app.buttons["roundtableInvite"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["roundtableInvite"].isHittable)
+    }
+
+    private func verifyNorthStarPickerFromFocusedGroup() {
+        let draft = "Synthetic group draft beside the North Star"
+        groupComposer.tap(); groupComposer.typeText(draft)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(groupComposer.value as? String, draft)
+        XCTAssertTrue(app.buttons["roundtableSend"].isEnabled)
+        let anchor = app.buttons["northStarAnchor"]
+        XCTAssertTrue(anchor.isHittable); anchor.tap()
+        let navigation = app.navigationBars["本阶段北极星"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 5))
+        let file = app.buttons["northStarFile-Phase.md"]
+        XCTAssertTrue(file.waitForExistence(timeout: 5)); file.tap()
+        let paragraph = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "northStarParagraph-")).element(boundBy: 1)
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 5)); paragraph.tap()
+        XCTAssertTrue(app.buttons["northStarConfirm"].waitForExistence(timeout: 5),
+                      "The focused-home picker must stay presented through file selection and preview")
+        attachMentorScreenshot("Focused group — North Star preview survives header changes")
+        navigation.buttons["完成"].tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !navigation.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertEqual(groupComposer.value as? String, draft)
+        XCTAssertFalse(app.staticTexts["northStarCurrentGoal"].exists,
+                       "Closing the preview must not confirm an association")
+        groupComposer.tap(); groupComposer.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
+        groupComposer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
+        XCTAssertFalse(app.buttons["roundtableSend"].isEnabled)
     }
 
     func testMentorNorthStarExternalChangeInvalidatesOpenChat() {
@@ -799,9 +830,9 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     private func enterRoundtableSelection(from menuAction: XCUIElement) {
-        // Native menus can move after becoming accessible. Use the observed stable
-        // frame for one tap, then require dismissal before checking selection state.
-        tapVisibleGroupAction(menuAction)
+        // Visible system menus can report an invalid AX hit point. Resolve the
+        // stable native button once, then require dismissal and selection state.
+        tapVisibleGroupAction(menuAction, nativeButton: true)
         let dismissed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: menuAction)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
@@ -2239,22 +2270,22 @@ final class DiaryFlowTests: XCTestCase {
         let editor = app.textViews["bodyConflictMerge"]
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         let expected = appendRecoveryText(editor, "Accepted merged input 中 e\u{301}\n")
-        let confirm = app.buttons["confirmBodyMerge"]; reveal(confirm); confirm.tap()
+        let confirm = app.buttons["confirmBodyMerge"]; revealBodyMergeControl(confirm); confirm.tap()
         let gate = app.staticTexts["recoveryGateState"]
         expectation(for: NSPredicate(format: "label == 'held'"), evaluatedWith: gate); waitForExpectations(timeout: 10)
         XCTAssertFalse(editor.isEnabled); XCTAssertFalse(confirm.isEnabled)
         XCTAssertEqual(editor.value as? String, expected)
         let refresh = app.buttons["refreshBodyMergeSource"]
-        revealAboveToolbar(refresh)
+        revealBodyMergeControl(refresh, towardEarlier: true, enabled: false)
         XCTAssertFalse(refresh.isEnabled); XCTAssertFalse(app.buttons["closeBodyMerge"].isEnabled)
-        let release = app.buttons["releaseRecoveryGate"]; reveal(release); release.tap()
+        let release = app.buttons["releaseRecoveryGate"]; revealBodyMergeControl(release); release.tap()
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: editor); waitForExpectations(timeout: 10)
         XCTAssertTrue(app.staticTexts["bodyMergeError"].exists)
         let reviewedSource = app.staticTexts["bodyConflictSource"]
-        revealAboveToolbar(reviewedSource)
+        revealBodyMergeControl(reviewedSource, towardEarlier: true)
         XCTAssertTrue(reviewedSource.label.contains("External source"))
         XCTAssertEqual(editor.value as? String, expected)
-        reveal(confirm); confirm.tap()
+        revealBodyMergeControl(confirm); confirm.tap()
         XCTAssertTrue(input.waitForExistence(timeout: 10)); waitForStatus("已保存在手机")
         XCTAssertEqual(input.value as? String, expected)
         app.terminate(); app.launch()
@@ -2634,9 +2665,16 @@ final class DiaryFlowTests: XCTestCase {
         revealFormControl(element, in: app.collectionViews["mobileMemoryDetailForm"], below: app.navigationBars["记忆详情"])
     }
 
-    private func revealFormControl(_ element: XCUIElement, in form: XCUIElement, below navigation: XCUIElement) {
+    private func revealBodyMergeControl(_ element: XCUIElement, towardEarlier: Bool = false, enabled: Bool = true) {
+        revealFormControl(element, in: app.collectionViews["bodyConflictReviewForm"],
+                          below: app.navigationBars["核对正文版本"],
+                          scroll: (towardEarlier, towardEarlier ? 8 : 7), enabled: enabled)
+    }
+
+    private func revealFormControl(_ element: XCUIElement, in form: XCUIElement, below navigation: XCUIElement,
+                                   scroll: (earlier: Bool, attempts: Int) = (false, 8), enabled: Bool = true) {
         XCTAssertTrue(form.waitForExistence(timeout: 5))
-        for _ in 0..<8 {
+        for _ in 0..<scroll.attempts {
             let bounds = form.frame.intersection(app.frame)
             guard isFiniteFrame(bounds) else { XCTFail("The Form must have a finite visible viewport"); return }
             let top = max(bounds.minY, navigation.frame.maxY) + 8
@@ -2659,10 +2697,10 @@ final class DiaryFlowTests: XCTestCase {
             XCTAssertGreaterThan(height, 60)
             let frame = element.exists ? element.frame : .null
             if isFiniteFrame(frame), bounds.contains(frame), frame.minY >= top, frame.maxY <= bottom,
-               element.isEnabled, element.isHittable { return }
+               element.isEnabled == enabled, element.isHittable { return }
             // Start inside the Form gutter, above the entire keyboard and candidate bar.
             // An application-wide swipe can start on the keyboard on smaller phones.
-            let towardEarlier = isFiniteFrame(frame) && frame.minY < top
+            let towardEarlier = isFiniteFrame(frame) ? frame.minY < top : scroll.earlier
             let origin = form.coordinate(withNormalizedOffset: .zero)
             let start = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + height * (towardEarlier ? 0.25 : 0.75)))
             let end = origin.withOffset(CGVector(dx: 12, dy: top - form.frame.minY + height * (towardEarlier ? 0.75 : 0.25)))
@@ -3719,10 +3757,7 @@ extension DiaryFlowTests {
 
     private func performBodyReviewAction(_ identifier: String = "confirmBodyMerge", towardEarlier: Bool = false, evidenceName: String? = nil) {
         bodyReviewGeometry = []
-        defer {
-            let geometry = XCTAttachment(string: bodyReviewGeometry.joined(separator: "\n"))
-            geometry.name = "Body review scroll geometry"; geometry.lifetime = .keepAlways; add(geometry)
-        }
+        defer { attachBodyReviewGeometry() }
         let navigation = app.navigationBars["核对正文版本"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 5))
         let window = app.windows.containing(.navigationBar, identifier: "核对正文版本").firstMatch
@@ -3734,6 +3769,8 @@ extension DiaryFlowTests {
             previousFrame = bodyReviewActionFrame(identifier, in: form, navigation: navigation)
             if previousFrame != nil { break }
             guard attempt < maximumScrolls else {
+                // XCTest can stop the case before defer runs on a failure.
+                attachBodyReviewGeometry()
                 XCTFail("The body review action must become fully visible and enabled"); return
             }
             let bounds = form.frame.intersection(app.frame)
@@ -3768,6 +3805,11 @@ extension DiaryFlowTests {
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !navigation.exists }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 10), .completed,
                        "The body review action must save and close the review sheet")
+    }
+
+    private func attachBodyReviewGeometry() {
+        let geometry = XCTAttachment(string: bodyReviewGeometry.joined(separator: "\n"))
+        geometry.name = "Body review scroll geometry"; geometry.lifetime = .keepAlways; add(geometry)
     }
 
     private func bodyReviewActionFrame(_ identifier: String, in form: XCUIElement, navigation: XCUIElement) -> CGRect? {

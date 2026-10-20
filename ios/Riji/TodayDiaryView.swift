@@ -304,11 +304,14 @@ struct TodayDiaryView: View {
                     }
                 }
                 DisclosureGroup(isExpanded: fullVersions) {
-                    Text(model.bodyConflict?.source.map { String(decoding: $0, as: UTF8.self) } ?? "文件尚不存在")
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled).accessibilityIdentifier("bodyConflictSource")
-                    TextEditor(text: Binding(get: { model.bodyMergeText }, set: model.updateBodyMerge)).frame(minHeight: 260)
-                        .disabled(!model.canEditBodyMerge).accessibilityIdentifier("bodyConflictMerge")
+                    ScrollView {
+                        Text(model.bodyConflict?.source.map { String(decoding: $0, as: UTF8.self) } ?? "文件尚不存在")
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled).accessibilityIdentifier("bodyConflictSource")
+                    }.frame(height: 260).accessibilityIdentifier("bodyConflictSourceScroll")
+                    TextEditor(text: Binding(get: { model.bodyMergeText }, set: model.updateBodyMerge)).frame(height: 260)
+                        .disabled(!model.canEditBodyMerge).accessibilityIdentifier("bodyConflictMerge").id("bodyConflictMerge")
                     Text("双方原文和合并结果均保留版本。确认时会再次核对当前文件。")
                         .font(.caption)
                 } label: {
@@ -330,7 +333,8 @@ struct TodayDiaryView: View {
                     endEditing()
                     Task { if await model.resolveBodyConflict(with: model.bodyMergeText) { showConflict = false } }
                 }.disabled(!model.canEditBodyMerge).accessibilityIdentifier("confirmBodyMerge")
-            }.navigationTitle("核对正文版本").navigationBarTitleDisplayMode(.inline)
+            }.accessibilityIdentifier("bodyConflictReviewForm")
+                .navigationTitle("核对正文版本").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("稍后处理") { endEditing(); Task { if await model.dismissBodyConflict() { showConflict = false } } }.disabled(model.isBusy).accessibilityIdentifier("closeBodyMerge") } }
                 .interactiveDismissDisabled(true)
         }
