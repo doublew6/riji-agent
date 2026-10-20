@@ -271,7 +271,15 @@ struct MobileMentorsView: View {
     }
 
     private func groupChoice(_ item: MobileRoundtableList.Item) -> some View {
-        Button { selectGroup(item.id) } label: {
+        Button {
+            #if DEBUG && targetEnvironment(simulator)
+            SyntheticMenuActionTrace.record(.groupChoiceEnter)
+            #endif
+            selectGroup(item.id)
+            #if DEBUG && targetEnvironment(simulator)
+            SyntheticMenuActionTrace.record(.groupChoiceReturn)
+            #endif
+        } label: {
             let draft = !model.draft("roundtable:" + item.id).isEmpty
             let unread = model.hasUnreadReply("roundtable:" + item.id)
             Label(item.title + (draft ? " · 草稿" : "") + (unread ? " · 新回复" : ""),
@@ -676,6 +684,11 @@ struct MobileMemoryDetailView: View {
                     }.navigationTitle("比较纠正草稿")
                         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("稍后处理") { comparison = nil } } }
                 }
+                #if DEBUG
+                .task {
+                    if candidate.submitting { await model.correctionComparisonDidAppear?(memory.id) }
+                }
+                #endif
             }
             .confirmationDialog("删除这条记忆？原日记保留；导出副本和备份不会同时擦除。", isPresented: $deletion, titleVisibility: .visible) {
                 if let memory = deleteCandidate { Button("确认删除记忆", role: .destructive) { Task { await model.memoryAction(memory, action: "delete") } } }

@@ -166,12 +166,13 @@ final class NativeBodyEditorTests: XCTestCase {
         throw JournalError.storage
     }
 
-    private func waitUntil(_ context: String = "Native editor did not reach the expected document/viewport state", condition: () -> Bool) async throws {
+    private func waitUntil(_ context: String = "Native editor did not reach the expected document/viewport state", onTimeout: () -> Void = {}, condition: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + 3
         while ProcessInfo.processInfo.systemUptime < deadline {
             if condition() { return }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
+        onTimeout()
         XCTFail(context)
         throw JournalError.storage
     }
@@ -908,7 +909,8 @@ final class NativeBodyEditorTests: XCTestCase {
     }
 
     func testActualRecoveryEditorsCommitNativeCompositionBeforeExplicitCapture() async throws {
-        for merge in [false, true] {
+        // Temporary fixed-count stress for the instrumented recovery-lifecycle diagnosis.
+        for merge in (0..<10).flatMap({ _ in [false, true] }) {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("RecoveryComposition-\(UUID())")
             defer { try? FileManager.default.removeItem(at: root) }
             let store = try LocalJournalStore(journalDirectory: root.appendingPathComponent("Journals"), stateDirectory: root.appendingPathComponent("State"))
@@ -955,23 +957,34 @@ final class NativeBodyEditorTests: XCTestCase {
         window.rootViewController = host; window.makeKeyAndVisible()
         var mounted = false
         defer { if !mounted { window.isHidden = true } }
-        try await waitUntil("The recovery Form must mount before its single scroll request") {
+        var states: [String] = []
+        func record(_ detail: String) {
+            let state = "merge=\(merge) ready=\(layout.scrollReady) requested=\(layout.scrollRequested) applied=\(layout.scrollApplied) \(detail)"
+            guard states.last != state else { return }
+            states.append(state); if states.count > 12 { states.removeFirst() }
+        }
+        let attachFailure = { self.attachRecoveryReadiness(states) }
+        try await waitUntil("The recovery Form must mount before its single scroll request", onTimeout: attachFailure) {
             host.view.layoutIfNeeded()
+            record("phase=mount key=\(window.isKeyWindow) sameWindow=\(host.view.window === window)")
             return host.view.window === window && (!merge || layout.scrollReady)
         }
         if merge { layout.scrollRequested = true }
         var previousEditor: UITextView?
         var previousFrame: CGRect?
         var captured: UITextView?
-        try await waitUntil("The recovery editor must remain mounted and visible after scrolling") {
+        try await waitUntil("The recovery editor must remain mounted and visible after scrolling", onTimeout: attachFailure) {
             host.view.layoutIfNeeded()
-            guard !merge || layout.scrollApplied else { return false }
+            guard !merge || layout.scrollApplied else { record("phase=editor reject=scroll-not-applied count=not-read"); return false }
             let found = self.editableEditors(host.view, matching: draft)
+            var detail = "count=\(found.count)"
             guard found.count == 1, let editor = found.first,
-                  let frame = self.recoveryEditorFrame(editor, in: host.view, window: window) else {
+                  let frame = self.recoveryEditorFrame(editor, in: host.view, window: window, detail: &detail) else {
+                record("phase=editor stable=false \(detail)")
                 previousEditor = nil; previousFrame = nil; return false
             }
             let stable = previousEditor === editor && previousFrame == frame
+            record("phase=editor stable=\(stable) sameEditor=\(previousEditor === editor) sameFrame=\(previousFrame == frame) \(detail)")
             previousEditor = editor; previousFrame = frame
             if stable { captured = editor }
             return stable
@@ -984,17 +997,34 @@ final class NativeBodyEditorTests: XCTestCase {
         return (window, host.view, editor)
     }
 
-    private func recoveryEditorFrame(_ editor: UITextView, in root: UIView, window: UIWindow) -> CGRect? {
+    private func attachRecoveryReadiness(_ states: [String]) {
+        let attachment = XCTAttachment(string: states.joined(separator: "\n"))
+        attachment.name = "Recovery editor readiness — last 12 distinct states"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func recoveryEditorFrame(_ editor: UITextView, in root: UIView, window: UIWindow, detail: inout String) -> CGRect? {
+        detail += " key=\(window.isKeyWindow) sameWindow=\(editor.window === window) descendant=\(editor.isDescendant(of: root))"
         guard window.isKeyWindow, editor.window === window, editor.isDescendant(of: root) else { return nil }
         let frame = editor.convert(editor.bounds, to: window)
+        detail += " frame=\(frame) finite=\([frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }) window=\(window.bounds)"
         guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }), !frame.isEmpty else { return nil }
         var visible = window.bounds.intersection(frame)
         var ancestor: UIView? = editor
+        var firstClip = visible.isEmpty || visible.isNull ? "window" : "none"
         while let view = ancestor {
-            guard !view.isHidden, view.alpha > 0 else { return nil }
-            if view.clipsToBounds { visible = visible.intersection(view.convert(view.bounds, to: window)) }
+            guard !view.isHidden, view.alpha > 0 else {
+                detail += " hiddenAncestor=\(type(of: view)) hidden=\(view.isHidden) alpha=\(view.alpha) firstClip=\(firstClip) visible=\(visible)"
+                return nil
+            }
+            if view.clipsToBounds {
+                visible = visible.intersection(view.convert(view.bounds, to: window))
+                if firstClip == "none", visible.isEmpty || visible.isNull { firstClip = String(describing: type(of: view)) }
+            }
             ancestor = view.superview
         }
+        detail += " hiddenAncestor=none firstClip=\(firstClip) visible=\(visible)"
         return visible.isEmpty || visible.isNull ? nil : frame
     }
 

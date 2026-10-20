@@ -967,6 +967,7 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileGroupsEmptyCreationRenameIndependentDraftsAndColdReturn() {
+        app.launchEnvironment["RIJI_TEST_MENU_EVENT_TRACE"] = "1"
         launchMobileFixture("roundtable")
         app.tabBars.buttons["导师"].tap(); assertInlineGroup()
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "mobileMentor-")).count, 4)
@@ -1166,6 +1167,7 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileGroupResultPreviewRequiresConfirmationAndKeepsExactSelection() {
+        app.launchEnvironment["RIJI_TEST_MENU_EVENT_TRACE"] = "1"
         launchMobileFixture("roundtable")
         let before = input.value as? String ?? ""
         app.tabBars.buttons["导师"].tap(); createSyntheticGroup()
@@ -1904,7 +1906,7 @@ final class DiaryFlowTests: XCTestCase {
             let stable = previousFrame == frame
             previousFrame = frame
             return stable && option.isEnabled && option.isHittable
-        }, object: option)
+        }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
                        "The native picker option must have a stable visible hit target before selection")
         option.tap()

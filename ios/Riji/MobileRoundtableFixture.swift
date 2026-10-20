@@ -2,6 +2,26 @@
 import Foundation
 import RijiCore
 
+#if targetEnvironment(simulator)
+// Temporary action-dispatch evidence, enabled only after the gated event hook installs.
+@MainActor enum SyntheticMenuActionTrace {
+    enum Action: String {
+        case groupChoiceEnter = "group-choice-enter"
+        case groupChoiceReturn = "group-choice-return"
+        case aiSourcesEnter = "ai-sources-enter"
+        case aiSourcesReturn = "ai-sources-return"
+    }
+    private static var installed = false
+    private static var remainingRecords = 32
+    static func enableAfterEventHookInstallation() { installed = true }
+    static func record(_ action: Action) {
+        guard installed, remainingRecords > 0 else { return }
+        remainingRecords -= 1
+        print("[DEBUG-menu-dispatch] action=\(action.rawValue)")
+    }
+}
+#endif
+
 /// Explicit synthetic UI namespace only. No model, network, or real diary is accessed.
 actor MobileRoundtableFixture {
     private let file: URL

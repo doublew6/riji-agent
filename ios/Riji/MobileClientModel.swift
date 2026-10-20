@@ -64,6 +64,10 @@ final class MobileClientModel: ObservableObject {
     var serviceConnected: Bool { connectionState == .connected }
     let isSyntheticEnvironment: Bool
     var endpointLabel: String { credential?.endpoint ?? "" }
+    #if DEBUG
+    /// Only the isolated UI fixture binds this real comparison-presentation event.
+    var correctionComparisonDidAppear: ((String) async -> Void)?
+    #endif
 
     init(credentials: any MobileCredentialStore, persistence: MobileLocalStore, transport: any MobileTransport,
          installation: (any MobileInstallationSource)? = nil, isSyntheticEnvironment: Bool = false) {

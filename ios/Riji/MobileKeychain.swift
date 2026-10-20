@@ -58,10 +58,14 @@ extension MobileClientModel {
                     try Data("{synthetic invalid archive".utf8).write(to: folder.appendingPathComponent(String(repeating: "a", count: 64) + ".json"))
                 } catch { /* Missing fixture evidence fails the native UI assertions. */ }
             }
+            let fixtureWire = MobileUIFixtureWire(mode: fixture ?? "", roundtableFile: folder.appendingPathComponent("roundtable-fixture.json"))
             let model = MobileClientModel(credentials: MobileVolatileCredentials(credential),
                 persistence: MobileLocalStore(directory: folder),
-                transport: connected || fixture == "pair" ? MobileUIFixtureWire(mode: fixture ?? "", roundtableFile: folder.appendingPathComponent("roundtable-fixture.json")) : MobileURLTransport(),
+                transport: connected || fixture == "pair" ? fixtureWire : MobileURLTransport(),
                 isSyntheticEnvironment: connected || fixture == "pair")
+            if fixture == "overview-confirmation-change" {
+                model.correctionComparisonDidAppear = { await fixtureWire.confirmationDidAppear(memoryID: $0) }
+            }
             if fixture == "recovery" {
                 Task {
                     await model.start()
@@ -114,7 +118,7 @@ private struct MobileFixtureCredentials: MobileCredentialStore {
 }
 /// UI acceptance only: factory access requires an explicit UUID test namespace.
 /// This transport never opens a socket or reads a production credential.
-private actor MobileUIFixtureWire: MobileTransport {
+actor MobileUIFixtureWire: MobileTransport {
     private let mode: String
     private let roundtable: MobileRoundtableFixture?
     init(mode: String, roundtableFile: URL? = nil) {
@@ -130,7 +134,11 @@ private actor MobileUIFixtureWire: MobileTransport {
     private var memoryText = "Synthetic memory for mobile acceptance"
     private var memoryVersion = "synthetic-v1"
     private var organizing = false
-    private var memoryReads = 0
+    private var confirmationPresented = false
+    func confirmationDidAppear(memoryID: String) {
+        guard mode == "overview-confirmation-change", memoryID == "synthetic-memory" else { return }
+        confirmationPresented = true
+    }
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         guard let url = request.url, url.host == "air.example" else { throw URLError(.unsupportedURL) }
         if mode == "roundtable-offline" { throw URLError(.notConnectedToInternet) }
@@ -169,8 +177,8 @@ private actor MobileUIFixtureWire: MobileTransport {
             let items = fixtureMemories
             value = ["items": items, "next_cursor": NSNull(), "updated_at": "2026-01-01T00:00:00Z"]
         } else if path == "/mobile/v1/memories/synthetic-memory" {
-            memoryReads += 1
-            if mode == "overview-confirmation-change", memoryReads > 2 {
+            // Keep every pre-comparison poll stable; the real periodic refresh delivers the change.
+            if mode == "overview-confirmation-change", confirmationPresented {
                 memoryText = "Synthetic changed during confirmation"; memoryVersion = "synthetic-v2"
             }
             value = memory()

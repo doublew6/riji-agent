@@ -154,6 +154,46 @@ final class MobileOverviewStateTests: XCTestCase {
         let requests = await f.wire.requests
         XCTAssertFalse(requests.contains { $0.httpMethod == "POST" })
     }
+    #if DEBUG
+    func testConfirmationChangeFixtureWaitsForPresentedComparisonAndRealRefresh() async throws {
+        let f = MobileStateFixture(); defer { f.cleanup() }
+        let wire = MobileUIFixtureWire(mode: "overview-confirmation-change")
+        let credential = MobileCredential(endpoint: "https://air.example", deviceId: "synthetic-ui-device", token: "example-synthetic-ui-only")
+        let model = MobileClientModel(credentials: MobileVolatileCredentials(credential), persistence: f.store, transport: wire, isSyntheticEnvironment: true)
+        XCTAssertNil(model.correctionComparisonDidAppear)
+        model.correctionComparisonDidAppear = { await wire.confirmationDidAppear(memoryID: $0) }
+        await model.start()
+        XCTAssertTrue(model.serviceConnected)
+        let id = "synthetic-memory", key = "memory:synthetic-memory"
+        await model.refreshMemory(id)
+        let candidate = try XCTUnwrap(model.memoryDetails[id])
+        model.setDraft(key, text: "Synthetic confirmation candidate")
+        await model.correctionComparisonDidAppear?("another-memory")
+        for _ in 0..<10 {
+            await model.refreshMemory(id)
+            XCTAssertEqual(model.memoryDetails[id]?.version, "synthetic-v1")
+            XCTAssertEqual(model.memoryDetails[id]?.content, "Synthetic memory for mobile acceptance")
+            XCTAssertFalse(model.correctionNeedsRebase(candidate))
+        }
+        await model.correctionComparisonDidAppear?(id)
+        XCTAssertEqual(model.memoryDetails[id]?.version, "synthetic-v1")
+        await model.refreshMemory(id)
+        let changed = try XCTUnwrap(model.memoryDetails[id])
+        XCTAssertEqual(changed.version, "synthetic-v2")
+        XCTAssertEqual(changed.content, "Synthetic changed during confirmation")
+        XCTAssertTrue(model.correctionNeedsRebase(changed))
+        await model.memoryAction(candidate, action: "update")
+        XCTAssertNil(model.operation(key))
+        XCTAssertEqual(model.draft(key), "Synthetic confirmation candidate")
+        XCTAssertEqual(try f.store.load(credential).drafts[key], "Synthetic confirmation candidate")
+        await model.refreshMemory(id)
+        XCTAssertEqual(model.memoryDetails[id]?.content, "Synthetic changed during confirmation")
+        let independentWire = MobileUIFixtureWire(mode: "overview-confirmation-change")
+        let api = MobileAPI(endpoint: try MobileEndpoint("https://air.example"), token: nil, transport: independentWire)
+        let independent: MobileMemory = try await api.request(["memories", id])
+        XCTAssertEqual(independent.version, "synthetic-v1")
+    }
+    #endif
     private func startFreshCapabilities(_ f: MobileStateFixture) async {
         await f.wire.queue("/mobile/v1/capabilities", .init(json: mobileCapabilities.replacingOccurrences(of: "\"memory\":true", with: "\"memory\":true,\"memory_overview\":true")))
         await f.model.refreshCapabilities()
