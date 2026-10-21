@@ -4099,8 +4099,22 @@ extension DiaryFlowTests {
         XCTAssertTrue(cell.waitForExistence(timeout: 5))
         cell.typeText("Lifecycle table")
         let tableEdited = original.replacingOccurrences(of: "中文 🧠 0", with: "中文 🧠 0Lifecycle table")
-        expectation(for: NSPredicate(format: "value == %@", tableEdited), evaluatedWith: input)
-        waitForExpectations(timeout: 10)
+        let expectedTableBytes = Data(tableEdited.utf8)
+        let tableInputArrived = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            // Snapshot values can be truncated; use the typed accessor for the complete document.
+            guard let snapshot = try? self.app.snapshot() else { return false }
+            var nodes = snapshot.children
+            var editors: [XCUIElementSnapshot] = []
+            while let node = nodes.popLast() {
+                if node.elementType == .textView, node.identifier == "diaryBodyEditor" { editors.append(node) }
+                nodes.append(contentsOf: node.children)
+            }
+            guard editors.count == 1,
+                  let value = self.app.textViews.matching(identifier: "diaryBodyEditor").element.value as? String else { return false }
+            return Data(value.utf8) == expectedTableBytes
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [tableInputArrived], timeout: 10), .completed,
+                       "The complete table edit must reach the diary before Home")
         XCUIDevice.shared.press(.home)
         XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5) || app.state == .runningBackgroundSuspended)
         app.activate()
