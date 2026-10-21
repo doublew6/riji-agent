@@ -7,8 +7,12 @@ struct NorthStarAnchorBanner: View {
     @ObservedObject private var anchor: NorthStarAnchorModel
     @State private var showing = false
     let compact: Bool
-    init(diary: DiaryViewModel, mobile: MobileClientModel, compact: Bool = false) {
-        self.diary = diary; self.mobile = mobile; self.anchor = diary.northStar; self.compact = compact
+    let iconOnly: Bool
+    let onOpen: (() -> Void)?
+    init(diary: DiaryViewModel, mobile: MobileClientModel, compact: Bool = false,
+         iconOnly: Bool = false, onOpen: (() -> Void)? = nil) {
+        self.diary = diary; self.mobile = mobile; self.anchor = diary.northStar
+        self.compact = compact; self.iconOnly = iconOnly; self.onOpen = onOpen
     }
     private var verified: NorthStarDisplay? {
         guard !diary.sourceTransitionInProgress, !diary.needsFolder,
@@ -16,8 +20,15 @@ struct NorthStarAnchorBanner: View {
         return anchor.current
     }
     var body: some View {
-        Button { showing = true } label: {
-            if compact {
+        Button {
+            if let onOpen { onOpen() } else { showing = true }
+        } label: {
+            if iconOnly {
+                Image(systemName: "sparkle").resizable().scaledToFit().frame(width: 24, height: 24)
+                    .foregroundStyle(MentorPalette.secondary).frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("北极星 · " + (verified?.title ?? "选择本阶段方向"))
+            } else if compact {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkle")
                     if let current = verified {
@@ -41,10 +52,7 @@ struct NorthStarAnchorBanner: View {
             }.frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 8)
             }
         }.buttonStyle(.plain).accessibilityIdentifier("northStarAnchor")
-            .sheet(isPresented: $showing) {
-                NavigationStack { NorthStarAnchorPicker(model: anchor, diary: diary) }
-                    .environment(\.colorScheme, .dark).tint(MentorPalette.action)
-            }
+            .northStarAnchorSheet(isPresented: $showing, diary: diary)
     }
 }
 
@@ -71,6 +79,13 @@ private struct NorthStarContext: ViewModifier {
 }
 
 extension View {
+    func northStarAnchorSheet(isPresented: Binding<Bool>, diary: DiaryViewModel) -> some View {
+        sheet(isPresented: isPresented) {
+            NavigationStack { NorthStarAnchorPicker(model: diary.northStar, diary: diary) }
+                .environment(\.colorScheme, .dark).tint(MentorPalette.action)
+        }
+    }
+
     func northStarContext(diary: DiaryViewModel, mobile: MobileClientModel) -> some View {
         modifier(NorthStarContext(diary: diary, mobile: mobile))
     }

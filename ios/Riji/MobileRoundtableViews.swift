@@ -216,39 +216,53 @@ struct MobileGroupChatView: View {
             }
             .onChange(of: selection) { saveReading() }
     }
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if model.hasUnreadReply(draftKey), let latest = model.local?.lastKnownReplies?[draftKey] {
-                Button("查看新回复") { Task {
-                    model.saveRoundtableReadingState(selected: selection, anchor: latest, conversationID: identifier)
-                    await model.restoreRoundtableReadingPosition(identifier)
-                    if value?.messages.contains(where: { $0.id == latest }) == true {
-                        pendingReadingAnchor = nil; acceptingReadingChanges = true
-                        visibleMessageID = latest; model.markReplyRead(draftKey, visibleMessageID: latest)
-                    }
-                } }.frame(minHeight: 44).disabled(value == nil).accessibilityIdentifier("groupNewReply")
-            }
-            if selecting {
-                HStack {
-                    Text("选取日记内容 · 已选 \(selection.count) 段").font(.callout)
-                    Spacer()
-                    Button("取消") { selection = []; selecting = false; selectionNotice = nil }
-                        .frame(minHeight: 44).accessibilityIdentifier("roundtableCancelSelection")
+    @ViewBuilder private var newReplyButton: some View {
+        if model.hasUnreadReply(draftKey), let latest = model.local?.lastKnownReplies?[draftKey] {
+            Button { Task {
+                model.saveRoundtableReadingState(selected: selection, anchor: latest, conversationID: identifier)
+                await model.restoreRoundtableReadingPosition(identifier)
+                if value?.messages.contains(where: { $0.id == latest }) == true {
+                    pendingReadingAnchor = nil; acceptingReadingChanges = true
+                    visibleMessageID = latest; model.markReplyRead(draftKey, visibleMessageID: latest)
                 }
-                if let selectionNotice { Text(selectionNotice).font(.caption).foregroundStyle(MentorPalette.secondary) }
-            }
-            HStack {
+            } } label: {
+                Text("新回复").font(.caption)
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                    .background(MentorPalette.surface, in: Capsule())
+                    .overlay(Capsule().stroke(MentorPalette.border, lineWidth: 0.7))
+            }.buttonStyle(.plain).disabled(value == nil)
+                .accessibilityLabel("查看新回复").accessibilityIdentifier("groupNewReply")
+        }
+    }
+    private var canResume: Bool {
+        guard let value else { return false }
+        return ["interrupted", "stopped"].contains(value.status) && value.turnEnded != true &&
+            !value.runId.isEmpty && !model.hasUnresolved(draftKey)
+    }
+    private var hasComposerActions: Bool {
+        selecting || !selection.isEmpty || hasRetainedPreview || canResume ||
+            value?.active == true || model.hasUnresolved(draftKey)
+    }
+    private var composerActions: some View {
+        HStack {
                 if !selection.isEmpty {
-                    Button("保存选定结果 (\(selection.count))") { composerFocused = false; Task {
+                    Button(typeSize.isAccessibilitySize ? "保存 (\(selection.count))" : "保存选定结果 (\(selection.count))") { composerFocused = false; Task {
                         let validation = await model.previewRoundtableResult(Array(selection).sorted(), conversationID: identifier)
                         result = model.roundtableID == identifier && validation != nil
                     } }.disabled(value == nil || !model.canMutateRoundtable || !model.canSaveGroupResults(Array(selection))).accessibilityIdentifier("roundtableSaveSelection")
+                        .accessibilityLabel("保存选定结果 (\(selection.count))")
+                        .accessibilityValue("已选 \(selection.count) 段")
+                } else if selecting {
+                    Text("已选 0 段").font(.callout)
                 } else if hasRetainedPreview {
                     Button("继续保存预览") { result = true }
                 }
                 Spacer()
-                if let value, ["interrupted", "stopped"].contains(value.status), value.turnEnded != true, !value.runId.isEmpty,
-                   !model.hasUnresolved(draftKey) {
+                if selecting {
+                    Button("取消") { selection = []; selecting = false; selectionNotice = nil }
+                        .frame(minHeight: 44).accessibilityIdentifier("roundtableCancelSelection")
+                }
+                if canResume {
                     Button("核对后继续") { Task { await model.roundtableCommand("resume", conversationID: identifier) } }
                         .frame(minHeight: 44).disabled(!model.canMutateRoundtable)
                         .accessibilityIdentifier("groupResume")
@@ -258,7 +272,12 @@ struct MobileGroupChatView: View {
                         .disabled(value == nil || model.roundtableOffline || model.hasUnresolved("roundtable-stop:" + identifier))
                         .accessibilityIdentifier("roundtableStop")
                 }
-            }.font(.callout)
+        }.font(.callout)
+    }
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if hasComposerActions { composerActions }
+            if selecting, let selectionNotice { Text(selectionNotice).font(.caption).foregroundStyle(MentorPalette.secondary) }
             if let value, value.status == "interrupted", value.turnEnded != true {
                 Text("上轮回复是否完成暂无法确认，结束后不会重试，可继续新消息；晚到的原回执仍可能出现。").font(.caption)
                 Button("结束本轮") { Task { await model.roundtableCommand("end_turn", conversationID: identifier) } }
@@ -284,8 +303,13 @@ struct MobileGroupChatView: View {
                     .disabled(value == nil || !model.canMutateRoundtable || !["completed", "partial", "stopped"].contains(value?.status ?? "") || model.draft(draftKey).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             let responders = model.groupResponders(model.draft(draftKey), members: members)
-            Text(responders.isEmpty ? "大家回应" : "仅" + responders.map { roundtableNames[$0] ?? "导师" }.joined(separator: "、") + "回应 · 群内可见")
-                .font(.caption).foregroundStyle(MentorPalette.secondary).accessibilityIdentifier("groupReplyScope")
+            HStack(spacing: 8) {
+                Text(responders.isEmpty ? "大家回应" : "仅" + responders.map { roundtableNames[$0] ?? "导师" }.joined(separator: "、") + "回应 · 群内可见")
+                    .font(.caption).foregroundStyle(MentorPalette.secondary)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("groupReplyScope")
+                newReplyButton.fixedSize(horizontal: true, vertical: false)
+            }
         }.padding(.horizontal).padding(.vertical, 10).background(MentorPalette.paper)
     }
     private func refresh(older: Bool = false) async {

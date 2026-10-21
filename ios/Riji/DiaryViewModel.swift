@@ -80,6 +80,7 @@ final class DiaryViewModel: ObservableObject {
     private var bodyCheckpointTask: Task<Void, Never>?
     var bodyQuietNanoseconds: UInt64 = 1_000_000_000
     var bodyCheckpointNanoseconds: UInt64 = 15_000_000_000
+    var bodySleep: @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
     private var bodyBase: Data?
     private var bodyEdit: BodyEdit?
     private var bodyPersistence: Task<Void, Never>?
@@ -1208,12 +1209,12 @@ extension DiaryViewModel {
     private func scheduleBodyCheckpoint() {
         bodyQuietTask?.cancel()
         bodyQuietTask = Task {
-            do { try await Task.sleep(nanoseconds: bodyQuietNanoseconds) } catch { return }
+            do { try await bodySleep(bodyQuietNanoseconds) } catch { return }
             _ = await flushBody()
         }
         if bodyCheckpointTask == nil {
             bodyCheckpointTask = Task {
-                do { try await Task.sleep(nanoseconds: bodyCheckpointNanoseconds) } catch { return }
+                do { try await bodySleep(bodyCheckpointNanoseconds) } catch { return }
                 _ = await flushBody()
             }
         }

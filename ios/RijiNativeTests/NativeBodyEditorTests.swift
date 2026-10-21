@@ -166,18 +166,61 @@ final class NativeBodyEditorTests: XCTestCase {
         throw JournalError.storage
     }
 
-    private func waitUntil(_ context: String = "Native editor did not reach the expected document/viewport state", condition: () -> Bool) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if condition() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
+    private func reachesReadiness(now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                                  sleep: () async throws -> Void = { try await Task.sleep(nanoseconds: 10_000_000) },
+                                  condition: () -> Bool) async throws -> Bool {
+        let deadline = now() + 3
+        while now() < deadline {
+            if condition() { return true }
+            try await sleep()
         }
+        // A resumed sleep may cross the deadline after the view has become ready.
+        return condition()
+    }
+
+    private func waitUntil(_ context: String = "Native editor did not reach the expected document/viewport state", onTimeout: () -> Void = {}, condition: () -> Bool) async throws {
+        if try await reachesReadiness(condition: condition) { return }
+        onTimeout()
         XCTFail(context)
         throw JournalError.storage
     }
 
+    func testReadinessObservesDeadlineWithoutExtraSleepAndPropagatesCancellation() async throws {
+        for (wakeTime, readyAtWake) in [(3.0, true), (3.5, true), (3.5, false)] {
+            var clock = 0.0, ready = false
+            var samples = 0, sleeps = 0, clockReads = 0
+            let reached = try await reachesReadiness(now: { clockReads += 1; return clock }, sleep: {
+                sleeps += 1; clock = wakeTime; ready = readyAtWake
+            }) { samples += 1; return ready }
+            XCTAssertEqual(reached, readyAtWake)
+            XCTAssertEqual(samples, 2); XCTAssertEqual(sleeps, 1); XCTAssertEqual(clockReads, 3)
+            XCTAssertEqual(clock, wakeTime)
+        }
+        var initialSamples = 0, initialSleeps = 0
+        let initiallyReady = try await reachesReadiness(now: { 0 }, sleep: { initialSleeps += 1 }) {
+            initialSamples += 1; return true
+        }
+        XCTAssertTrue(initiallyReady); XCTAssertEqual(initialSamples, 1); XCTAssertEqual(initialSleeps, 0)
+        var cancelled = false, cancellationSamples = 0, cancellationSleeps = 0
+        do {
+            _ = try await reachesReadiness(now: { 0 }, sleep: {
+                cancellationSleeps += 1; throw CancellationError()
+            }) { cancellationSamples += 1; return false }
+        } catch is CancellationError { cancelled = true }
+        XCTAssertTrue(cancelled); XCTAssertEqual(cancellationSamples, 1); XCTAssertEqual(cancellationSleeps, 1)
+    }
+
     private func waitForDocument(_ editor: UITextView, text: String, viewport: DiaryViewport? = nil) async throws {
-        try await waitUntil {
+        try await waitUntil(onTimeout: {
+            let actual = Data(editor.text.utf8), expected = Data(text.utf8)
+            var detail = "observation=failure-time bounds=\(editor.bounds) pendingViewport=\(String(describing: (editor as? MarkdownTextView)?.hasPendingViewport)) actualBytes=\(actual.count) expectedBytes=\(expected.count) exactMatch=\(actual == expected)"
+            if let viewport {
+                detail += " selectionMatch=\(editor.selectedRange == viewport.selection) offsetMatch=\(abs(editor.contentOffset.y - viewport.offset.y) <= 1)"
+            }
+            let evidence = XCTAttachment(string: detail)
+            evidence.name = "Native document readiness — failure-time observation"; evidence.lifetime = .keepAlways
+            self.add(evidence)
+        }) {
             guard editor.bounds.width > 0, editor.bounds.height > 0,
                   (editor as? MarkdownTextView)?.hasPendingViewport == false,
                   Data(editor.text.utf8) == Data(text.utf8) else { return false }
@@ -921,28 +964,19 @@ final class NativeBodyEditorTests: XCTestCase {
                 model.updateBody("# Local\n## Notes\n")
                 _ = await model.flushBody(); await model.reviewBodyConflict()
             } else { model.updateSection("Notes"); model.updateText("Legacy input"); await model.flushDraft() }
-            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-            let host = UIHostingController(rootView: HostedRecoveryEditor(model: model, merge: merge))
-            window.rootViewController = host; window.makeKeyAndVisible(); host.view.layoutIfNeeded()
-            defer { window.isHidden = true }
             let draft = Data((merge ? model.bodyMergeText : model.text).utf8)
-            var found: [UITextView] = []
-            for _ in 0..<100 {
-                host.view.layoutIfNeeded()
-                found = editableEditors(host.view, matching: draft)
-                if !found.isEmpty { break }
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
-            // SwiftUI exposes TextEditor identifiers through AX, not the backing UIKit property.
-            // The expanded production form must contain exactly one editable copy of this draft.
-            XCTAssertEqual(found.count, 1, merge ? "bodyConflictMerge" : "legacyDraftEditor")
-            let editor = try XCTUnwrap(found.first)
+            let (window, rootView, editor) = try await mountRecoveryEditor(model, merge: merge, matching: draft)
+            defer { window.isHidden = true }
             XCTAssertTrue(editor.isEditable); XCTAssertEqual(Data(editor.text.utf8), draft)
-            editor.becomeFirstResponder(); editor.selectedRange = NSRange(location: editor.text.utf16.count, length: 0)
+            XCTAssertTrue(editor.becomeFirstResponder(), "The mounted recovery editor must accept focus once")
+            XCTAssertTrue(editor.isFirstResponder)
+            editor.selectedRange = NSRange(location: editor.text.utf16.count, length: 0)
             editor.setMarkedText("中文组合", selectedRange: NSRange(location: 4, length: 0))
             XCTAssertNotNil(editor.markedTextRange)
             let expected = editor.text ?? ""
-            TodayDiaryView.commitEditing(in: host.view)
+            XCTAssertTrue(editor.window === window && editor.isDescendant(of: rootView))
+            XCTAssertTrue(editor.isFirstResponder, "Composition must belong to the active mounted editor before capture")
+            TodayDiaryView.commitEditing(in: rootView)
             try await Task.sleep(nanoseconds: 50_000_000)
             XCTAssertNil(editor.markedTextRange)
             if merge {
@@ -957,19 +991,105 @@ final class NativeBodyEditorTests: XCTestCase {
         }
     }
 
+    private func mountRecoveryEditor(_ model: DiaryViewModel, merge: Bool, matching draft: Data) async throws -> (UIWindow, UIView, UITextView) {
+        let layout = RecoveryEditorLayout()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let host = UIHostingController(rootView: HostedRecoveryEditor(model: model, merge: merge, layout: layout))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        var mounted = false
+        defer { if !mounted { window.isHidden = true } }
+        var states: [String] = []
+        func record(_ detail: String) {
+            let state = "merge=\(merge) ready=\(layout.scrollReady) requested=\(layout.scrollRequested) applied=\(layout.scrollApplied) \(detail)"
+            guard states.last != state else { return }
+            states.append(state); if states.count > 12 { states.removeFirst() }
+        }
+        let attachFailure = { self.attachRecoveryReadiness(states) }
+        try await waitUntil("The recovery Form must mount before its single scroll request", onTimeout: attachFailure) {
+            host.view.layoutIfNeeded()
+            record("phase=mount key=\(window.isKeyWindow) sameWindow=\(host.view.window === window)")
+            return host.view.window === window && (!merge || layout.scrollReady)
+        }
+        if merge { layout.scrollRequested = true }
+        var previousEditor: UITextView?
+        var previousFrame: CGRect?
+        var captured: UITextView?
+        try await waitUntil("The recovery editor must remain mounted and visible after scrolling", onTimeout: attachFailure) {
+            host.view.layoutIfNeeded()
+            guard !merge || layout.scrollApplied else { record("phase=editor reject=scroll-not-applied count=not-read"); return false }
+            let found = self.editableEditors(host.view, matching: draft)
+            var detail = "count=\(found.count)"
+            guard found.count == 1, let editor = found.first,
+                  let frame = self.recoveryEditorFrame(editor, in: host.view, window: window, detail: &detail) else {
+                record("phase=editor stable=false \(detail)")
+                previousEditor = nil; previousFrame = nil; return false
+            }
+            let stable = previousEditor === editor && previousFrame == frame
+            record("phase=editor stable=\(stable) sameEditor=\(previousEditor === editor) sameFrame=\(previousFrame == frame) \(detail)")
+            previousEditor = editor; previousFrame = frame
+            if stable { captured = editor }
+            return stable
+        }
+        // TextEditor exposes its identifier through AX, not the backing UIKit property.
+        XCTAssertEqual(editableEditors(host.view, matching: draft).count, 1,
+                       merge ? "bodyConflictMerge" : "legacyDraftEditor")
+        let editor = try XCTUnwrap(captured)
+        mounted = true
+        return (window, host.view, editor)
+    }
 
+    private func attachRecoveryReadiness(_ states: [String]) {
+        let attachment = XCTAttachment(string: states.joined(separator: "\n"))
+        attachment.name = "Recovery editor readiness — last 12 distinct states"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func recoveryEditorFrame(_ editor: UITextView, in root: UIView, window: UIWindow, detail: inout String) -> CGRect? {
+        detail += " key=\(window.isKeyWindow) sameWindow=\(editor.window === window) descendant=\(editor.isDescendant(of: root))"
+        guard window.isKeyWindow, editor.window === window, editor.isDescendant(of: root) else { return nil }
+        let frame = editor.convert(editor.bounds, to: window)
+        detail += " frame=\(frame) finite=\([frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }) window=\(window.bounds)"
+        guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }), !frame.isEmpty else { return nil }
+        var visible = window.bounds.intersection(frame)
+        var ancestor: UIView? = editor
+        var firstClip = visible.isEmpty || visible.isNull ? "window" : "none"
+        while let view = ancestor {
+            guard !view.isHidden, view.alpha > 0 else {
+                detail += " hiddenAncestor=\(type(of: view)) hidden=\(view.isHidden) alpha=\(view.alpha) firstClip=\(firstClip) visible=\(visible)"
+                return nil
+            }
+            if view.clipsToBounds {
+                visible = visible.intersection(view.convert(view.bounds, to: window))
+                if firstClip == "none", visible.isEmpty || visible.isNull { firstClip = String(describing: type(of: view)) }
+            }
+            ancestor = view.superview
+        }
+        detail += " hiddenAncestor=none firstClip=\(firstClip) visible=\(visible)"
+        return visible.isEmpty || visible.isNull ? nil : frame
+    }
+
+}
+
+@MainActor private final class RecoveryEditorLayout: ObservableObject {
+    @Published var scrollRequested = false
+    var scrollReady = false
+    var scrollApplied = false
 }
 
 private struct HostedRecoveryEditor: View {
     @ObservedObject var model: DiaryViewModel
     let merge: Bool
+    @ObservedObject var layout: RecoveryEditorLayout
     var body: some View {
         if merge {
             ScrollViewReader { proxy in
                 TodayDiaryView(model: model).bodyConflictReview(fullVersions: .constant(true))
-                    .task {
-                        try? await Task.sleep(nanoseconds: 100_000_000)
-                        proxy.scrollTo("bodyFullVersions", anchor: .top)
+                    .onAppear { layout.scrollReady = true }
+                    .onChange(of: layout.scrollRequested) {
+                        guard layout.scrollRequested else { return }
+                        proxy.scrollTo("bodyConflictMerge", anchor: .center)
+                        layout.scrollApplied = true
                     }
             }
         }

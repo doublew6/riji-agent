@@ -100,6 +100,10 @@ struct MarkdownDiffView: View {
         } catch { self.error = "无法应用这处修改，原合并稿仍保留。请检查内容大小后重试。" }
     }
     @MainActor private func rebuild() async {
+        // Form rows can reappear while scrolling. Keep their height and selected
+        // edits stable when both input versions still match this comparison.
+        if let comparison, comparison.other == other,
+           current == (emitted ?? comparison.current) { return }
         let id = UUID(); generation = id
         let a = current, b = other
         comparison = nil; error = nil; choices = [:]; editorRevisions = [:]; emitted = nil

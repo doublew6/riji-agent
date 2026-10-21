@@ -4,6 +4,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
+import plistlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -11,6 +14,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +40,7 @@ def device(**changes):
 
 
 def result_documents(suite="smoke"):
-    ui = list(runner.SMOKE_TESTS) if suite == "smoke" else ["RijiUITests/DiaryFlowTests/testFull"]
+    ui = list(runner.SMOKE_TESTS) if suite in {"smoke", "ui-smoke"} else ["RijiUITests/DiaryFlowTests/testFull"]
     identifiers = ["RijiNativeTests/NativeTests/testNative"] + ([] if suite == "native" else ui)
     bundles = {}
     for identifier in identifiers:
@@ -86,7 +90,7 @@ def test_creation_chooses_latest_compatible_runtime_not_future_or_legacy_type():
         runner.select_device(devices, runtimes, types)
 
 
-@pytest.mark.parametrize("suite", ["native", "smoke", "full"])
+@pytest.mark.parametrize("suite", ["native", "smoke", "ui-smoke", "full"])
 def test_xcode_audit_accepts_only_complete_requested_suites(suite):
     summary, tests = result_documents(suite)
     result = runner.audit_xcode(summary, tests, suite, UDID, set(identifier for identifier, _ in runner.result_cases(tests["testNodes"])))
@@ -101,8 +105,9 @@ def test_xcode_audit_accepts_only_complete_requested_suites(suite):
     ("no-native", "requested test bundles"), ("duplicate", "duplicate"),
     ("summary-skip", "skippedTests"), ("expected-failure", "expectedFailures"),
 ])
-def test_xcode_audit_rejects_false_green_results(mutation, message):
-    summary, tests = result_documents()
+@pytest.mark.parametrize("suite", ["smoke", "ui-smoke"])
+def test_xcode_audit_rejects_false_green_results(mutation, message, suite):
+    summary, tests = result_documents(suite)
     expected = {identifier for identifier, _ in runner.result_cases(tests["testNodes"])}
     if mutation in {"skip", "failure"}:
         tests["testNodes"][1]["children"][0]["result"] = "Skipped" if mutation == "skip" else "Failed"
@@ -127,7 +132,7 @@ def test_xcode_audit_rejects_false_green_results(mutation, message):
     else:
         summary["skippedTests" if mutation == "summary-skip" else "expectedFailures"] = 1
     with pytest.raises(runner.RunnerError, match=message):
-        runner.audit_xcode(summary, tests, "smoke", UDID, expected)
+        runner.audit_xcode(summary, tests, suite, UDID, expected)
 
 
 def package_example(style="objc"):
@@ -201,7 +206,7 @@ def test_production_and_manual_fixture_environment_is_not_forwarded(tmp_path, mo
     assert json.loads(output) == {"IOS_RUNNER_ALLOWED_VALUE": "synthetic-allowed"}
 
 
-@pytest.mark.parametrize("suite", ["native", "smoke", "full"])
+@pytest.mark.parametrize("suite", ["native", "smoke", "ui-smoke", "full"])
 def test_test_commands_target_only_dedicated_device_disable_clones_and_execute_tests(tmp_path, suite):
     run = make_run(tmp_path)
     args = runner.xcode_arguments(run, suite, UDID)
@@ -211,7 +216,7 @@ def test_test_commands_target_only_dedicated_device_disable_clones_and_execute_t
     assert args[args.index("-maximum-parallel-testing-workers") + 1] == "1"
     assert "-only-testing:RijiNativeTests" in args
     assert not any(word in " ".join(args) for word in ("Development iPhone", "erase", "uninstall", "kill"))
-    if suite == "smoke":
+    if suite in {"smoke", "ui-smoke"}:
         assert {arg.removeprefix("-only-testing:") for arg in args if arg.startswith("-only-testing:RijiUITests/")} == set(runner.SMOKE_TESTS)
 
 
@@ -250,14 +255,18 @@ def test_missing_xcode_fails_before_simulator_access(tmp_path, monkeypatch):
 @pytest.mark.parametrize("suite,stages", [("core", ["tools", "package"]),
                                           ("native", ["tools", "device", "xcode"]),
                                           ("smoke", ["tools", "device", "package", "xcode"]),
+                                          ("ui-smoke", ["tools", "device", "xcode"]),
                                           ("full", ["tools", "device", "package", "xcode"])])
 def test_suite_dispatch_runs_requested_stages_without_device_for_core(tmp_path, monkeypatch, suite, stages):
     seen = []
     for name, stage in (("check_tools", "tools"), ("prepare_device", "device"),
                         ("execute_package", "package"), ("execute_xcode", "xcode")):
         monkeypatch.setattr(runner, name, lambda *args, stage=stage: seen.append(stage) or {})
-    runner.execute_suite(make_run(tmp_path), suite, {})
+    report = {}
+    runner.execute_suite(make_run(tmp_path), suite, report)
     assert seen == stages
+    assert ("package" in report) == ("package" in stages)
+    assert ("xcode" in report) == ("xcode" in stages)
 
 
 def test_failed_xcode_command_cannot_be_overruled_by_passing_result_bundle(tmp_path, monkeypatch):
@@ -265,6 +274,7 @@ def test_failed_xcode_command_cannot_be_overruled_by_passing_result_bundle(tmp_p
     (run.artifacts / "tests.xcresult").mkdir()
     summary, cases = result_documents()
     monkeypatch.setattr(runner, "enumerate_xcode", lambda *args: set())
+    monkeypatch.setattr(runner, "refresh_ui_binaries", lambda *args: {})
 
     def command(name, args, check=True):
         run.commands.append({"returncode": 65})
@@ -290,7 +300,7 @@ def test_second_lock_owner_is_rejected_without_truncating_or_removing_lock(tmp_p
     assert lock.read_text(encoding="utf-8") == "first-owner\n"
 
 
-@pytest.mark.parametrize("suite", ["native", "smoke", "full"])
+@pytest.mark.parametrize("suite", ["native", "smoke", "ui-smoke", "full"])
 def test_missing_native_case_fails_even_when_bundle_and_summary_look_successful(suite):
     summary, tests = result_documents(suite)
     expected = {identifier for identifier, _ in runner.result_cases(tests["testNodes"])}
@@ -320,11 +330,130 @@ def test_xcode_enumeration_includes_all_native_and_selects_only_requested_ui():
         {"identifier": "RijiNativeTests/NativeTests/testNative()"}]}]}
     assert runner.xcode_inventory(native, "native") == {"RijiNativeTests/NativeTests/testNative"}
     assert len(runner.xcode_inventory(document, "smoke")) == len(runner.SMOKE_TESTS) + 1
+    assert len(runner.xcode_inventory(document, "ui-smoke")) == len(runner.SMOKE_TESTS) + 1
     assert len(runner.xcode_inventory(document, "full")) == len(runner.SMOKE_TESTS) + 2
 
 
+@pytest.mark.parametrize("count", [1, 3, 4])
+def test_smoke_partitions_are_disjoint_and_cover_the_complete_suite(count):
+    partitions = [set(runner.smoke_partition(index, count)) for index in range(1, count + 1)]
+    assert set.union(*partitions) == set(runner.SMOKE_TESTS)
+    assert sum(map(len, partitions)) == len(runner.SMOKE_TESTS)
+    assert max(map(len, partitions)) - min(map(len, partitions)) <= 1
+    assert runner.smoke_partition(1, 1) == runner.SMOKE_TESTS
+
+
+def test_ci_shard_configuration_dispatches_every_smoke_test_exactly_once():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ios.yml").read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert set(jobs) == {"core", "essential", "ui-smoke", "full"}
+    core, ui, full = (jobs[name] for name in ("core", "ui-smoke", "full"))
+    assert core["if"] == "${{ inputs.suite != 'full' }}"
+    assert ui["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke' }}"
+    assert jobs["essential"]["if"] == "${{ github.event_name != 'workflow_dispatch' || inputs.suite == 'essential' }}"
+    assert "strategy" not in jobs["essential"]
+    assert workflow["concurrency"] == {"group": "ios-${{ github.event.pull_request.number || github.ref }}",
+                                       "cancel-in-progress": True}
+    trigger = workflow.get("on", workflow.get(True))
+    assert trigger["workflow_dispatch"]["inputs"]["suite"]["default"] == "essential"
+    assert full["if"] == "${{ inputs.suite == 'full' }}"
+    assert ui["strategy"]["fail-fast"] is False
+    assert all("needs" not in job and not job.get("continue-on-error", False) for job in jobs.values())
+    for name, job in jobs.items():
+        runs = [step for step in job["steps"] if "run" in step]
+        assert len(runs) == 1 and "if" not in runs[0]
+        command = "ui-smoke --smoke-profile essential" if name == "essential" else name
+        assert f"python3 scripts/test_ios.py --suite {command}" in runs[0]["run"]
+        assert all(not step.get("continue-on-error", False) for step in job["steps"])
+        assert runs[0]["timeout-minutes"] == 55 and job["timeout-minutes"] == 60
+    assert runner.RUN_TIMEOUT_SECONDS == 50 * 60
+    indices = ui["strategy"]["matrix"]["shard"]
+    denominator = re.fullmatch(r"\$\{\{ matrix.shard \}\}/(\d+)", ui["env"]["IOS_SMOKE_SHARD"])
+    assert denominator
+    count = int(denominator[1])
+    assert indices == list(range(1, count + 1)) and count == 4
+    assert '--smoke-shard "$IOS_SMOKE_SHARD"' in next(step["run"] for step in ui["steps"] if "run" in step)
+    requested = []
+    for index in indices:
+        args, shard, tests = runner.parse_arguments(["--suite", "ui-smoke", "--smoke-shard", f"{index}/{count}"])
+        assert args.suite == "ui-smoke" and shard == (index, count)
+        requested.append(tests)
+    assert list(map(len, requested)) == [11, 10, 10, 10]
+    assert set().union(*map(set, requested)) == set(runner.SMOKE_TESTS)
+    assert sum(map(len, requested)) == len(runner.SMOKE_TESTS)
+
+
+def test_essential_profile_selects_exact_six_existing_flows_without_sharding():
+    args, shard, selected = runner.parse_arguments(["--suite", "ui-smoke", "--smoke-profile", "essential"])
+    assert args.smoke_profile == "essential" and shard == (1, 1)
+    assert tuple(name.rsplit("/", 1)[1] for name in selected) == (
+        "testOriginalHomeManualEditingSavesAndColdReopensExactSource",
+        "testMobileMentorDraftColdRecoveryReplyAndMemoryCorrection",
+        "testMobilePrivateAndGroupSendKeepInputFocusForFollowingDraft",
+        "testMobileMemoryOverviewThemeEvidenceCorrectionAndInvalidation",
+        "testApprovedSettingsGroupsKeepDiaryAndRecoveryRoutesReachable",
+        "testMobileManagedInstallationConnectsWithoutLeavingFourPeerTabs",
+    )
+    assert len(set(selected)) == 6 and set(selected) < set(runner.SMOKE_TESTS)
+    assert runner.parse_arguments([])[2] == runner.SMOKE_TESTS
+
+
+@pytest.mark.parametrize("index", [1, 2, 3, 4, "essential"])
+@pytest.mark.parametrize("suite", ["smoke", "ui-smoke"])
+def test_shard_arguments_inventory_and_result_audit_agree(tmp_path, index, suite):
+    run = make_run(tmp_path)
+    run.smoke_tests = runner.ESSENTIAL_TESTS if index == "essential" else runner.smoke_partition(index, 4)
+    args = runner.xcode_arguments(run, suite, UDID)
+    selected = {arg.removeprefix("-only-testing:") for arg in args
+                if arg.startswith("-only-testing:RijiUITests/")}
+    assert selected == set(run.smoke_tests)
+    assert "-only-testing:RijiNativeTests" in args
+    expected = runner.xcode_inventory(enumeration(), suite, run.smoke_tests)
+    assert expected == selected | {"RijiNativeTests/NativeTests/testNative"}
+    summary, results = result_documents()
+    ui = results["testNodes"][1]["children"]
+    results["testNodes"][1]["children"] = [case for case in ui
+        if "RijiUITests/" + case["nodeIdentifier"].removesuffix("()") in selected]
+    summary.update(passedTests=len(expected), totalTestCount=len(expected))
+    assert runner.audit_xcode(summary, results, suite, UDID, expected)["passed"] == len(expected)
+    results["testNodes"][1]["children"].pop()
+    summary.update(passedTests=len(expected) - 1, totalTestCount=len(expected) - 1)
+    with pytest.raises(runner.RunnerError, match="smoke tests are missing"):
+        runner.audit_xcode(summary, results, suite, UDID, expected)
+
+
+@pytest.mark.parametrize("suite", ["smoke", "ui-smoke"])
+@pytest.mark.parametrize("profile", ["complete", "essential"])
+def test_shard_still_requires_discovery_of_the_entire_smoke_suite(suite, profile):
+    document = enumeration()
+    selected = runner.ESSENTIAL_TESTS if profile == "essential" else runner.smoke_partition(1, 4)
+    missing = next(test for test in runner.SMOKE_TESTS if test not in selected)
+    document["values"][0]["enabledTests"] = [test for test in document["values"][0]["enabledTests"]
+        if test["identifier"] != missing + "()"]
+    with pytest.raises(runner.RunnerError, match="missing from Xcode discovery"):
+        runner.xcode_inventory(document, suite, selected)
+
+
+@pytest.mark.parametrize("args", [["--smoke-shard", "0/3"], ["--smoke-shard", "4/3"],
+    ["--smoke-shard", "1/999"], ["--smoke-shard", "invalid"],
+    ["--suite", "ui-smoke", "--smoke-shard", "0/4"],
+    ["--suite", "ui-smoke", "--smoke-shard", "5/4"],
+    ["--suite", "full", "--smoke-shard", "1/3"], ["--suite", "native", "--smoke-shard", "1/3"],
+    ["--suite", "core", "--smoke-shard", "1/3"],
+    ["--suite", "ui-smoke", "--smoke-profile", "essential", "--smoke-shard", "1/1"],
+    ["--suite", "smoke", "--smoke-profile", "essential"],
+    ["--suite", "full", "--smoke-profile", "essential"],
+    ["--suite", "native", "--smoke-profile", "essential"],
+    ["--suite", "core", "--smoke-profile", "essential"]])
+def test_invalid_shard_is_rejected_before_any_tool_runs(args):
+    with pytest.raises(SystemExit) as stopped:
+        runner.main(args)
+    assert stopped.value.code == 2
+
+
 @pytest.mark.parametrize("mutation", ["error", "empty", "disabled", "missing-smoke", "duplicate"])
-def test_xcode_enumeration_fails_closed(mutation):
+@pytest.mark.parametrize("suite", ["smoke", "ui-smoke"])
+def test_xcode_enumeration_fails_closed(mutation, suite):
     document = enumeration()
     if mutation == "error":
         document["errors"] = ["synthetic error"]
@@ -337,7 +466,7 @@ def test_xcode_enumeration_fails_closed(mutation):
     else:
         document["values"][0]["enabledTests"] *= 2
     with pytest.raises(runner.RunnerError):
-        runner.xcode_inventory(document, "smoke")
+        runner.xcode_inventory(document, suite)
 
 
 
@@ -347,7 +476,10 @@ def test_swift_suite_teardown_failure_is_not_a_pass():
         runner.audit_package(output + "Test Suite 'CoreTests' failed at timestamp.\n", expected)
 
 
-def test_default_main_retains_failure_summary_without_running_real_tools(tmp_path, monkeypatch):
+@pytest.mark.parametrize("argv,suite,shard", [([], "smoke", (1, 1)),
+    (["--suite", "ui-smoke", "--smoke-shard", "2/4"], "ui-smoke", (2, 4)),
+    (["--suite", "ui-smoke", "--smoke-profile", "essential"], "ui-smoke", (1, 1))])
+def test_main_retains_suite_and_shard_failure_summary_without_real_tools(tmp_path, monkeypatch, argv, suite, shard):
     from contextlib import nullcontext
 
     seed_sources(tmp_path)
@@ -361,14 +493,19 @@ def test_default_main_retains_failure_summary_without_running_real_tools(tmp_pat
         raise runner.RunnerError("synthetic missing Xcode")
 
     monkeypatch.setattr(runner, "execute_suite", failure)
-    assert runner.main([]) == 1
-    assert seen == ["smoke"]
+    assert runner.main(argv) == 1
+    assert seen == [suite]
     artifacts = list((tmp_path / "output/ios-tests").glob("*/summary.json"))
     assert len(artifacts) == 1
     result = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert result["status"] == "failed"
     assert result["error"] == "synthetic missing Xcode"
-    assert result["smoke_tests"] == list(runner.SMOKE_TESTS)
+    assert result["suite"] == suite
+    profile = "essential" if "essential" in argv else "complete"
+    assert result["smoke_profile"] == profile
+    selected = runner.ESSENTIAL_TESTS if profile == "essential" else runner.smoke_partition(*shard)
+    assert result["smoke_tests"] == list(selected)
+    assert result["smoke_shard"] == {"index": shard[0], "count": shard[1]}
 
 
 @pytest.mark.parametrize("unknown", [
@@ -443,6 +580,62 @@ def test_whole_run_deadline_bounds_a_longer_stage(tmp_path, monkeypatch):
         run.command("delay", [sys.executable, "-c", "import time; time.sleep(10)"])
     assert run.commands[-1]["status"] == "timed_out"
     assert run.commands[-1]["cleanup"]["stopped"]
+
+
+@pytest.mark.parametrize("scenario", [
+    ("swift-discovery", ["synthetic-swift", "test", "list"], 360, 900),
+    ("xcode-discovery", ["synthetic-xcodebuild", "test", "-enumerate-tests"], 660, 900),
+    ("boot-status", ["synthetic-simctl", "bootstatus", UDID, "-b"], 210, 300),
+    ("boot-status", ["synthetic-simctl", "bootstatus", UDID, "-b"], 330, 300),
+    ("ui-boot-status", ["synthetic-simctl", "bootstatus", UDID, "-b"], 210, 180),
+])
+@pytest.mark.parametrize("whole_run_expires", [False, True])
+def test_stage_budgets_preserve_whole_run_deadline_and_owned_cleanup(
+        tmp_path, monkeypatch, scenario, whole_run_expires):
+    stage, args, completion_seconds, stage_seconds = scenario
+    elapsed = [0.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: elapsed[0])
+
+    class TimedStage:
+        pid = 12345
+        returncode = None
+
+        def wait(self, timeout):
+            if self.returncode is not None:
+                return self.returncode
+            elapsed[0] += timeout
+            if elapsed[0] >= completion_seconds:
+                self.returncode = 0
+                return 0
+            raise subprocess.TimeoutExpired("synthetic stage", timeout)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -signal.SIGTERM
+
+    process = TimedStage()
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: process)
+    run = make_run(tmp_path)
+    deadline = min(completion_seconds, stage_seconds) - 30 if whole_run_expires else stage_seconds
+    if whole_run_expires:
+        run.control.deadline = elapsed[0] + deadline
+    if whole_run_expires or completion_seconds > stage_seconds:
+        reason = "whole-run" if whole_run_expires else "stage deadline"
+        with pytest.raises(runner.RunnerTimeout, match=reason):
+            run.command(stage, args)
+        assert elapsed[0] == deadline
+        assert run.commands[-1]["status"] == "timed_out"
+        assert run.commands[-1]["cleanup"]["stopped"]
+        assert run.commands[-1]["cleanup"]["actions"] == ["terminate"]
+        assert run.commands[-1]["returncode"] == -signal.SIGTERM
+    else:
+        run.command(stage, args)
+        assert elapsed[0] == completion_seconds
+        assert run.commands[-1]["status"] == "passed"
+        assert "cleanup" not in run.commands[-1]
+    assert run.commands[-1]["timeout_seconds"] == stage_seconds
 
 
 def seed_sources(root):
@@ -589,3 +782,229 @@ def test_child_keeps_runner_lock_after_owner_dies_until_child_exits(tmp_path):
         if owner.poll() is None:
             owner.kill()
         owner.wait(timeout=3)
+
+
+@pytest.fixture
+def ui_binary_environment(tmp_path, monkeypatch):
+    run = make_run(tmp_path)
+    run.cache.mkdir()
+    lock = (run.cache / "runner.lock").open("w+")
+    lock.write(str(os.getpid()) + "\n")
+    lock.flush()
+    run.lock_fd = lock.fileno()
+    data = tmp_path / "Devices" / UDID / "data"
+    data.mkdir(parents=True)
+    sentinel = data / "synthetic-retained.txt"
+    sentinel.write_text("keep synthetic fixture data")
+    actual = device(dataPath=str(data))
+    devices = {"devices": {RUNTIME: [actual]}}
+    choice = {"device": device(), "runtime": {"identifier": RUNTIME}, "type": {"identifier": TYPE}}
+    env = SimpleNamespace(run=run, choice=choice, devices=devices, calls=[], data=data,
+                          products=run.cache / "xcode/Build/Products/Debug-iphonesimulator",
+                          fail_install=False, corrupt_install=False, container_override=None)
+    for name, identifier, executables in runner.UI_BUNDLES:
+        bundle = env.products / name
+        bundle.mkdir(parents=True)
+        (bundle / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": identifier, "CFBundleExecutable": executables[0]}))
+        for executable in executables:
+            code = bundle / executable
+            code.parent.mkdir(parents=True, exist_ok=True)
+            code.write_bytes(("synthetic code: " + executable).encode())
+        (bundle / (executables[0] + ".debug.dylib")).write_bytes(b"synthetic debug code")
+    def command(name, args, check=True):
+        env.calls.append((name, args))
+        if args[2] == "list":
+            return json.dumps(env.devices)
+        if args[2] == "install":
+            if env.fail_install:
+                raise runner.RunnerError("synthetic installation failure")
+            source = Path(args[4])
+            target = data / "Containers/Bundle/Application" / source.stem / source.name
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            if env.corrupt_install:
+                (target / ("Riji" if source.name == "Riji.app" else "RijiUITests-Runner")).write_bytes(b"stale")
+        if args[2] == "get_app_container":
+            specification = next(item for item in runner.UI_BUNDLES if item[1] == args[4])
+            name = specification[0]
+            return env.container_override or str(data / "Containers/Bundle/Application" / Path(name).stem / name)
+        return ""
+
+    monkeypatch.setattr(run, "command", command)
+    try:
+        yield env
+    finally:
+        lock.close()
+
+
+def test_ui_refresh_restarts_only_owned_device_and_preserves_synthetic_data(ui_binary_environment):
+    env = ui_binary_environment
+    receipt = runner.refresh_ui_binaries(env.run, env.choice)
+    assert all(item["matches"] for item in receipt.values())
+    operations = [args[2] for _, args in env.calls]
+    assert operations == ["list", "shutdown", "boot", "bootstatus", "install", "install",
+                          "list", "get_app_container", "get_app_container"]
+    assert all(args[3] == UDID for _, args in env.calls if args[2] != "list")
+    assert (env.data / "synthetic-retained.txt").read_text() == "keep synthetic fixture data"
+    assert not {"erase", "uninstall", "delete"}.intersection(operations)
+    raw = (env.run.artifacts / "ui-binaries-before.json").read_text()
+    assert str(env.data) not in raw and str(env.products) not in raw
+    assert any(".debug.dylib" in name for entry in receipt.values() for name in entry["built"])
+
+
+@pytest.mark.parametrize("change", ["name", "udid", "runtime", "type", "available", "state", "duplicate", "data"])
+def test_ui_refresh_rejects_changed_device_before_mutation(ui_binary_environment, change):
+    env = ui_binary_environment
+    item = env.devices["devices"][RUNTIME][0]
+    updates = {"name": {"name": "Riji Development iPhone"}, "udid": {"udid": "other"},
+               "type": {"deviceTypeIdentifier": "other"}, "available": {"isAvailable": False},
+               "state": {"state": "Booting"}, "data": {"dataPath": "relative/data"}}
+    if change == "runtime":
+        env.devices["devices"]["other"] = env.devices["devices"].pop(RUNTIME)
+    elif change == "duplicate":
+        env.devices["devices"][RUNTIME].append(device(udid="duplicate"))
+    else:
+        item.update(updates[change])
+    with pytest.raises(runner.RunnerError):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert all(args[2] == "list" for _, args in env.calls)
+
+
+def test_ui_refresh_requires_current_lock_before_any_tool(ui_binary_environment):
+    env = ui_binary_environment
+    env.run.lock_fd = None
+    with pytest.raises(runner.RunnerError, match="runner lock"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert not env.calls
+
+
+@pytest.mark.parametrize("fault", ["missing", "identity", "executable"])
+def test_ui_refresh_verifies_built_products_before_restart(ui_binary_environment, fault):
+    env = ui_binary_environment
+    bundle = env.products / "Riji.app"
+    if fault == "missing":
+        (bundle / "Riji").unlink()
+    else:
+        info = plistlib.loads((bundle / "Info.plist").read_bytes())
+        info["CFBundleIdentifier" if fault == "identity" else "CFBundleExecutable"] = "unexpected"
+        (bundle / "Info.plist").write_bytes(plistlib.dumps(info))
+    with pytest.raises(runner.RunnerError, match="UI binary bundle"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert all(args[2] == "list" for _, args in env.calls)
+
+
+def test_ui_refresh_install_failure_is_not_swallowed(ui_binary_environment):
+    env = ui_binary_environment
+    env.fail_install = True
+    with pytest.raises(runner.RunnerError, match="installation failure"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert env.calls[-1][1][2] == "install"
+
+
+def test_ui_refresh_rejects_installed_binary_mismatch_and_retains_receipt(ui_binary_environment):
+    env = ui_binary_environment
+    env.corrupt_install = True
+    with pytest.raises(runner.RunnerError, match="hashes do not match"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    receipt = json.loads((env.run.artifacts / "ui-binaries-before.json").read_text())
+    assert not any(item["matches"] for item in receipt.values())
+
+
+@pytest.mark.parametrize("location", ["Dead", "other-device", "relative"])
+def test_ui_refresh_rejects_unowned_or_stale_container(ui_binary_environment, location):
+    env = ui_binary_environment
+    paths = {"Dead": env.data / "Library/Caches/Dead/Riji.app",
+             "other-device": env.data.parent.parent / "other/data/Containers/Bundle/Application/id/Riji.app",
+             "relative": Path("relative/Riji.app")}
+    env.container_override = str(paths[location])
+    with pytest.raises(runner.RunnerError, match="outside the selected device"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+
+
+def test_ui_post_receipt_resolves_current_container_after_relocation(ui_binary_environment):
+    env = ui_binary_environment
+    before = runner.refresh_ui_binaries(env.run, env.choice)
+    application = env.data / "Containers/Bundle/Application"
+    for name, _, _ in runner.UI_BUNDLES:
+        source = application / Path(name).stem / name
+        destination = application / (Path(name).stem + "-new") / name
+        destination.parent.mkdir()
+        source.rename(destination)
+    original = env.run.command
+
+    def relocated(name, args, check=True):
+        result = original(name, args, check)
+        return result.replace("/Riji/", "/Riji-new/").replace("/RijiUITests-Runner/", "/RijiUITests-Runner-new/") if args[2] == "get_app_container" else result
+
+    env.run.command = relocated
+    assert runner.ui_binary_receipt(env.run, env.choice, "after") == before
+
+
+@pytest.mark.parametrize("suite", ["native", "smoke", "ui-smoke", "full"])
+def test_execute_xcode_refreshes_only_ui_suites_and_preserves_test_command(tmp_path, monkeypatch, suite):
+    run = make_run(tmp_path)
+    (run.artifacts / "tests.xcresult").mkdir()
+    summary, cases = result_documents(suite)
+    expected = {node["name"] + "/" + case["nodeIdentifier"].removesuffix("()")
+                for node in cases["testNodes"] for case in node["children"]}
+    stages = []
+    monkeypatch.setattr(runner, "enumerate_xcode", lambda *args: stages.append("enumerate") or expected)
+    monkeypatch.setattr(runner, "refresh_ui_binaries", lambda *args: stages.append("refresh") or {"sha": "same"})
+    monkeypatch.setattr(runner, "ui_binary_receipt", lambda *args: stages.append("verify") or {"sha": "same"})
+
+    def command(name, args, check=True):
+        stages.append(name)
+        assert "test" in args and "test-without-building" not in args
+        run.commands.append({"returncode": 0})
+        return ""
+
+    monkeypatch.setattr(run, "command", command)
+    monkeypatch.setattr(run, "json_command", lambda name, args: summary if name == "xcode-summary" else cases)
+    assert runner.execute_xcode(run, suite, {"device": device()})["passed"] == len(expected)
+    assert stages == (["enumerate", "xcode-tests"] if suite == "native"
+                      else ["enumerate", "refresh", "xcode-tests", "verify"])
+    if suite != "native":
+        monkeypatch.setattr(runner, "ui_binary_receipt", lambda *args: {"sha": "changed"})
+        with pytest.raises(runner.RunnerError, match="products changed"):
+            runner.execute_xcode(run, suite, {"device": device()})
+
+
+@pytest.mark.parametrize("fault", ["missing", "inode", "pid"])
+def test_ui_refresh_rejects_changed_lock_before_tools(ui_binary_environment, fault):
+    env = ui_binary_environment
+    path = env.run.cache / "runner.lock"
+    if fault == "pid":
+        path.write_text("different-owner\n")
+    else:
+        path.unlink()
+        if fault == "inode":
+            path.write_text(str(os.getpid()) + "\n")
+    with pytest.raises(runner.RunnerError, match="runner lock"):
+        runner.refresh_ui_binaries(env.run, env.choice)
+    assert not env.calls
+
+
+@pytest.mark.parametrize("side,fault", [("built", "missing"), ("installed", "missing"),
+                                        ("built", "changed"), ("installed", "changed")])
+def test_ui_debug_dylib_is_part_of_binary_identity(ui_binary_environment, side, fault):
+    env = ui_binary_environment
+    runner.refresh_ui_binaries(env.run, env.choice)
+    bundle = (env.products / "Riji.app" if side == "built" else
+              env.data / "Containers/Bundle/Application/Riji/Riji.app")
+    path = bundle / "Riji.debug.dylib"
+    if fault == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"different synthetic Debug code")
+    with pytest.raises(runner.RunnerError, match="hashes do not match"):
+        runner.ui_binary_receipt(env.run, env.choice, "after")
+
+
+def test_ui_matching_new_products_do_not_equal_pre_execution_receipt(ui_binary_environment):
+    env = ui_binary_environment
+    before = runner.refresh_ui_binaries(env.run, env.choice)
+    for bundle in (env.products / "Riji.app", env.data / "Containers/Bundle/Application/Riji/Riji.app"):
+        (bundle / "Riji.debug.dylib").write_bytes(b"replacement synthetic code")
+    after = runner.ui_binary_receipt(env.run, env.choice, "after")
+    assert after["com.riji.local"]["matches"]
+    assert after != before

@@ -9,35 +9,107 @@ on:
       suite:
         description: iOS test suite
         required: true
-        default: smoke
+        default: essential
         type: choice
         options:
+          - essential
           - smoke
           - full
 
 permissions:
   contents: read
 
+concurrency:
+  group: ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+
 jobs:
-  ios:
-    runs-on: macos-15
+  core:
+    if: ${{ inputs.suite != 'full' }}
+    runs-on: macos-26
     timeout-minutes: 60
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      IOS_TEST_SUITE: ${{ inputs.suite || 'smoke' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run isolated iOS regression
+      - name: Run complete Swift package regression
         timeout-minutes: 55
-        run: python3 scripts/test_ios.py --suite "$IOS_TEST_SUITE"
+        run: python3 scripts/test_ios.py --suite core
+      - name: Retain logs and inventories
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-core
+          path: output/ios-tests/
+          if-no-files-found: error
+          retention-days: 14
+  essential:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.suite == 'essential' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run complete Native tests and six essential UI journeys
+        timeout-minutes: 55
+        run: python3 scripts/test_ios.py --suite ui-smoke --smoke-profile essential
+      - name: Retain daily checks, not complete acceptance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-essential
+          path: output/ios-tests/
+          if-no-files-found: error
+          retention-days: 14
+  ui-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      IOS_SMOKE_SHARD: ${{ matrix.shard }}/4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run complete Native tests and selected UI smoke shard
+        timeout-minutes: 55
+        run: python3 scripts/test_ios.py --suite ui-smoke --smoke-shard "$IOS_SMOKE_SHARD"
       - name: Retain logs, inventories and result bundles
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-ui-smoke-${{ matrix.shard }}
+          path: output/ios-tests/
+          if-no-files-found: error
+          retention-days: 14
+  full:
+    if: ${{ inputs.suite == 'full' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run complete iOS regression
+        timeout-minutes: 55
+        run: python3 scripts/test_ios.py --suite full
+      - name: Retain logs, inventories and result bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-full
           path: output/ios-tests/
           if-no-files-found: error
           retention-days: 14

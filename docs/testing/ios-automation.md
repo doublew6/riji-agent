@@ -9,7 +9,19 @@ python3 scripts/test_ios.py
 默认执行 `smoke`。`DEVELOPER_DIR` 接受实际 Xcode `.app` 路径或其 `Contents/Developer` 路径；runner 将前者归一化后使用：
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer python3 scripts/test_ios.py --suite full
+DEVELOPER_DIR=/Applications/Xcode_26.5.app/Contents/Developer python3 scripts/test_ios.py --suite full
+```
+
+需要分批运行 smoke 时，可指定 `--smoke-shard 1/4`、`2/4`、`3/4`、`4/4`。每片执行完整 package 和 Native 测试，并按排序后的 UI 测试标识轮流分配到各片；四片分别执行 11/10/10/10 条 UI，无重叠、合计覆盖全部 41 条。单片通过只表示该片通过，四片均通过才能代表完整 smoke。分片参数不适用于 `core`、`native` 或 `full`；不传参数仍执行完整 smoke。
+
+日常 PR/main CI 使用独立 `core` 与一个 `essential` job：全量 Native 只执行一次，加六条固定 UI 流程。它用于日常反馈，不代表完整 smoke 或发布验收。完整四片 `ui-smoke` 与 `full` 保留为手动运行；未选 UI 没有删除，真实失败仍返回失败。本机默认 `smoke` 与默认 `--smoke-profile complete` 的范围保持不变。可分别运行：
+
+```sh
+python3 scripts/test_ios.py --suite core
+python3 scripts/test_ios.py --suite ui-smoke --smoke-profile essential
+# Manual complete smoke:
+python3 scripts/test_ios.py --suite ui-smoke --smoke-shard 1/4
+# Repeat ui-smoke with 2/4, 3/4 and 4/4 for complete UI coverage.
 ```
 
 | Suite | 实际执行范围 |
@@ -17,13 +29,19 @@ DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer python3 scripts/te
 | `core` | 全量 Swift package：Core、State、Probe support，不需要 Simulator |
 | `native` | 全量 hostless Native tests |
 | `smoke`（默认） | 全量 package + Native + 41 条 UI journeys（清单以 runner 为准） |
+| `ui-smoke` | 全量 Native + 41 条 UI journeys，或 `--smoke-shard` 指定的 UI 子集；不执行 package |
+| `ui-smoke --smoke-profile essential` | 全量 Native + 六条固定 UI；不可分片，不是完整验收 |
 | `full` | 全量 package + Native + 全量 UI |
+
+essential 六条固定 UI 覆盖原目录编辑及冷启动、导师草稿恢复与记忆校正、私聊/群聊连续输入、记忆证据与失效、设置分组及恢复入口、安装连接与四个主标签。精确方法名以 runner 的 `ESSENTIAL_METHODS` 为准。该 profile 仅适用于 `ui-smoke`，不能与 `--smoke-shard` 合用。即便只执行六条，discovery 仍必须发现全部 41 条 smoke 与完整 Native，执行结果按本次精确选择核对，不能跳过或漏测。
+
+未解决的偶发菜单自动化问题、已完成的修复和恢复排查入口记录在 [Issue #63](https://github.com/doublew6/riji-agent/issues/63)。按用户决定暂缓深查；缩小日常测试范围不代表该问题已修复，也不替代完整发布验收。
 
 `core` 的 Probe support 是合成文件与协议测试，不执行真实 iCloud probe。命令始终执行测试；缺工具、缺运行时、工具失败、零执行、跳过或清单不符均返回非零，不降级成 build。
 
 ## 隔离与重复运行
 
-runner 仅使用名为 **Riji Automated Tests** 的专用 iPhone Simulator。首次运行从已安装且可用的 iOS runtime 中选最新的兼容 iPhone 类型；已有专用设备则复用其 runtime，不自动升级。发现同名重复设备、不可用设备、非兼容 iPhone 或正在切换状态的设备时停止，让操作者在 Xcode 中核对。它不 erase、uninstall、克隆、清理或关闭任何 Simulator，不使用 **Riji Development iPhone**。
+runner 仅使用名为 **Riji Automated Tests** 的专用 iPhone Simulator。首次运行从已安装且可用的 iOS runtime 中选最新的兼容 iPhone 类型；已有专用设备则复用其 runtime，不自动升级。发现同名重复设备、不可用设备、非兼容 iPhone 或正在切换状态的设备时停止，让操作者在 Xcode 中核对。它不 erase、uninstall、克隆或清理任何 Simulator，不使用 **Riji Development iPhone**。包含 UI 的 suite 在枚举完成后，重新核对当前锁与专用设备的名称、UDID、runtime 和机型，只重启这台专用设备以释放枚举加载的测试 runner；不重启其他设备或共享 Simulator 服务，保留合成测试数据。随后明确安装本轮构建的 App 和 UI runner，并在测试前后分别重新查询安装位置、核对核心二进制（含 Debug dylib）的 SHA-256。设备归属、安装或哈希核对失败即停止验收；`native` 与 `core` 不新增此重启步骤。
 
 所有 Xcode 枚举与测试使用专用设备的明确 UDID，关闭并行测试，只允许一个测试 Simulator/worker。测试方法使用 UUID namespace、合成 Markdown/音频及注入的 mobile transport；不连接真实 Air、AI、Feishu 或原 vault，也不访问手机。runner 不把继承的 `RIJI_*` 或 `SIMCTL_CHILD_*` 配置传给工具。真实 iCloud 目录授权、物理手机输入/听写、实际连接/模型和 Air 部署属于[个人 MVP 独立验收](ios-personal-mvp-acceptance.md)。
 
@@ -31,7 +49,9 @@ runner 仅使用名为 **Riji Automated Tests** 的专用 iPhone Simulator。首
 
 ## 执行期限与中断
 
-每个子命令都有固定期限，无需额外参数：普通工具 2 分钟、Simulator boot status 3 分钟、Swift discovery 5 分钟、Swift tests 15 分钟、Xcode discovery 10 分钟、Xcode tests 40 分钟。整轮执行另有 50 分钟上限，先到的期限生效。
+每个子命令都有固定期限，无需额外参数：普通工具 2 分钟、Simulator 初始 boot status 5 分钟、枚举后重启的 boot status 3 分钟、Swift discovery 15 分钟、Swift tests 15 分钟、Xcode discovery 15 分钟、Xcode tests 40 分钟。`swift test list` 在首次运行时也需要编译 package，因此 discovery 使用与 Swift tests 相同的预算。Xcode 枚举同样包含冷构建和测试 bundle 加载，预留 15 分钟应对耗时较长的运行。整轮执行另有 50 分钟上限，先到的期限生效；阶段预算增加不改变中断清理和逐项测试验收。
+
+初始启动单独预留 5 分钟，用于新设备的冷启动和数据迁移。近期七组 CI 的 28 次初始启动中，24 次成功用时 65.528–173.507 秒，4 次触及旧 180 秒期限；24 次枚举后重启均在 30.030–78.585 秒完成。此调整只增加冷启动的有限余量，不能证明或修复 Simulator 卡死；不会自动重试，也不放宽测试用例期限。虚拟时钟回归通过真实 `Run.command` 路径核对初始启动跨越 180 秒仍可完成、超过 300 秒失败、枚举后重启仍在 180 秒失败，以及整轮期限先到时仍清理直属子进程。
 
 期限到达或收到 SIGTERM/SIGINT 后，runner 将当前命令记录为 `timed_out` / `interrupted`，最终 `summary.json` 为 `failed`。只对自己启动、仍由 `Popen` 持有的直属子进程发送 terminate，等待 5 秒后仍未退出才对同一子进程发送 kill，再有界等待 5 秒；不会向进程组、其他任务或 Simulator 服务发信号。命令证据保留 PID、开始/结束时间、期限、退出码及清理结果，已有日志和部分 `.xcresult` 不删除。普通非零退出和启动失败也保留失败记录。
 
@@ -40,6 +60,8 @@ SIGKILL、主机崩溃或平台强制取消无法由 Python 捕获，可能留�
 ## Smoke 的具体方法
 
 2026-10-16 已将本轮新增的三个回归登记进默认 smoke 与 CI：群名取消及未修改禁用保存、消息主动多选及取消、私聊/群发送后直接继续输入。对应方法为 `testMobileGroupNameEditorCancelsWithoutChangingNameAndDisablesUnchangedSave`、`testMobileGroupMessageSelectionOnlyAppearsAfterExplicitActionAndCanCancel`、`testMobilePrivateAndGroupSendKeepInputFocusForFollowingDraft`。本轮聚焦执行与完整 smoke 的结果分别记录，不将登记视为远程 CI 已通过。
+
+`testOrdinaryBodyConflictFragmentChoiceEditRecoveryAndSaveExactBytes` 在加载并记录原文后，通过显式启用的一次性 fixture 按钮准备合成冲突。该入口仅限 DEBUG Simulator、有效 UUID namespace、原目录/目录浏览/外部刷新合成场景且未启用 mobile fixture；使用后移除，冷重开前移除启用开关。它复用原有结束输入与原子写入方法，由正常刷新发现冲突，保留逐段编辑、退出恢复、全部精确字节及冷启动断言。其他 smoke 继续覆盖原生冲突菜单和真实 AI 来源菜单；此调整只分离测试数据准备，不代表原生菜单派发问题已修复。
 
 | 风险路径 | `DiaryFlowTests` 方法 |
 | --- | --- |
@@ -82,11 +104,12 @@ SIGKILL、主机崩溃或平台强制取消无法由 Python 捕获，可能留�
 
 每次运行生成 `output/ios-tests/<UTC时间>-<suite>-<随机ID>/`，该目录被 Git 忽略：
 
-- `summary.json`：最终状态、环境、实际设备/runtime、各目标的执行数量；失败记录原因。
+- `summary.json`：最终状态、环境、实际设备/runtime、各目标的执行数量；`smoke` 与 `ui-smoke` 记录 `smoke_profile`（`complete` / `essential`）、分片编号、总片数和精确 UI 清单，suite 字段保留二者区别，`ui-smoke` 没有 package 结果；失败记录原因。
 - `commands.json` 与各阶段 `.log`：精确命令、PID、期限、终态、退出码及中断清理结果。stdout/stderr 直接写日志，不经过可能掩盖退出码的管道。
 - `swift-inventory.json`、`swift-tests.log` 与 `swift-results.json`：Swift 实际发现清单与逐测试 started/passed 终态。兼容 Xcode 26/27 的 XCTest 命名格式，身份保留 target/class/method，同名类和方法在不同 target 中独立计数；无法审计的 test-shaped discovery 行直接失败，不假称支持 Swift Testing。逐项比对所有目标，末尾未选择 suite 的 `Executed 0` 不会覆盖前面的真实结果。
 - `source-inputs-before.json` 与 `source-inputs-after.json`：执行前后对 runner 和 iOS Swift 源码/测试、Xcode project/shared scheme、非私有 build config、Info.plist、依赖锁定文件、asset 资源及跨语言 AI 来源 fixture 计算 SHA-256，包含未跟踪文件。新增、删除或字节变化均拒绝通过。排除缓存、生成目录、xcuserdata、隐藏配置、`*.local.*` / `*.private.*` 和 private/secrets/credentials 目录；不读取密钥或本地签名配置。这是前后内容快照，不是文件锁，也不覆盖 SDK、系统组件或排除的私人配置。
 - `xcode-inventory.json` 与 `xcode-requested.json`：完整编译后 Xcode 枚举清单与本次选定清单。枚举会加载测试 runner，因此也只在专用设备执行。
+- `ui-binaries-before.json` 与 `ui-binaries-after.json`：包含 UI 的 suite 记录 App / UI runner 的 bundle ID、相对二进制名及构建/安装 SHA-256；安装容器变化时重新查询，不沿用旧路径。测试命令成功后才生成 `after` 回执；失败轮可能只有 `before`，仍保留原始失败。前后内容也必须一致，防止执行阶段重新构建后静默采用其他字节。它核对磁盘产物与安装身份，不宣称已读取本次进程的实际动态加载路径。枚举仍执行一次，执行命令与测试清单、阶段及整轮预算保持不变。
 - `tests.xcresult`、`xcode-summary.json` 和 `xcode-cases.json`：Native/UI 实际结果、附件及每个方法。汇总与完整结果树交叉检查；任一失败、skip、expected failure、重复、缺失或非目标设备都会失败。`enumeration.xcresult` 仅用于发现，不能当测试通过证据。
 - 默认不启动 Xcode 额外的整机 Simulator 诊断收集，避免测试结束后卡在 `simctl diagnose`；测试结果包、用例日志、截图、录像和源码审计仍保留。需要系统级诊断时，针对故障设备单独采集并记录。
 
@@ -98,10 +121,20 @@ uv run pytest tests/test_ios_test_runner.py
 
 ## CI
 
-[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 执行相同的默认 smoke；手动 `workflow_dispatch` 可选 smoke/full。只申请 `contents: read`，固定 `macos-15` 和 `/Applications/Xcode_26.3.app/Contents/Developer`，job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。既有 Python workflow 保持原样。
+[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 运行 `core`（当前 659 项 Swift package）与一个 `essential`（完整 70 项 Native + 六条固定 UI），数量以实际发现清单为准。这两个日常 job 都必须成功，没有 `continue-on-error`；同 PR 或同 ref 的新运行会取消旧运行，已取消不算通过。手动 `workflow_dispatch` 默认 `essential`，也可选 `smoke`（core + 原四片 UI，分别为 11/10/10/10，每片完整 Native）或 `full`（单轮完整 package + Native + 全量 UI）。四片使用 `fail-fast: false` 保留真实结果，仍须五个 job 全部通过才能代表完整 smoke。各 job 有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名区分 `core`、`essential`、`ui-smoke-<片号>` 和 `full`，不能用日常 essential 通过代替完整验收。
 
-[GitHub 官方 macOS 15 runner image 清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md) 是 Xcode/runtime 配置依据。CI 按实际安装的兼容 runtime 选择设备；不存在时直接失败。`macos-15` 镜像仍会由 GitHub 更新，Xcode 路径变动应显式更新并验证 workflow。本机选中的 Xcode 与 CI 可以不同，实际版本写入每次证据，不能相互冒充。此 workflow 尚未推送执行，不能称为远程 CI 已通过。
+只申请 `contents: read`，固定 `macos-26` 和 `/Applications/Xcode_26.5.app/Contents/Developer`，每个 job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。各 suite 继续逐项检查发现清单、实际执行结果、零跳过和源文件前后 SHA-256；`ui-smoke` 的 discovery 仍要求全部 41 项 smoke 存在，再核对本片精确请求集合。[Python workflow](../../.github/workflows/test.yml) 按当前发布范围在 macOS 与 Linux 执行隐私扫描、smoke 和完整测试；Windows 目前不纳入运行平台验收，其服务适配器的 fake-runner 单测继续执行。
+
+2026-10-19 的[三分片运行](https://github.com/doublew6/riji-agent/actions/runs/39201422311)中，第一片在前置阶段用时约 23 分钟后触及 50 分钟整轮上限；第三片完整的群结果保存流程单项用时 7 分 18 秒，整片用时 44 分 35 秒。[随后的四分片运行](https://github.com/doublew6/riji-agent/actions/runs/39210419818)中，第四片前置阶段用时约 25.8 分钟，10 项 UI 与 69 项 Native 全部执行通过，但结果摘要读取仍被整轮截止时间中断，workflow 未通过。将重复的 package 阶段移到独立必过 `core` job 用于减少每片前置开销；用例、断言与 50 分钟上限保持不变，其他片的真实 UI 失败仍须单独修复，最终以新提交五个 job 的完整证据验收。
+
+2026-10-19 的[独立 core 与 UI 分片运行](https://github.com/doublew6/riji-agent/actions/runs/39230987613)中，第一片在 Xcode discovery 开始约 9 分 41 秒后才启动测试 runner 加载，随后触及旧 10 分钟阶段期限，尚未执行测试用例。同轮第二、第三片的 discovery 分别用时约 3 分 28 秒、7 分 45 秒。预算据此调整为 15 分钟；这反映冷构建与枚举的耗时差异，不将超时记为 UI 断言失败。虚拟时钟回归通过真实 `Run.command` 路径覆盖跨越旧 10 分钟期限的完成，以及整轮期限先到时仍中断并清理子进程。
+
+[GitHub 官方 macOS 26 arm64 runner image 清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md) 是 Xcode/runtime 配置依据。2026-10-20 核对的镜像 `20261013.0424.1` 包含 Xcode 26.5（build `17F42`）与 iOS 26.2、26.4.1、26.5 runtime。runner 新建设备时选择最高的可用兼容 iOS runtime，因此当前清单预期运行 iOS 26.5；已有同名专用设备则按原规则核验并复用。GitHub 后续更新镜像可能改变 runtime 清单，固定 Xcode 路径不等于固定 runtime，实际环境须以每轮 inventory 为准；缺少兼容组件直接失败，Xcode 路径变动须显式更新并验证 workflow。
+
+此次环境调整用于对齐本机验收的 iOS 26.5，保留全部测试、断言和门禁；本机 Xcode 27 与 CI Xcode 26.5 仍有差异。旧 iOS 26.2 的失败证据继续保留，不能把新环境通过解释为旧环境问题已修复，也不能将本机结果代替云端验收。2026-10-18 的[首次云端运行](https://github.com/doublew6/riji-agent/actions/runs/39091642713) 在 Swift discovery 的旧 5 分钟限制处超时，尚未运行测试用例；延长预算后的结果须以新运行证据为准。
 
 本次本机验证及探查记录见[2026-09-18 自动化证据](ios-automation-2026-09-18.md)。
+
+2026-10-18 的[主分支运行](https://github.com/doublew6/riji-agent/actions/runs/39092125250) 虽通过 Swift discovery，但完整 smoke 在旧 50 分钟整轮预算内只完成 25/41 条 UI 流程，其中有 4 项失败。因此分片解决执行时长，具体 UI 失败仍需修复和实跑，不能用延长预算或分片代替断言验收。手动 full 若超时仍按失败处理。
 
 圆桌和结构化记忆的电脑手动入口见[功能验收清单](ios-mentor-memory-manual.md)。这些合成演示与自动回归都不能替代 Air 部署或真机验收。

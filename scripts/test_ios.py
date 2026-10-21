@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import signal
 import subprocess
@@ -26,10 +27,14 @@ COMMAND_TIMEOUT_SECONDS = 120
 RUN_TIMEOUT_SECONDS = 50 * 60
 CHILD_STOP_GRACE_SECONDS = 5
 STAGE_TIMEOUT_SECONDS = {
-    "boot-status": 180,
-    "swift-discovery": 5 * 60,
+    # Initial boot includes data migration on a fresh CI device.
+    "boot-status": 300,
+    "ui-boot-status": 180,
+    # Listing tests also compiles the package on a fresh CI runner.
+    "swift-discovery": 15 * 60,
     "swift-tests": 15 * 60,
-    "xcode-discovery": 10 * 60,
+    # Enumeration also builds and loads the test bundles on a cold CI runner.
+    "xcode-discovery": 15 * 60,
     "xcode-tests": 40 * 60,
 }
 
@@ -79,6 +84,22 @@ SMOKE_METHODS = (
     "testMobileCorruptArchiveWarningPreservesHealthyContentAndNeverClaimsEmpty",
 )
 SMOKE_TESTS = tuple("RijiUITests/DiaryFlowTests/" + name for name in SMOKE_METHODS)
+ESSENTIAL_METHODS = (
+    "testOriginalHomeManualEditingSavesAndColdReopensExactSource",
+    "testMobileMentorDraftColdRecoveryReplyAndMemoryCorrection",
+    "testMobilePrivateAndGroupSendKeepInputFocusForFollowingDraft",
+    "testMobileMemoryOverviewThemeEvidenceCorrectionAndInvalidation",
+    "testApprovedSettingsGroupsKeepDiaryAndRecoveryRoutesReachable",
+    "testMobileManagedInstallationConnectsWithoutLeavingFourPeerTabs",
+)
+ESSENTIAL_TESTS = tuple("RijiUITests/DiaryFlowTests/" + name for name in ESSENTIAL_METHODS)
+SMOKE_SUITES = ("smoke", "ui-smoke")
+
+
+def smoke_partition(index: int, count: int) -> tuple[str, ...]:
+    if not 1 <= index <= count <= len(SMOKE_TESTS):
+        raise RunnerError("Smoke shard must satisfy 1 <= index <= count <= smoke test count.")
+    return SMOKE_TESTS if count == 1 else tuple(sorted(SMOKE_TESTS)[index - 1::count])
 
 
 class RunnerError(RuntimeError):
@@ -225,6 +246,7 @@ class Run:
     })
     commands: list = field(default_factory=list)
     control: ExecutionControl = field(default_factory=ExecutionControl)
+    smoke_tests: tuple[str, ...] = SMOKE_TESTS
 
     def command(self, name: str, args: list[str], check: bool = True) -> str:
         self.control.check()
@@ -400,8 +422,11 @@ def audit_xcode(summary: dict, tests: dict, suite: str, udid: str, expected: set
     expected_targets = {"RijiNativeTests"} if suite == "native" else {"RijiNativeTests", "RijiUITests"}
     if set(counts) != expected_targets:
         raise RunnerError("Xcode did not execute the requested test bundles.")
-    if suite == "smoke" and {item for item in identifiers if item.startswith("RijiUITests/")} != set(SMOKE_TESTS):
-        raise RunnerError("Requested smoke tests are missing or unexpected UI tests executed.")
+    if suite in SMOKE_SUITES:
+        requested_ui = {item for item in expected if item.startswith("RijiUITests/")}
+        actual_ui = {item for item in identifiers if item.startswith("RijiUITests/")}
+        if not requested_ui or not requested_ui.issubset(SMOKE_TESTS) or actual_ui != requested_ui:
+            raise RunnerError("Requested smoke tests are missing or unexpected UI tests executed.")
     if set(identifiers) != expected:
         raise RunnerError("Xcode executed inventory differs from the complete requested inventory.")
     return {"passed": len(cases), "failed": 0, "skipped": 0,
@@ -419,12 +444,12 @@ def xcode_arguments(run: Run, suite: str, udid: str) -> list[str]:
             "CODE_SIGNING_ALLOWED=NO", "test", "-only-testing:RijiNativeTests"]
     if suite == "full":
         args.append("-only-testing:RijiUITests")
-    elif suite == "smoke":
-        args.extend("-only-testing:" + test for test in SMOKE_TESTS)
+    elif suite in SMOKE_SUITES:
+        args.extend("-only-testing:" + test for test in run.smoke_tests)
     return args
 
 
-def xcode_inventory(document: dict, suite: str) -> set[str]:
+def xcode_inventory(document: dict, suite: str, smoke_tests: tuple[str, ...] = SMOKE_TESTS) -> set[str]:
     if document.get("errors") or not document.get("values"):
         raise RunnerError("Xcode test enumeration failed or returned no test plans.")
     identifiers = []
@@ -438,10 +463,13 @@ def xcode_inventory(document: dict, suite: str) -> set[str]:
     required = {"RijiNativeTests"} if suite == "native" else {"RijiNativeTests", "RijiUITests"}
     if targets != required:
         raise RunnerError("Xcode discovery did not include the requested full test bundles.")
-    if suite == "smoke" and not set(SMOKE_TESTS).issubset(identifiers):
+    if suite in SMOKE_SUITES and not set(SMOKE_TESTS).issubset(identifiers):
         raise RunnerError("Requested smoke tests are missing from Xcode discovery.")
+    if suite in SMOKE_SUITES and (not smoke_tests or not set(smoke_tests).issubset(SMOKE_TESTS)
+                                 or len(set(smoke_tests)) != len(smoke_tests)):
+        raise RunnerError("Invalid smoke shard selection.")
     return {test for test in identifiers if test.startswith("RijiNativeTests/")
-            or suite == "full" or (suite == "smoke" and test in SMOKE_TESTS)}
+            or suite == "full" or (suite in SMOKE_SUITES and test in smoke_tests)}
 
 
 def enumerate_xcode(run: Run, suite: str, udid: str) -> set[str]:
@@ -451,14 +479,109 @@ def enumerate_xcode(run: Run, suite: str, udid: str) -> set[str]:
     path = run.artifacts / "xcode-inventory.json"
     run.command("xcode-discovery", args + ["-enumerate-tests", "-test-enumeration-style", "flat",
                 "-test-enumeration-format", "json", "-test-enumeration-output-path", str(path)])
-    expected = xcode_inventory(json.loads(path.read_text(encoding="utf-8")), suite)
+    expected = xcode_inventory(json.loads(path.read_text(encoding="utf-8")), suite, run.smoke_tests)
     write_json(run.artifacts / "xcode-requested.json", sorted(expected))
     return expected
+
+
+UI_BUNDLES = (
+    ("Riji.app", "com.riji.local", ("Riji",)),
+    ("RijiUITests-Runner.app", "com.riji.local.uitests.xctrunner",
+     ("RijiUITests-Runner", "PlugIns/RijiUITests.xctest/RijiUITests")),
+)
+
+
+def owned_ui_device(run: Run, choice: dict, phase: str) -> dict:
+    """Revalidate the locked, dedicated device before any UI refresh operation."""
+    lock = run.cache / "runner.lock"
+    try:
+        held, current = os.fstat(run.lock_fd), lock.stat()
+        locked = ((held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+                  and lock.read_text(encoding="utf-8").strip() == str(os.getpid()))
+    except (OSError, TypeError):
+        locked = False
+    if not locked:
+        raise RunnerError("UI binary refresh requires the current runner lock.")
+    udid = choice["device"]["udid"]
+    inventory = run.json_command("ui-device-" + phase, ["xcrun", "simctl", "list", "devices", "-j"])
+    matches = [(runtime, item) for runtime, group in inventory["devices"].items()
+               for item in group if item.get("name") == DEVICE_NAME or item.get("udid") == udid]
+    if len(matches) != 1:
+        raise RunnerError("UI binary refresh requires one unchanged dedicated device.")
+    runtime, device = matches[0]
+    if (device.get("udid") != udid or device.get("name") != DEVICE_NAME
+            or runtime != choice["runtime"]["identifier"]
+            or device.get("deviceTypeIdentifier") != choice["type"]["identifier"]
+            or not device.get("isAvailable") or device.get("state") != "Booted"):
+        raise RunnerError("Dedicated UI device identity or availability changed after enumeration.")
+    data = Path(device.get("dataPath", ""))
+    if not data.is_absolute() or data.name != "data" or data.parent.name != udid:
+        raise RunnerError("Dedicated UI device has no verified data directory.")
+    return device
+
+
+def ui_bundle_hashes(bundle: Path, specification: tuple) -> dict[str, str]:
+    """Capture the app/runner launchers and code, including Debug dylibs if present."""
+    _, identifier, executables = specification
+    try:
+        info = plistlib.loads((bundle / "Info.plist").read_bytes())
+        if bundle.is_symlink() or info.get("CFBundleIdentifier") != identifier:
+            raise RunnerError("UI binary bundle identity does not match the expected product.")
+        if info.get("CFBundleExecutable") != executables[0]:
+            raise RunnerError("UI binary bundle executable does not match the expected product.")
+        paths = [bundle / item for item in executables]
+        paths += [path.with_name(path.name + ".debug.dylib") for path in paths
+                  if path.with_name(path.name + ".debug.dylib").exists()]
+        hashes = {}
+        for path in paths:
+            path.resolve(strict=True).relative_to(bundle.resolve(strict=True))
+            hashes[path.relative_to(bundle).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashes
+    except (OSError, ValueError, plistlib.InvalidFileException) as error:
+        raise RunnerError("UI binary bundle is missing or cannot be verified.") from error
+
+
+def ui_binary_receipt(run: Run, choice: dict, phase: str) -> dict:
+    device = owned_ui_device(run, choice, phase)
+    products = run.cache / "xcode/Build/Products/Debug-iphonesimulator"
+    containers = Path(device["dataPath"]).resolve() / "Containers/Bundle/Application"
+    receipts = {}
+    for specification in UI_BUNDLES:
+        name, identifier, _ = specification
+        built = ui_bundle_hashes(products / name, specification)
+        raw = run.command("ui-container-" + phase + "-" + name,
+                          ["xcrun", "simctl", "get_app_container", device["udid"], identifier, "app"])
+        installed = Path(raw.strip())
+        if (len(raw.strip().splitlines()) != 1 or not installed.is_absolute()
+                or installed.name != name or installed.resolve().parent.parent != containers):
+            raise RunnerError("Installed UI binary is outside the selected device application containers.")
+        actual = ui_bundle_hashes(installed, specification)
+        receipts[identifier] = {"built": built, "installed": actual, "matches": built == actual}
+    write_json(run.artifacts / ("ui-binaries-" + phase + ".json"), receipts)
+    if not all(item["matches"] for item in receipts.values()):
+        raise RunnerError("Installed UI binary hashes do not match this run's built products.")
+    return receipts
+
+
+def refresh_ui_binaries(run: Run, choice: dict) -> dict:
+    """Release runners loaded by enumeration without erasing synthetic test data."""
+    device = owned_ui_device(run, choice, "refresh")
+    products = run.cache / "xcode/Build/Products/Debug-iphonesimulator"
+    for specification in UI_BUNDLES:
+        ui_bundle_hashes(products / specification[0], specification)
+    udid = device["udid"]
+    run.command("ui-device-shutdown", ["xcrun", "simctl", "shutdown", udid])
+    run.command("ui-device-boot", ["xcrun", "simctl", "boot", udid])
+    run.command("ui-boot-status", ["xcrun", "simctl", "bootstatus", udid, "-b"])
+    for name, _, _ in UI_BUNDLES:
+        run.command("ui-install-" + name, ["xcrun", "simctl", "install", udid, str(products / name)])
+    return ui_binary_receipt(run, choice, "before")
 
 
 def execute_xcode(run: Run, suite: str, device: dict) -> dict:
     udid = device["device"]["udid"]
     expected = enumerate_xcode(run, suite, udid)
+    binaries = refresh_ui_binaries(run, device) if suite != "native" else None
     run.command("xcode-tests", xcode_arguments(run, suite, udid), check=False)
     returncode = run.commands[-1]["returncode"]
     bundle = run.artifacts / "tests.xcresult"
@@ -469,6 +592,8 @@ def execute_xcode(run: Run, suite: str, device: dict) -> dict:
     tests = run.json_command("xcode-cases", args + ["tests", "--path", str(bundle), "--compact"])
     if returncode:
         raise RunnerError("xcode-tests failed (exit " + str(returncode) + "); result evidence retained.")
+    if binaries is not None and ui_binary_receipt(run, device, "after") != binaries:
+        raise RunnerError("UI binary products changed during test execution; results are not accepted.")
     return audit_xcode(summary, tests, suite, udid, expected)
 
 
@@ -476,7 +601,7 @@ def execute_suite(run: Run, suite: str, report: dict) -> None:
     report["environment"] = check_tools(run)
     if suite != "core":
         report["device"] = prepare_device(run)
-    if suite != "native":
+    if suite in {"core", "smoke", "full"}:
         report["package"] = execute_package(run)
         write_json(run.artifacts / "summary.json", report)
     if suite != "core":
@@ -529,17 +654,40 @@ def verified_sources(run: Run, report: dict) -> Iterator[None]:
             raise RunnerError("Source inputs changed during execution; see source-inputs manifests.")
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def parse_arguments(argv: Optional[list[str]]) -> tuple[argparse.Namespace, tuple[int, int], tuple[str, ...]]:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("core", "native", "smoke", "full"), default="smoke")
+    parser.add_argument("--suite", choices=("core", "native", "smoke", "ui-smoke", "full"), default="smoke")
+    parser.add_argument("--smoke-profile", choices=("complete", "essential"), default="complete",
+                        help="Essential selects six fixed UI journeys with complete Native tests; ui-smoke only.")
+    parser.add_argument("--smoke-shard", metavar="INDEX/COUNT",
+                        help="Partition smoke or ui-smoke UI tests; Native stays complete, package runs only in smoke.")
     args = parser.parse_args(argv)
+    if args.smoke_profile == "essential" and (args.suite != "ui-smoke" or args.smoke_shard is not None):
+        parser.error("--smoke-profile essential requires --suite ui-smoke and cannot be sharded.")
+    shard = (1, 1)
+    if args.smoke_shard is not None:
+        if args.suite not in SMOKE_SUITES or not re.fullmatch(r"[1-9][0-9]*/[1-9][0-9]*", args.smoke_shard):
+            parser.error("--smoke-shard requires --suite smoke or ui-smoke and INDEX/COUNT.")
+        index, count = map(int, args.smoke_shard.split("/"))
+        shard = (index, count)
+    try:
+        smoke_tests = ESSENTIAL_TESTS if args.smoke_profile == "essential" else smoke_partition(*shard)
+    except RunnerError as error:
+        parser.error(str(error))
+    return args, shard, smoke_tests
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args, shard, smoke_tests = parse_arguments(argv)
     root = Path(__file__).resolve().parents[1]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     artifacts = root / "output/ios-tests" / (stamp + "-" + args.suite + "-" + uuid4().hex[:8])
     artifacts.mkdir(parents=True)
     cache = Path.home() / "Library/Caches/riji-ios-automated-tests"
     report = {"suite": args.suite, "status": "running", "started_at": stamp,
-              "smoke_tests": list(SMOKE_TESTS) if args.suite == "smoke" else []}
+              "smoke_profile": args.smoke_profile if args.suite in SMOKE_SUITES else None,
+              "smoke_tests": list(smoke_tests) if args.suite in SMOKE_SUITES else [],
+              "smoke_shard": {"index": shard[0], "count": shard[1]} if args.suite in SMOKE_SUITES else None}
     write_json(artifacts / "summary.json", report)
     print("Evidence: " + str(artifacts), flush=True)
     control = ExecutionControl()
@@ -548,7 +696,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             if sys.platform != "darwin":
                 raise RunnerError("Actual iOS tests require macOS and full Xcode.")
             with runner_lock(cache / "runner.lock") as lock_fd:
-                run = Run(root, artifacts, cache, lock_fd, control=control)
+                run = Run(root, artifacts, cache, lock_fd, control=control, smoke_tests=smoke_tests)
                 with verified_sources(run, report):
                     execute_suite(run, args.suite, report)
                 control.check()

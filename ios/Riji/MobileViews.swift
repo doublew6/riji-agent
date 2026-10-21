@@ -123,10 +123,14 @@ struct MobileMentorsView: View {
         selection?.account == model.accountIdentity ? selection?.identifier : nil
     }
     @State private var creating = false
+    @State private var showingNorthStar = false
     @State private var composerFocused = false
     private var compactHeader: Bool {
         composerFocused || typeSize.isAccessibilitySize || verticalSizeClass == .compact ||
             (availableHeight > 0 && availableHeight < 580)
+    }
+    private var toolbarHeader: Bool {
+        composerFocused || (availableHeight > 0 && availableHeight < 400)
     }
     private var items: [MobileRoundtableList.Item] {
         (model.roundtableList?.items ?? []).filter { !model.unavailableRoundtableIDs.contains($0.id) }
@@ -180,16 +184,47 @@ struct MobileMentorsView: View {
                 }
                 .onChange(of: model.roundtableList?.items.map(\.id)) { selectInitialGroup() }
                 .onChange(of: model.unavailableRoundtableIDs) { selectInitialGroup() }
-                .onChange(of: model.accountIdentity) { selection = nil; composerFocused = false }
-        }.tint(MentorPalette.action).id(model.accountIdentity)
+                .onChange(of: model.accountIdentity) {
+                    selection = nil; composerFocused = false; showingNorthStar = false
+                }
+        }.tint(MentorPalette.action)
+            // Keep presentation alive when keyboard focus changes the header branch.
+            .northStarAnchorSheet(isPresented: $showingNorthStar, diary: diary)
+            .id(model.accountIdentity)
     }
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if toolbarHeader {
+            HStack(spacing: 8) {
+                NorthStarAnchorBanner(diary: diary, mobile: model, compact: true, iconOnly: true,
+                                      onOpen: { showingNorthStar = true })
+                if model.capabilities?.capabilities["mentors"] == true {
+                    ForEach(model.capabilities?.mentors ?? []) { mentor in
+                        NavigationLink { MobileChatView(model: model, diary: diary, mentor: mentor) } label: {
+                            MentorPortrait(actor: mentor.id, topCrop: 0.32).frame(width: 40, height: 44)
+                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                                .overlay(alignment: .topTrailing) {
+                                    if model.hasUnreadReply("mentor:" + mentor.id) {
+                                        Circle().fill(MentorPalette.action).frame(width: 6, height: 6)
+                                            .accessibilityHidden(true)
+                                    }
+                                }
+                        }.accessibilityLabel(mentor.name + "，私聊" + (model.hasUnreadReply("mentor:" + mentor.id) ? "，新回复" : ""))
+                            .accessibilityIdentifier("mobileMentor-" + mentor.id)
+                    }
+                }
+            }.buttonStyle(.plain).padding(.horizontal, 20)
+        } else {
+            expandedHeader
+        }
+    }
+    private var expandedHeader: some View {
         VStack(spacing: 0) {
             if model.isSyntheticEnvironment && !compactHeader {
                 Text("演示环境 · 合成回复").font(.caption).foregroundStyle(MentorPalette.secondary)
                     .accessibilityIdentifier("mobileSyntheticNotice")
             }
-            NorthStarAnchorBanner(diary: diary, mobile: model, compact: compactHeader)
+            NorthStarAnchorBanner(diary: diary, mobile: model, compact: compactHeader,
+                                  onOpen: { showingNorthStar = true })
             if model.capabilities?.capabilities["mentors"] == true { directoryStage }
         }.padding(.horizontal, 20).padding(.top, compactHeader ? 0 : 4)
     }
@@ -611,7 +646,8 @@ struct MobileMemoryDetailView: View {
             } else if model.operation(key)?.result?["deleted"] == .bool(true) { Text("这条记忆已删除，原日记仍保留。")
             } else { Button("读取当前记忆") { Task { await model.refreshMemory(id) } } }
             MobileOperationView(model: model, target: key)
-        }.navigationTitle("记忆详情").navigationBarTitleDisplayMode(.inline)
+        }.accessibilityIdentifier("mobileMemoryDetailForm")
+            .navigationTitle("记忆详情").navigationBarTitleDisplayMode(.inline)
             .task(id: model.epoch) {
                 while !Task.isCancelled, model.connected {
                     if model.operation(key)?.result?["deleted"] != .bool(true) { await model.refreshMemory(id) }
@@ -640,6 +676,11 @@ struct MobileMemoryDetailView: View {
                     }.navigationTitle("比较纠正草稿")
                         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("稍后处理") { comparison = nil } } }
                 }
+                #if DEBUG
+                .task {
+                    if candidate.submitting { await model.correctionComparisonDidAppear?(memory.id) }
+                }
+                #endif
             }
             .confirmationDialog("删除这条记忆？原日记保留；导出副本和备份不会同时擦除。", isPresented: $deletion, titleVisibility: .visible) {
                 if let memory = deleteCandidate { Button("确认删除记忆", role: .destructive) { Task { await model.memoryAction(memory, action: "delete") } } }
