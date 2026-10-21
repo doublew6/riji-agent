@@ -698,6 +698,10 @@ extension MobileClientModel {
         }
     }
     func refreshChatInbox() async {
+        #if DEBUG && targetEnvironment(simulator)
+        SyntheticTouchTrace.mark(.inboxBegin, busy: !busy.isEmpty)
+        defer { SyntheticTouchTrace.mark(.inboxEnd, busy: !busy.isEmpty) }
+        #endif
         guard let request = try? context("chat-inbox") else { return }
         do {
             let value: MobileCapabilities = try await request.3.request(["capabilities"])
@@ -706,6 +710,9 @@ extension MobileClientModel {
             guard value.apiVersion == 1, value.device.id == request.2.deviceId,
                   value.mentors.count == 4, Set(value.mentors.map(\.id)) == expected else { throw MobileError.invalidResponse }
             capabilities = value; connectionState = .connected
+            #if DEBUG && targetEnvironment(simulator)
+            SyntheticTouchTrace.mark(.inboxCapabilitiesPublished, busy: !busy.isEmpty)
+            #endif
             recordLatestReplies(Dictionary(uniqueKeysWithValues: value.mentors.compactMap { mentor in
                 mentor.lastReplyId.map { ("mentor:" + mentor.id, $0) }
             }))
@@ -714,6 +721,9 @@ extension MobileClientModel {
             _ = try list.validated()
             guard current(request, key: "chat-inbox") else { return }
             roundtableList = list
+            #if DEBUG && targetEnvironment(simulator)
+            SyntheticTouchTrace.mark(.inboxListPublished, busy: !busy.isEmpty, count: list.items.count)
+            #endif
             recordLatestReplies(Dictionary(uniqueKeysWithValues: list.items.compactMap { item in
                 item.lastReplyId.map { ("roundtable:" + item.id, $0) }
             }))

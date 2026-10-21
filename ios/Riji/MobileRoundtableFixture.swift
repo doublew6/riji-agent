@@ -158,3 +158,246 @@ actor MobileRoundtableFixture {
     }
 }
 #endif
+
+#if DEBUG && targetEnvironment(simulator)
+import UIKit
+import ObjectiveC.runtime
+import OSLog
+
+// Temporary synthetic-only menu-delivery diagnosis; never enabled by normal launches.
+@MainActor enum SyntheticTouchTrace {
+    enum Action: String, Sendable {
+        case armed, multiselectEnter, multiselectReturn, selectionChanged, selectingChanged
+        case viewAppeared, viewDisappeared, inboxBegin, inboxEnd
+        case inboxCapabilitiesPublished, inboxListPublished, roundtableRefreshBegin, roundtableRefreshEnd
+        case foregroundTickBegin, foregroundTickEnd, incompleteTouch, stopped, capacityReached
+    }
+    private struct Gesture: Encodable, Sendable {
+        let name: String
+        let state: Int
+        let enabled: Bool
+    }
+    private struct Ancestor: Encodable, Sendable {
+        let kind = "ancestor"
+        let sample: Int
+        let depth: Int
+        let name: String
+        let frame: [Double]
+        let recognizerCount: Int
+        let recognizers: [Gesture]
+    }
+    private struct TouchMetadata: Encodable, Sendable {
+        let kind = "touch"
+        let sample: Int
+        let touch: Int
+        let stage: String
+        let eventTime: Double
+        let touchTime: Double
+        let handledTime: Double
+        let phase: Int
+        let point: [Double]
+        let window: String
+        let windowFrame: [Double]
+        let windowLevel: Double
+        let keyWindow: Bool
+        let target: String
+        let ancestorCount: Int
+    }
+    private struct ActionMetadata: Encodable, Sendable {
+        let kind = "action"
+        let action: String
+        let time: Double
+        let busy: Bool?
+        let selecting: Bool?
+        let count: Int?
+        let current: Bool?
+        let available: Bool?
+    }
+    private enum Entry: Sendable {
+        case touch(TouchMetadata), ancestor(Ancestor), action(ActionMetadata)
+    }
+    struct PendingTouch {
+        let touch: UITouch
+        let sequence: Int
+        let eventTime: Double
+        let ancestors: [UIView]
+    }
+    private static var installed = false
+    private static var didArm = false
+    private static var recording = false
+    private static var deadline = 0.0
+    private static var touches: [ObjectIdentifier: Int] = [:]
+    private static var touchSequence = 0
+    private static var sampleSequence = 0
+    private static var accepted = 0
+    private static var entries: [Entry] = []
+    private static var flushScheduled = false
+    private static var watchdogScheduled = false
+    private static var observationEndScheduled = false
+    private static let output = DispatchQueue(label: "riji.synthetic-menu-delivery")
+
+    static func installIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard !installed,
+              environment["RIJI_TEST_TOUCH_TRACE"] == "host-invitation-multiselect",
+              environment["RIJI_TEST_MOBILE"] == "roundtable",
+              environment["RIJI_TEST_CONTAINER"].flatMap(UUID.init(uuidString:)) != nil,
+              environment["RIJI_TEST_ORIGINAL_VAULT"] == nil,
+              let original = class_getInstanceMethod(UIWindow.self, #selector(UIWindow.sendEvent(_:))),
+              let trace = class_getInstanceMethod(UIWindow.self, #selector(UIWindow.riji_traceSyntheticMenu(_:))) else { return }
+        method_exchangeImplementations(original, trace)
+        installed = true
+    }
+
+    static func arm() {
+        guard installed, !didArm else { return }
+        didArm = true; recording = true
+        deadline = ProcessInfo.processInfo.systemUptime + 120
+        mark(.armed)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { stop() }
+    }
+
+    static func mark(_ action: Action, busy: Bool? = nil, selecting: Bool? = nil,
+                     count: Int? = nil, current: Bool? = nil, available: Bool? = nil) {
+        guard isRecording else { return }
+        append(.action(ActionMetadata(action: action.rawValue, time: ProcessInfo.processInfo.systemUptime,
+            busy: busy, selecting: selecting, count: count, current: current, available: available)))
+        scheduleFlush()
+    }
+
+    static func finishSelectionObservation() {
+        guard isRecording, !observationEndScheduled else { return }
+        observationEndScheduled = true
+        // Observe one existing inbox period after selection without changing its schedule.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { stop() }
+    }
+
+    private static func stop() {
+        guard recording else { return }
+        append(.action(ActionMetadata(action: Action.stopped.rawValue,
+            time: ProcessInfo.processInfo.systemUptime, busy: nil, selecting: nil,
+            count: touches.count, current: nil, available: nil)))
+        recording = false
+        scheduleFlush()
+    }
+
+    private static var isRecording: Bool {
+        recording && ProcessInfo.processInfo.systemUptime <= deadline && accepted < 256
+    }
+
+    static func capture(_ event: UIEvent, in window: UIWindow) -> [PendingTouch] {
+        guard event.type == .touches, isRecording else { return [] }
+        var pending: [PendingTouch] = []
+        for touch in (event.allTouches ?? []).prefix(4) where touch.window === window {
+            guard [.began, .ended, .cancelled].contains(touch.phase) else { continue }
+            let identity = ObjectIdentifier(touch)
+            if touch.phase == .began {
+                guard touches.count < 4 else { continue }
+                touchSequence += 1; touches[identity] = touchSequence
+            }
+            guard let sequence = touches[identity] else { continue }
+            var ancestors: [UIView] = []
+            var view = touch.view
+            while let current = view, ancestors.count < 24 {
+                ancestors.append(current); view = current.superview
+            }
+            let record = PendingTouch(touch: touch, sequence: sequence, eventTime: event.timestamp, ancestors: ancestors)
+            captureMetadata(record, in: window, stage: "before")
+            pending.append(record)
+        }
+        return pending
+    }
+
+    static func finish(_ pending: [PendingTouch], in window: UIWindow) {
+        for record in pending {
+            captureMetadata(record, in: window, stage: "after")
+            if [.ended, .cancelled].contains(record.touch.phase) {
+                touches.removeValue(forKey: ObjectIdentifier(record.touch))
+            }
+        }
+        scheduleFlush()
+        scheduleWatchdog()
+    }
+
+    private static func captureMetadata(_ record: PendingTouch, in window: UIWindow, stage: String) {
+        guard isRecording else { return }
+        sampleSequence += 1
+        let sample = sampleSequence, point = record.touch.location(in: window)
+        append(.touch(TouchMetadata(sample: sample, touch: record.sequence, stage: stage,
+            eventTime: record.eventTime, touchTime: record.touch.timestamp, handledTime: ProcessInfo.processInfo.systemUptime,
+            phase: record.touch.phase.rawValue, point: [Double(point.x), Double(point.y)],
+            window: className(window), windowFrame: rect(window.frame), windowLevel: Double(window.windowLevel.rawValue),
+            keyWindow: window.isKeyWindow, target: record.touch.view.map(className) ?? "none", ancestorCount: record.ancestors.count)))
+        for (depth, view) in record.ancestors.enumerated() {
+            let recognizers = view.gestureRecognizers ?? []
+            guard !recognizers.isEmpty else { continue }
+            append(.ancestor(Ancestor(sample: sample, depth: depth, name: className(view),
+                frame: rect(view.convert(view.bounds, to: window)), recognizerCount: recognizers.count,
+                recognizers: recognizers.prefix(8).map { Gesture(name: className($0), state: $0.state.rawValue, enabled: $0.isEnabled) })))
+        }
+    }
+
+    private static func className(_ object: NSObject) -> String {
+        String(NSStringFromClass(type(of: object)).prefix(48))
+    }
+
+    private static func rect(_ value: CGRect) -> [Double] {
+        [Double(value.minX), Double(value.minY), Double(value.width), Double(value.height)]
+    }
+
+    private static func append(_ entry: Entry) {
+        guard accepted < 256 else { return }
+        accepted += 1
+        if accepted == 256 {
+            entries.append(.action(ActionMetadata(action: Action.capacityReached.rawValue,
+                time: ProcessInfo.processInfo.systemUptime, busy: nil, selecting: nil,
+                count: accepted, current: nil, available: nil)))
+            recording = false
+        } else { entries.append(entry) }
+    }
+
+    private static func scheduleWatchdog() {
+        guard isRecording, !watchdogScheduled, !touches.isEmpty else { return }
+        watchdogScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            watchdogScheduled = false
+            guard isRecording, !touches.isEmpty else { return }
+            mark(.incompleteTouch, count: touches.count)
+        }
+    }
+
+    private static func scheduleFlush() {
+        guard !flushScheduled, !entries.isEmpty else { return }
+        flushScheduled = true
+        DispatchQueue.main.async {
+            flushScheduled = false
+            let batch = entries
+            entries.removeAll(keepingCapacity: true)
+            output.async {
+                let logger = Logger(subsystem: "com.riji.ci-probe", category: "host-menu-delivery")
+                for entry in batch {
+                    let encoder = JSONEncoder()
+                    encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "infinity", negativeInfinity: "negativeInfinity", nan: "nan")
+                    let data: Data?
+                    switch entry {
+                    case .touch(let value): data = try? encoder.encode(value)
+                    case .ancestor(let value): data = try? encoder.encode(value)
+                    case .action(let value): data = try? encoder.encode(value)
+                    }
+                    let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{\"kind\":\"encodingFailed\"}"
+                    logger.notice("\(text, privacy: .public)")
+                }
+            }
+        }
+    }
+}
+
+private extension UIWindow {
+    @objc func riji_traceSyntheticMenu(_ event: UIEvent) {
+        let pending = SyntheticTouchTrace.capture(event, in: self)
+        // The exchanged selector calls the original implementation exactly once.
+        riji_traceSyntheticMenu(event)
+        SyntheticTouchTrace.finish(pending, in: self)
+    }
+}
+#endif

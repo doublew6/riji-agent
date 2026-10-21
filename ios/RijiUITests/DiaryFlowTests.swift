@@ -1381,6 +1381,7 @@ final class DiaryFlowTests: XCTestCase {
     }
 
     func testMobileRoundtableHostInvitationAndLocalSavePreview() {
+        app.launchEnvironment["RIJI_TEST_TOUCH_TRACE"] = "host-invitation-multiselect"
         launchMobileFixture("roundtable")
         let before = input.value as? String ?? ""
         app.tabBars.buttons["导师"].tap()

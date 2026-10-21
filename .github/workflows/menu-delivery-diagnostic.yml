@@ -1,0 +1,32 @@
+name: Temporary menu delivery reproduction
+
+on:
+  push:
+    branches: [codex/ci-menu-delivery-diagnostics]
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+
+jobs:
+  reproduce:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Repeat the original case, stopping at its first failure
+        timeout-minutes: 55
+        run: python3 scripts/diagnose_menu_delivery.py
+      - name: Retain diagnostic evidence, never substitute for acceptance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: menu-delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/menu-delivery-diagnostic/
+          if-no-files-found: error
+          retention-days: 14

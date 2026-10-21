@@ -607,10 +607,32 @@ struct MobileRoundtableView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled, model.roundtableID == identifier else { return }
+                #if DEBUG && targetEnvironment(simulator)
+                SyntheticTouchTrace.mark(.roundtableRefreshBegin, busy: !model.busy.isEmpty,
+                    selecting: selecting, count: selection.count, current: model.roundtableID == identifier, available: value != nil)
+                #endif
                 await model.maintainRoundtable()
+                #if DEBUG && targetEnvironment(simulator)
+                SyntheticTouchTrace.mark(.roundtableRefreshEnd, busy: !model.busy.isEmpty,
+                    selecting: selecting, count: selection.count, current: model.roundtableID == identifier, available: value != nil)
+                #endif
             }
         }
-        .onChange(of: selection) { saveReading() }
+        .onChange(of: selection) {
+            saveReading()
+            #if DEBUG && targetEnvironment(simulator)
+            SyntheticTouchTrace.mark(.selectionChanged, selecting: selecting, count: selection.count,
+                current: model.roundtableID == identifier, available: value != nil)
+            #endif
+        }
+        #if DEBUG && targetEnvironment(simulator)
+        .onChange(of: selecting) {
+            SyntheticTouchTrace.mark(.selectingChanged, selecting: selecting, count: selection.count,
+                current: model.roundtableID == identifier, available: value != nil)
+        }
+        .onAppear { SyntheticTouchTrace.mark(.viewAppeared, selecting: selecting, count: selection.count) }
+        .onDisappear { SyntheticTouchTrace.mark(.viewDisappeared, selecting: selecting, count: selection.count) }
+        #endif
         .sheet(isPresented: $invite) { NavigationStack { RoundtableInvitation(model: model, identifier: identifier) } }
         .sheet(isPresented: $background) { NavigationStack { RoundtableBackground(model: model, identifier: identifier) } }
         .sheet(isPresented: $result) { NavigationStack { RoundtableResultView(model: model, diary: diary, identifier: identifier) } }
@@ -717,7 +739,18 @@ struct MobileRoundtableView: View {
                     result = model.roundtableID == identifier && validation != nil
                 }
             }.disabled(!model.canMutateRoundtable).accessibilityIdentifier("roundtableSaveMessage-" + item.id)
-            Button("多选消息…", systemImage: "checkmark.circle") { selecting = true; toggleSelection(item) }
+            Button("多选消息…", systemImage: "checkmark.circle") {
+                #if DEBUG && targetEnvironment(simulator)
+                SyntheticTouchTrace.mark(.multiselectEnter, busy: !model.busy.isEmpty,
+                    selecting: selecting, count: selection.count, current: model.roundtableID == identifier, available: value != nil)
+                #endif
+                selecting = true; toggleSelection(item)
+                #if DEBUG && targetEnvironment(simulator)
+                SyntheticTouchTrace.mark(.multiselectReturn, busy: !model.busy.isEmpty,
+                    selecting: selecting, count: selection.count, current: model.roundtableID == identifier, available: value != nil)
+                SyntheticTouchTrace.finishSelectionObservation()
+                #endif
+            }
                 .accessibilityIdentifier("roundtableMultiSelect-" + item.id)
         }
     }
@@ -860,7 +893,12 @@ private struct RoundtableInvitation: View {
             let previousOperation = model.operation(target)?.id
             await model.roundtableCommand("start_run", conversationID: identifier)
             if let receipt = model.operation(target), receipt.id != previousOperation,
-               receipt.kind == "roundtable_command", receipt.state == "completed" { dismiss() }
+               receipt.kind == "roundtable_command", receipt.state == "completed" {
+                #if DEBUG && targetEnvironment(simulator)
+                SyntheticTouchTrace.arm()
+                #endif
+                dismiss()
+            }
         }
     }
     private var eligibleMemories: [MobileMemory] {
