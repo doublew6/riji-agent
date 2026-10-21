@@ -84,6 +84,15 @@ SMOKE_METHODS = (
     "testMobileCorruptArchiveWarningPreservesHealthyContentAndNeverClaimsEmpty",
 )
 SMOKE_TESTS = tuple("RijiUITests/DiaryFlowTests/" + name for name in SMOKE_METHODS)
+ESSENTIAL_METHODS = (
+    "testOriginalHomeManualEditingSavesAndColdReopensExactSource",
+    "testMobileMentorDraftColdRecoveryReplyAndMemoryCorrection",
+    "testMobilePrivateAndGroupSendKeepInputFocusForFollowingDraft",
+    "testMobileMemoryOverviewThemeEvidenceCorrectionAndInvalidation",
+    "testApprovedSettingsGroupsKeepDiaryAndRecoveryRoutesReachable",
+    "testMobileManagedInstallationConnectsWithoutLeavingFourPeerTabs",
+)
+ESSENTIAL_TESTS = tuple("RijiUITests/DiaryFlowTests/" + name for name in ESSENTIAL_METHODS)
 SMOKE_SUITES = ("smoke", "ui-smoke")
 
 
@@ -648,9 +657,13 @@ def verified_sources(run: Run, report: dict) -> Iterator[None]:
 def parse_arguments(argv: Optional[list[str]]) -> tuple[argparse.Namespace, tuple[int, int], tuple[str, ...]]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=("core", "native", "smoke", "ui-smoke", "full"), default="smoke")
+    parser.add_argument("--smoke-profile", choices=("complete", "essential"), default="complete",
+                        help="Essential selects six fixed UI journeys with complete Native tests; ui-smoke only.")
     parser.add_argument("--smoke-shard", metavar="INDEX/COUNT",
                         help="Partition smoke or ui-smoke UI tests; Native stays complete, package runs only in smoke.")
     args = parser.parse_args(argv)
+    if args.smoke_profile == "essential" and (args.suite != "ui-smoke" or args.smoke_shard is not None):
+        parser.error("--smoke-profile essential requires --suite ui-smoke and cannot be sharded.")
     shard = (1, 1)
     if args.smoke_shard is not None:
         if args.suite not in SMOKE_SUITES or not re.fullmatch(r"[1-9][0-9]*/[1-9][0-9]*", args.smoke_shard):
@@ -658,7 +671,7 @@ def parse_arguments(argv: Optional[list[str]]) -> tuple[argparse.Namespace, tupl
         index, count = map(int, args.smoke_shard.split("/"))
         shard = (index, count)
     try:
-        smoke_tests = smoke_partition(*shard)
+        smoke_tests = ESSENTIAL_TESTS if args.smoke_profile == "essential" else smoke_partition(*shard)
     except RunnerError as error:
         parser.error(str(error))
     return args, shard, smoke_tests
@@ -672,6 +685,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     artifacts.mkdir(parents=True)
     cache = Path.home() / "Library/Caches/riji-ios-automated-tests"
     report = {"suite": args.suite, "status": "running", "started_at": stamp,
+              "smoke_profile": args.smoke_profile if args.suite in SMOKE_SUITES else None,
               "smoke_tests": list(smoke_tests) if args.suite in SMOKE_SUITES else [],
               "smoke_shard": {"index": shard[0], "count": shard[1]} if args.suite in SMOKE_SUITES else None}
     write_json(artifacts / "summary.json", report)

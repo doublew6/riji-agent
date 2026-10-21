@@ -14,10 +14,12 @@ DEVELOPER_DIR=/Applications/Xcode_26.5.app/Contents/Developer python3 scripts/te
 
 需要分批运行 smoke 时，可指定 `--smoke-shard 1/4`、`2/4`、`3/4`、`4/4`。每片执行完整 package 和 Native 测试，并按排序后的 UI 测试标识轮流分配到各片；四片分别执行 11/10/10/10 条 UI，无重叠、合计覆盖全部 41 条。单片通过只表示该片通过，四片均通过才能代表完整 smoke。分片参数不适用于 `core`、`native` 或 `full`；不传参数仍执行完整 smoke。
 
-CI 使用独立 `core` 与四片 `ui-smoke`，避免每片重复编译、执行相同的 Swift package。`ui-smoke` 只执行全量 Native 与所选 UI，不包含 package，不能单独代表完整 smoke；必须核对同一提交的 `core` 与全部 UI 分片都通过。本机默认 `smoke` 的范围保持不变。如需分别复现 CI，可运行：
+日常 PR/main CI 使用独立 `core` 与一个 `essential` job：全量 Native 只执行一次，加六条固定 UI 流程。它用于日常反馈，不代表完整 smoke 或发布验收。完整四片 `ui-smoke` 与 `full` 保留为手动运行；未选 UI 没有删除，真实失败仍返回失败。本机默认 `smoke` 与默认 `--smoke-profile complete` 的范围保持不变。可分别运行：
 
 ```sh
 python3 scripts/test_ios.py --suite core
+python3 scripts/test_ios.py --suite ui-smoke --smoke-profile essential
+# Manual complete smoke:
 python3 scripts/test_ios.py --suite ui-smoke --smoke-shard 1/4
 # Repeat ui-smoke with 2/4, 3/4 and 4/4 for complete UI coverage.
 ```
@@ -28,7 +30,12 @@ python3 scripts/test_ios.py --suite ui-smoke --smoke-shard 1/4
 | `native` | 全量 hostless Native tests |
 | `smoke`（默认） | 全量 package + Native + 41 条 UI journeys（清单以 runner 为准） |
 | `ui-smoke` | 全量 Native + 41 条 UI journeys，或 `--smoke-shard` 指定的 UI 子集；不执行 package |
+| `ui-smoke --smoke-profile essential` | 全量 Native + 六条固定 UI；不可分片，不是完整验收 |
 | `full` | 全量 package + Native + 全量 UI |
+
+essential 六条固定 UI 覆盖原目录编辑及冷启动、导师草稿恢复与记忆校正、私聊/群聊连续输入、记忆证据与失效、设置分组及恢复入口、安装连接与四个主标签。精确方法名以 runner 的 `ESSENTIAL_METHODS` 为准。该 profile 仅适用于 `ui-smoke`，不能与 `--smoke-shard` 合用。即便只执行六条，discovery 仍必须发现全部 41 条 smoke 与完整 Native，执行结果按本次精确选择核对，不能跳过或漏测。
+
+未解决的偶发菜单自动化问题、已完成的修复和恢复排查入口记录在 [Issue #63](https://github.com/doublew6/riji-agent/issues/63)。按用户决定暂缓深查；缩小日常测试范围不代表该问题已修复，也不替代完整发布验收。
 
 `core` 的 Probe support 是合成文件与协议测试，不执行真实 iCloud probe。命令始终执行测试；缺工具、缺运行时、工具失败、零执行、跳过或清单不符均返回非零，不降级成 build。
 
@@ -97,7 +104,7 @@ SIGKILL、主机崩溃或平台强制取消无法由 Python 捕获，可能留�
 
 每次运行生成 `output/ios-tests/<UTC时间>-<suite>-<随机ID>/`，该目录被 Git 忽略：
 
-- `summary.json`：最终状态、环境、实际设备/runtime、各目标的执行数量；`smoke` 与 `ui-smoke` 记录分片编号、总片数和该片精确 UI 清单，suite 字段保留二者区别，`ui-smoke` 没有 package 结果；失败记录原因。
+- `summary.json`：最终状态、环境、实际设备/runtime、各目标的执行数量；`smoke` 与 `ui-smoke` 记录 `smoke_profile`（`complete` / `essential`）、分片编号、总片数和精确 UI 清单，suite 字段保留二者区别，`ui-smoke` 没有 package 结果；失败记录原因。
 - `commands.json` 与各阶段 `.log`：精确命令、PID、期限、终态、退出码及中断清理结果。stdout/stderr 直接写日志，不经过可能掩盖退出码的管道。
 - `swift-inventory.json`、`swift-tests.log` 与 `swift-results.json`：Swift 实际发现清单与逐测试 started/passed 终态。兼容 Xcode 26/27 的 XCTest 命名格式，身份保留 target/class/method，同名类和方法在不同 target 中独立计数；无法审计的 test-shaped discovery 行直接失败，不假称支持 Swift Testing。逐项比对所有目标，末尾未选择 suite 的 `Executed 0` 不会覆盖前面的真实结果。
 - `source-inputs-before.json` 与 `source-inputs-after.json`：执行前后对 runner 和 iOS Swift 源码/测试、Xcode project/shared scheme、非私有 build config、Info.plist、依赖锁定文件、asset 资源及跨语言 AI 来源 fixture 计算 SHA-256，包含未跟踪文件。新增、删除或字节变化均拒绝通过。排除缓存、生成目录、xcuserdata、隐藏配置、`*.local.*` / `*.private.*` 和 private/secrets/credentials 目录；不读取密钥或本地签名配置。这是前后内容快照，不是文件锁，也不覆盖 SDK、系统组件或排除的私人配置。
@@ -114,7 +121,7 @@ uv run pytest tests/test_ios_test_runner.py
 
 ## CI
 
-[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 将完整 smoke 分为一个 `core` job（当前 659 项 Swift package，以实际发现清单为准）与四个 `ui-smoke` job（每片完整 70 项 Native，以实际发现清单为准，UI 分别为 11/10/10/10 项）。五个 job 独立执行且全部必须成功，没有 `continue-on-error`；UI matrix 的 `fail-fast: false` 保留每片结果。每片有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名分别带 `core` 或 `ui-smoke-<片号>`，不能用某一片的成功代替 package 或其他片的结果。手动 `workflow_dispatch` 可选 smoke（同样的一个 core 加四片 UI）/full（单轮完整 package + Native + 全量 UI，不分片）。
+[独立 iOS workflow](../../.github/workflows/ios.yml) 在 PR 和 main push 运行 `core`（当前 659 项 Swift package）与一个 `essential`（完整 70 项 Native + 六条固定 UI），数量以实际发现清单为准。这两个日常 job 都必须成功，没有 `continue-on-error`；同 PR 或同 ref 的新运行会取消旧运行，已取消不算通过。手动 `workflow_dispatch` 默认 `essential`，也可选 `smoke`（core + 原四片 UI，分别为 11/10/10/10，每片完整 Native）或 `full`（单轮完整 package + Native + 全量 UI）。四片使用 `fail-fast: false` 保留真实结果，仍须五个 job 全部通过才能代表完整 smoke。各 job 有自己的专用 Simulator、锁、缓存，不在同一设备并发操作。artifact 名区分 `core`、`essential`、`ui-smoke-<片号>` 和 `full`，不能用日常 essential 通过代替完整验收。
 
 只申请 `contents: read`，固定 `macos-26` 和 `/Applications/Xcode_26.5.app/Contents/Developer`，每个 job 上限 60 分钟，测试 step 上限 55 分钟，runner 内部上限 50 分钟，为正常结束后的证据上传留出时间。上传步骤使用 `always()`，结果保留 14 天；强制取消的限制如上。各 suite 继续逐项检查发现清单、实际执行结果、零跳过和源文件前后 SHA-256；`ui-smoke` 的 discovery 仍要求全部 41 项 smoke 存在，再核对本片精确请求集合。[Python workflow](../../.github/workflows/test.yml) 按当前发布范围在 macOS 与 Linux 执行隐私扫描、smoke 和完整测试；Windows 目前不纳入运行平台验收，其服务适配器的 fake-runner 单测继续执行。
 

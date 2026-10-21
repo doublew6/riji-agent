@@ -346,16 +346,24 @@ def test_smoke_partitions_are_disjoint_and_cover_the_complete_suite(count):
 def test_ci_shard_configuration_dispatches_every_smoke_test_exactly_once():
     workflow = yaml.safe_load((ROOT / ".github/workflows/ios.yml").read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
-    assert set(jobs) == {"core", "ui-smoke", "full"}
+    assert set(jobs) == {"core", "essential", "ui-smoke", "full"}
     core, ui, full = (jobs[name] for name in ("core", "ui-smoke", "full"))
-    assert core["if"] == ui["if"] == "${{ inputs.suite != 'full' }}"
+    assert core["if"] == "${{ inputs.suite != 'full' }}"
+    assert ui["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke' }}"
+    assert jobs["essential"]["if"] == "${{ github.event_name != 'workflow_dispatch' || inputs.suite == 'essential' }}"
+    assert "strategy" not in jobs["essential"]
+    assert workflow["concurrency"] == {"group": "ios-${{ github.event.pull_request.number || github.ref }}",
+                                       "cancel-in-progress": True}
+    trigger = workflow.get("on", workflow.get(True))
+    assert trigger["workflow_dispatch"]["inputs"]["suite"]["default"] == "essential"
     assert full["if"] == "${{ inputs.suite == 'full' }}"
     assert ui["strategy"]["fail-fast"] is False
     assert all("needs" not in job and not job.get("continue-on-error", False) for job in jobs.values())
     for name, job in jobs.items():
         runs = [step for step in job["steps"] if "run" in step]
         assert len(runs) == 1 and "if" not in runs[0]
-        assert f"python3 scripts/test_ios.py --suite {name}" in runs[0]["run"]
+        command = "ui-smoke --smoke-profile essential" if name == "essential" else name
+        assert f"python3 scripts/test_ios.py --suite {command}" in runs[0]["run"]
         assert all(not step.get("continue-on-error", False) for step in job["steps"])
         assert runs[0]["timeout-minutes"] == 55 and job["timeout-minutes"] == 60
     assert runner.RUN_TIMEOUT_SECONDS == 50 * 60
@@ -375,11 +383,26 @@ def test_ci_shard_configuration_dispatches_every_smoke_test_exactly_once():
     assert sum(map(len, requested)) == len(runner.SMOKE_TESTS)
 
 
-@pytest.mark.parametrize("index", [1, 2, 3, 4])
+def test_essential_profile_selects_exact_six_existing_flows_without_sharding():
+    args, shard, selected = runner.parse_arguments(["--suite", "ui-smoke", "--smoke-profile", "essential"])
+    assert args.smoke_profile == "essential" and shard == (1, 1)
+    assert tuple(name.rsplit("/", 1)[1] for name in selected) == (
+        "testOriginalHomeManualEditingSavesAndColdReopensExactSource",
+        "testMobileMentorDraftColdRecoveryReplyAndMemoryCorrection",
+        "testMobilePrivateAndGroupSendKeepInputFocusForFollowingDraft",
+        "testMobileMemoryOverviewThemeEvidenceCorrectionAndInvalidation",
+        "testApprovedSettingsGroupsKeepDiaryAndRecoveryRoutesReachable",
+        "testMobileManagedInstallationConnectsWithoutLeavingFourPeerTabs",
+    )
+    assert len(set(selected)) == 6 and set(selected) < set(runner.SMOKE_TESTS)
+    assert runner.parse_arguments([])[2] == runner.SMOKE_TESTS
+
+
+@pytest.mark.parametrize("index", [1, 2, 3, 4, "essential"])
 @pytest.mark.parametrize("suite", ["smoke", "ui-smoke"])
 def test_shard_arguments_inventory_and_result_audit_agree(tmp_path, index, suite):
     run = make_run(tmp_path)
-    run.smoke_tests = runner.smoke_partition(index, 4)
+    run.smoke_tests = runner.ESSENTIAL_TESTS if index == "essential" else runner.smoke_partition(index, 4)
     args = runner.xcode_arguments(run, suite, UDID)
     selected = {arg.removeprefix("-only-testing:") for arg in args
                 if arg.startswith("-only-testing:RijiUITests/")}
@@ -400,9 +423,10 @@ def test_shard_arguments_inventory_and_result_audit_agree(tmp_path, index, suite
 
 
 @pytest.mark.parametrize("suite", ["smoke", "ui-smoke"])
-def test_shard_still_requires_discovery_of_the_entire_smoke_suite(suite):
+@pytest.mark.parametrize("profile", ["complete", "essential"])
+def test_shard_still_requires_discovery_of_the_entire_smoke_suite(suite, profile):
     document = enumeration()
-    selected = runner.smoke_partition(1, 4)
+    selected = runner.ESSENTIAL_TESTS if profile == "essential" else runner.smoke_partition(1, 4)
     missing = next(test for test in runner.SMOKE_TESTS if test not in selected)
     document["values"][0]["enabledTests"] = [test for test in document["values"][0]["enabledTests"]
         if test["identifier"] != missing + "()"]
@@ -415,7 +439,12 @@ def test_shard_still_requires_discovery_of_the_entire_smoke_suite(suite):
     ["--suite", "ui-smoke", "--smoke-shard", "0/4"],
     ["--suite", "ui-smoke", "--smoke-shard", "5/4"],
     ["--suite", "full", "--smoke-shard", "1/3"], ["--suite", "native", "--smoke-shard", "1/3"],
-    ["--suite", "core", "--smoke-shard", "1/3"]])
+    ["--suite", "core", "--smoke-shard", "1/3"],
+    ["--suite", "ui-smoke", "--smoke-profile", "essential", "--smoke-shard", "1/1"],
+    ["--suite", "smoke", "--smoke-profile", "essential"],
+    ["--suite", "full", "--smoke-profile", "essential"],
+    ["--suite", "native", "--smoke-profile", "essential"],
+    ["--suite", "core", "--smoke-profile", "essential"]])
 def test_invalid_shard_is_rejected_before_any_tool_runs(args):
     with pytest.raises(SystemExit) as stopped:
         runner.main(args)
@@ -448,7 +477,8 @@ def test_swift_suite_teardown_failure_is_not_a_pass():
 
 
 @pytest.mark.parametrize("argv,suite,shard", [([], "smoke", (1, 1)),
-    (["--suite", "ui-smoke", "--smoke-shard", "2/4"], "ui-smoke", (2, 4))])
+    (["--suite", "ui-smoke", "--smoke-shard", "2/4"], "ui-smoke", (2, 4)),
+    (["--suite", "ui-smoke", "--smoke-profile", "essential"], "ui-smoke", (1, 1))])
 def test_main_retains_suite_and_shard_failure_summary_without_real_tools(tmp_path, monkeypatch, argv, suite, shard):
     from contextlib import nullcontext
 
@@ -471,7 +501,10 @@ def test_main_retains_suite_and_shard_failure_summary_without_real_tools(tmp_pat
     assert result["status"] == "failed"
     assert result["error"] == "synthetic missing Xcode"
     assert result["suite"] == suite
-    assert result["smoke_tests"] == list(runner.smoke_partition(*shard))
+    profile = "essential" if "essential" in argv else "complete"
+    assert result["smoke_profile"] == profile
+    selected = runner.ESSENTIAL_TESTS if profile == "essential" else runner.smoke_partition(*shard)
+    assert result["smoke_tests"] == list(selected)
     assert result["smoke_shard"] == {"index": shard[0], "count": shard[1]}
 
 

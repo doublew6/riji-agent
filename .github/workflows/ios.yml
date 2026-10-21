@@ -9,14 +9,19 @@ on:
       suite:
         description: iOS test suite
         required: true
-        default: smoke
+        default: essential
         type: choice
         options:
+          - essential
           - smoke
           - full
 
 permissions:
   contents: read
+
+concurrency:
+  group: ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
@@ -42,8 +47,28 @@ jobs:
           path: output/ios-tests/
           if-no-files-found: error
           retention-days: 14
+  essential:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.suite == 'essential' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run complete Native tests and six essential UI journeys
+        timeout-minutes: 55
+        run: python3 scripts/test_ios.py --suite ui-smoke --smoke-profile essential
+      - name: Retain daily checks, not complete acceptance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ github.run_id }}-${{ github.run_attempt }}-essential
+          path: output/ios-tests/
+          if-no-files-found: error
+          retention-days: 14
   ui-smoke:
-    if: ${{ inputs.suite != 'full' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke' }}
     runs-on: macos-26
     timeout-minutes: 60
     strategy:
