@@ -42,7 +42,9 @@ runner 仅使用名为 **Riji Automated Tests** 的专用 iPhone Simulator。首
 
 ## 执行期限与中断
 
-每个子命令都有固定期限，无需额外参数：普通工具 2 分钟、Simulator boot status 3 分钟、Swift discovery 15 分钟、Swift tests 15 分钟、Xcode discovery 15 分钟、Xcode tests 40 分钟。`swift test list` 在首次运行时也需要编译 package，因此 discovery 使用与 Swift tests 相同的预算。Xcode 枚举同样包含冷构建和测试 bundle 加载，预留 15 分钟应对耗时较长的运行。整轮执行另有 50 分钟上限，先到的期限生效；阶段预算增加不改变中断清理和逐项测试验收。
+每个子命令都有固定期限，无需额外参数：普通工具 2 分钟、Simulator 初始 boot status 5 分钟、枚举后重启的 boot status 3 分钟、Swift discovery 15 分钟、Swift tests 15 分钟、Xcode discovery 15 分钟、Xcode tests 40 分钟。`swift test list` 在首次运行时也需要编译 package，因此 discovery 使用与 Swift tests 相同的预算。Xcode 枚举同样包含冷构建和测试 bundle 加载，预留 15 分钟应对耗时较长的运行。整轮执行另有 50 分钟上限，先到的期限生效；阶段预算增加不改变中断清理和逐项测试验收。
+
+初始启动单独预留 5 分钟，用于新设备的冷启动和数据迁移。近期七组 CI 的 28 次初始启动中，24 次成功用时 65.528–173.507 秒，4 次触及旧 180 秒期限；24 次枚举后重启均在 30.030–78.585 秒完成。此调整只增加冷启动的有限余量，不能证明或修复 Simulator 卡死；不会自动重试，也不放宽测试用例期限。虚拟时钟回归通过真实 `Run.command` 路径核对初始启动跨越 180 秒仍可完成、超过 300 秒失败、枚举后重启仍在 180 秒失败，以及整轮期限先到时仍清理直属子进程。
 
 期限到达或收到 SIGTERM/SIGINT 后，runner 将当前命令记录为 `timed_out` / `interrupted`，最终 `summary.json` 为 `failed`。只对自己启动、仍由 `Popen` 持有的直属子进程发送 terminate，等待 5 秒后仍未退出才对同一子进程发送 kill，再有界等待 5 秒；不会向进程组、其他任务或 Simulator 服务发信号。命令证据保留 PID、开始/结束时间、期限、退出码及清理结果，已有日志和部分 `.xcresult` 不删除。普通非零退出和启动失败也保留失败记录。
 

@@ -27,7 +27,8 @@ COMMAND_TIMEOUT_SECONDS = 120
 RUN_TIMEOUT_SECONDS = 50 * 60
 CHILD_STOP_GRACE_SECONDS = 5
 STAGE_TIMEOUT_SECONDS = {
-    "boot-status": 180,
+    # Initial boot includes data migration on a fresh CI device.
+    "boot-status": 300,
     "ui-boot-status": 180,
     # Listing tests also compiles the package on a fresh CI runner.
     "swift-discovery": 15 * 60,

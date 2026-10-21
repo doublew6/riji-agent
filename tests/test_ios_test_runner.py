@@ -549,18 +549,21 @@ def test_whole_run_deadline_bounds_a_longer_stage(tmp_path, monkeypatch):
     assert run.commands[-1]["cleanup"]["stopped"]
 
 
-@pytest.mark.parametrize("discovery", [
-    ("swift-discovery", ["synthetic-swift", "test", "list"], 360),
-    ("xcode-discovery", ["synthetic-xcodebuild", "test", "-enumerate-tests"], 660),
+@pytest.mark.parametrize("scenario", [
+    ("swift-discovery", ["synthetic-swift", "test", "list"], 360, 900),
+    ("xcode-discovery", ["synthetic-xcodebuild", "test", "-enumerate-tests"], 660, 900),
+    ("boot-status", ["synthetic-simctl", "bootstatus", UDID, "-b"], 210, 300),
+    ("boot-status", ["synthetic-simctl", "bootstatus", UDID, "-b"], 330, 300),
+    ("ui-boot-status", ["synthetic-simctl", "bootstatus", UDID, "-b"], 210, 180),
 ])
 @pytest.mark.parametrize("whole_run_expires", [False, True])
-def test_cold_discovery_budget_preserves_whole_run_deadline(
-        tmp_path, monkeypatch, discovery, whole_run_expires):
-    stage, args, build_seconds = discovery
+def test_stage_budgets_preserve_whole_run_deadline_and_owned_cleanup(
+        tmp_path, monkeypatch, scenario, whole_run_expires):
+    stage, args, completion_seconds, stage_seconds = scenario
     elapsed = [0.0]
     monkeypatch.setattr(runner.time, "monotonic", lambda: elapsed[0])
 
-    class ColdBuild:
+    class TimedStage:
         pid = 12345
         returncode = None
 
@@ -568,10 +571,10 @@ def test_cold_discovery_budget_preserves_whole_run_deadline(
             if self.returncode is not None:
                 return self.returncode
             elapsed[0] += timeout
-            if elapsed[0] >= build_seconds:
+            if elapsed[0] >= completion_seconds:
                 self.returncode = 0
                 return 0
-            raise subprocess.TimeoutExpired("synthetic cold build", timeout)
+            raise subprocess.TimeoutExpired("synthetic stage", timeout)
 
         def poll(self):
             return self.returncode
@@ -579,22 +582,27 @@ def test_cold_discovery_budget_preserves_whole_run_deadline(
         def terminate(self):
             self.returncode = -signal.SIGTERM
 
-    process = ColdBuild()
+    process = TimedStage()
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: process)
     run = make_run(tmp_path)
+    deadline = min(completion_seconds, stage_seconds) - 30 if whole_run_expires else stage_seconds
     if whole_run_expires:
-        run.control.deadline = elapsed[0] + build_seconds - 30
-        with pytest.raises(runner.RunnerTimeout, match="whole-run"):
+        run.control.deadline = elapsed[0] + deadline
+    if whole_run_expires or completion_seconds > stage_seconds:
+        reason = "whole-run" if whole_run_expires else "stage deadline"
+        with pytest.raises(runner.RunnerTimeout, match=reason):
             run.command(stage, args)
-        assert elapsed[0] == build_seconds - 30
+        assert elapsed[0] == deadline
         assert run.commands[-1]["status"] == "timed_out"
         assert run.commands[-1]["cleanup"]["stopped"]
+        assert run.commands[-1]["cleanup"]["actions"] == ["terminate"]
         assert run.commands[-1]["returncode"] == -signal.SIGTERM
     else:
         run.command(stage, args)
-        assert elapsed[0] >= build_seconds
+        assert elapsed[0] == completion_seconds
         assert run.commands[-1]["status"] == "passed"
         assert "cleanup" not in run.commands[-1]
+    assert run.commands[-1]["timeout_seconds"] == stage_seconds
 
 
 def seed_sources(root):
@@ -806,7 +814,6 @@ def test_ui_refresh_restarts_only_owned_device_and_preserves_synthetic_data(ui_b
     assert all(args[3] == UDID for _, args in env.calls if args[2] != "list")
     assert (env.data / "synthetic-retained.txt").read_text() == "keep synthetic fixture data"
     assert not {"erase", "uninstall", "delete"}.intersection(operations)
-    assert runner.STAGE_TIMEOUT_SECONDS["ui-boot-status"] == runner.STAGE_TIMEOUT_SECONDS["boot-status"]
     raw = (env.run.artifacts / "ui-binaries-before.json").read_text()
     assert str(env.data) not in raw and str(env.products) not in raw
     assert any(".debug.dylib" in name for entry in receipt.values() for name in entry["built"])
