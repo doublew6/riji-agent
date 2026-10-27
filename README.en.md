@@ -4,7 +4,32 @@
 
 [中文](README.md)
 
-**A local-first AI companion for reflection and personal growth, built around long-term memory and multiple mentor agents.**
+**A local-first AI journal assistant for Obsidian and Markdown, with source-cited retrieval and Feishu integration.**
+
+[Offline example and expected output](docs/usage/quickstart.md) · [Quick Start](#quick-start) · [Privacy](docs/privacy.md)
+
+## Try a Fictional Journal First
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). Run from a source checkout:
+
+```bash
+git clone https://github.com/doublew6/riji-agent.git
+cd riji-agent
+uv sync --extra dev
+uv run riji-agent chat --demo --question "launch planning"
+```
+
+Expect `Demo answer:`, `Sources:`, and references such as
+`[[riji/daily/2026-01-05]]`. The demo uses deterministic retrieval and a stub
+answer over fictional notes. It does not read `.env`, personal journals, or API
+keys, and does not call a model. It writes a local index under `.riji-demo/`.
+This demonstrates retrieval and citations, not real-model answer quality.
+See the [usage guide](docs/usage/quickstart.md) for reproducible output and checks.
+
+With an authorized journal and model configured, a use case is: “Why did I stop
+following this plan?” Inspect the cited notes before acting on the answer.
+Check the [availability table](#availability-and-development-progress) for the
+distinction between public capabilities and development plans.
 
 Keep your notes in Obsidian and talk in Feishu. `riji-agent` uses your recorded
 experiences to help you reflect on the past, work through concerns, notice change,

@@ -4,7 +4,28 @@
 
 [English](README.en.md)
 
-**以长期记忆和多 Agent 导师为核心的本地优先 AI 陪伴与成长助手。**
+**面向 Obsidian / Markdown 日记的本地优先 AI 助手：带来源地回看经历，在飞书里交流，确认后再写入。**
+
+先体验当前公开版本：[离线示例与预期结果](docs/usage/quickstart.md) · [快速开始](#快速开始) · [隐私边界](docs/privacy.md)。
+
+## 先用虚构日记试一次
+
+需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。从源码运行：
+
+```bash
+git clone https://github.com/doublew6/riji-agent.git
+cd riji-agent
+uv sync --extra dev
+uv run riji-agent chat --demo --question "launch planning"
+```
+
+预期看到 `Demo answer:`、`Sources:` 和 `[[riji/daily/2026-01-05]]` 等来源。
+这是虚构日记上的确定性检索与固定回答，不调用模型，不读取 `.env`、真实日记或 API key；
+本地演示索引写入 `.riji-demo/`。它展示的是检索与引用流程，不代表真实模型回答质量。
+完整输入、输出与验证方法见[英文使用指南](docs/usage/quickstart.md)。
+
+真实使用时，可以问“这个计划我以前为什么没坚持下来？”，核对引用的旧记录，再讨论下一步。
+当前公开能力和开发中能力的区别见[状态表](#当前能力与开发进展)。
 
 在 Obsidian 里保留自己的记录，在飞书里随时聊聊。`riji-agent` 围绕你的真实经历，
 帮助你回顾过去、梳理困扰、看见变化，把理解延续到下一次对话和下一步行动。
