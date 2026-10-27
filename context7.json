@@ -1,0 +1,8 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "riji-agent",
+  "description": "Local-first AI journal assistant for Obsidian and Markdown with source-cited retrieval and Feishu integration.",
+  "folders": ["docs/usage"],
+  "excludeFolders": ["assets", "ios", "infra", "evals", "tests", "docs/product", "docs/design"],
+  "excludeFiles": ["AGENTS.md", "PROJECT_GUIDE.md", "README.md", "README.zh-CN.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md"]
+}
